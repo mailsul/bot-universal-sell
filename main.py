@@ -32,9 +32,38 @@ saldo_file     = "saldo.json"
 deposit_file   = "pending_deposit.json"
 riwayat_file   = "riwayat.json"
 statistik_file = "statistik.json"
+config_file    = "config.json"
 
 # Lock global untuk mencegah race condition saat beli produk
 purchase_lock = asyncio.Lock()
+
+
+# ─── HELPER: CONFIG ──────────────────────────────────────────────────────────
+
+_CONFIG_DEFAULT = {
+    "nama_toko":    "Store Ekha",
+    "rekening":     ["DANA : 0812-XXXX-XXXX a.n Admin"],
+    "kontak_admin": "@admin",
+}
+
+
+def load_config() -> dict:
+    if not os.path.exists(config_file):
+        save_config(_CONFIG_DEFAULT.copy())
+        return _CONFIG_DEFAULT.copy()
+    with open(config_file, "r", encoding="utf-8") as f:
+        content = f.read().strip()
+    if not content:
+        return _CONFIG_DEFAULT.copy()
+    data = json.loads(content)
+    for k, v in _CONFIG_DEFAULT.items():
+        data.setdefault(k, v)
+    return data
+
+
+def save_config(data: dict):
+    with open(config_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 # ─── HELPER: JSON ───────────────────────────────────────────────────────────
@@ -123,8 +152,9 @@ async def send_main_menu(context, chat_id: int, user):
     jumlah = statistik.get(str(user.id), {}).get("jumlah", 0)
     total  = statistik.get(str(user.id), {}).get("nominal", 0)
 
+    nama_toko = load_config()["nama_toko"]
     text = (
-        f"👋 Selamat datang di *Store Ekha*!\n\n"
+        f"👋 Selamat datang di *{nama_toko}*!\n\n"
         f"🧑 Nama: {user.full_name}\n"
         f"🆔 ID: `{user.id}`\n"
         f"💰 Saldo: Rp{s:,}\n"
@@ -375,7 +405,7 @@ async def handle_confirm_order(update: Update, context: CallbackContext):
                     "---------------------------\n"
                 )
 
-    # Kirim file di luar lock
+    # Kirim file di luar lock, lalu hapus dari disk (data sensitif)
     with open(file_path, "rb") as f:
         await context.bot.send_document(
             chat_id=query.from_user.id,
@@ -388,6 +418,10 @@ async def handle_confirm_order(update: Update, context: CallbackContext):
             ),
             parse_mode="Markdown"
         )
+    try:
+        os.remove(file_path)
+    except OSError:
+        pass
 
     # Notifikasi stok hampir habis ke semua admin
     if item["stok"] <= LOW_STOCK_THRESHOLD:
@@ -425,12 +459,12 @@ async def handle_deposit(update: Update, context: CallbackContext):
 
 
 async def _send_deposit_instructions(target, context, nominal: int, is_message=True):
-    total = nominal + 23
+    total    = nominal + 23
+    rekening = load_config().get("rekening", [])
+    rek_text = "\n".join(f"`{r}`" for r in rekening)
     text  = (
         f"💳 Transfer *Rp{total:,}* ke salah satu rekening:\n\n"
-        "`DANA        : 0812-1259-4112 A.N And**`\n"
-        "`SEABANK     : 901655655990 A.N Rizky Oryza`\n"
-        "`BANK JAGO   : 107616413403 A.N Rizky Oryza`\n\n"
+        f"{rek_text}\n\n"
         "📸 Setelah transfer, kirim *foto bukti transfer* ke sini."
     )
     kb = ReplyKeyboardMarkup([[KeyboardButton("❌ Batalkan Deposit")]], resize_keyboard=True, one_time_keyboard=True)
@@ -532,6 +566,7 @@ async def handle_admin_panel(update: Update, context: CallbackContext):
 
     keyboard = [
         [InlineKeyboardButton("📦 Kelola Produk",   callback_data="admin_kelola_produk")],
+        [InlineKeyboardButton("⚙️ Pengaturan Bot",  callback_data="admin_settings")],
         [InlineKeyboardButton("🔙 Kembali ke Menu", callback_data="back_to_produk")],
     ]
     await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -611,6 +646,82 @@ async def handle_admin_hapus_produk(update: Update, context: CallbackContext):
         text="🗑 *HAPUS PRODUK*\n\nPilih ID produk yang ingin dihapus:",
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    )
+
+
+# ─── ADMIN: PENGATURAN BOT ───────────────────────────────────────────────────
+
+async def handle_admin_settings(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    cfg  = load_config()
+    rek  = "\n".join(f"  • {r}" for r in cfg.get("rekening", []))
+    text = (
+        f"⚙️ *PENGATURAN BOT*\n\n"
+        f"🏪 *Nama Toko*: `{cfg['nama_toko']}`\n\n"
+        f"🏦 *Rekening*:\n{rek}\n\n"
+        f"📞 *Kontak Admin*: `{cfg['kontak_admin']}`"
+    )
+    keyboard = [
+        [InlineKeyboardButton("✏️ Ubah Nama Toko",    callback_data="admin_ubah_nama")],
+        [InlineKeyboardButton("🏦 Ubah Rekening",      callback_data="admin_ubah_rekening")],
+        [InlineKeyboardButton("📞 Ubah Kontak Admin",  callback_data="admin_ubah_kontak")],
+        [InlineKeyboardButton("🔙 Kembali",            callback_data="admin_panel")],
+    ]
+    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def handle_admin_ubah_nama(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    context.user_data["admin_state"] = "ubah_nama_toko"
+    await query.message.delete()
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text=f"✏️ Nama toko saat ini: *{load_config()['nama_toko']}*\n\nKetik nama toko baru:",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
+    )
+
+
+async def handle_admin_ubah_rekening(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    context.user_data["admin_state"] = "ubah_rekening"
+    rek = "\n".join(load_config().get("rekening", []))
+    await query.message.delete()
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text=(
+            "🏦 Ketik daftar rekening baru, *satu per baris*:\n\n"
+            "Contoh:\n"
+            "`DANA      : 0812-XXXX-XXXX a.n Nama`\n"
+            "`SEABANK   : 9012345678 a.n Nama`\n\n"
+            f"Rekening saat ini:\n`{rek}`"
+        ),
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
+    )
+
+
+async def handle_admin_ubah_kontak(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    context.user_data["admin_state"] = "ubah_kontak"
+    await query.message.delete()
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text=f"📞 Kontak admin saat ini: `{load_config()['kontak_admin']}`\n\nKetik kontak admin baru (contoh: @username):",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
     )
 
 
@@ -714,20 +825,32 @@ async def handle_back_to_produk(update: Update, context: CallbackContext):
 
 
 async def handle_info_bot(update: Update, context: CallbackContext):
-    query = update.callback_query
-    text  = (
-        "📖 *INFORMASI BOT*\n"
+    query  = update.callback_query
+    cfg    = load_config()
+    nama   = cfg["nama_toko"]
+    kontak = cfg["kontak_admin"]
+    text   = (
+        f"📖 *{nama}*\n"
         "╭─────────────────────────────╮\n"
-        "├ 🧠 *Nama*: `Store Ekha`\n"
-        "├ 👨‍💻 *Author*: [@govtrashit](https://t.me/govtrashit)\n"
-        "├ 🛒 *Fungsi*: Penjualan akun digital otomatis\n"
-        "├ ⚙️ *Fitur*: Deposit, Auto-kirim akun, Statistik\n"
-        "├ 🧰 *Tech*: Python, python-telegram-bot\n"
-        "╰─────────────────────────────╯\n\n"
-        "🌐 *Developer:*\n"
-        "• GitHub: [@rzzky](https://github.com/rzzky)\n"
-        "• Instagram: [@rizzkyo](https://instagram.com/rizzkyo)\n\n"
-        "💬 Saran/kritik? DM [@govtrashit](https://t.me/govtrashit)"
+        "├ 🛒 *Layanan*\n"
+        "│   Jual akun digital & subscription\n"
+        "│   premium secara otomatis.\n"
+        "├─────────────────────────────\n"
+        "├ 💰 *Cara Deposit*\n"
+        "│   1. Pilih menu Deposit Saldo\n"
+        "│   2. Pilih atau ketik nominal\n"
+        "│   3. Transfer ke rekening kami\n"
+        "│   4. Kirim foto bukti transfer\n"
+        "│   5. Tunggu konfirmasi admin\n"
+        "├─────────────────────────────\n"
+        "├ 🛍️ *Cara Beli*\n"
+        "│   1. Pilih List Produk\n"
+        "│   2. Pilih produk & atur jumlah\n"
+        "│   3. Konfirmasi — akun langsung\n"
+        "│      dikirim otomatis via bot\n"
+        "├─────────────────────────────\n"
+        f"├ 📞 *Hubungi Admin*: {kontak}\n"
+        "╰─────────────────────────────╯"
     )
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Kembali ke Menu", callback_data="back_to_produk")]])
     await query.edit_message_text(text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=keyboard)
@@ -751,6 +874,10 @@ CALLBACK_MAP = {
     "admin_add_produk":       handle_admin_add_produk,
     "admin_restock_produk":   handle_admin_restock_produk,
     "admin_hapus_produk":     handle_admin_hapus_produk,
+    "admin_settings":         handle_admin_settings,
+    "admin_ubah_nama":        handle_admin_ubah_nama,
+    "admin_ubah_rekening":    handle_admin_ubah_rekening,
+    "admin_ubah_kontak":      handle_admin_ubah_kontak,
     "qty_plus":               handle_qty_plus,
     "qty_minus":              handle_qty_minus,
     "confirm_order":          handle_confirm_order,
@@ -800,7 +927,8 @@ async def handle_text(update: Update, context: CallbackContext):
         save_json(deposit_file, pending)
         # Bersihkan semua state
         for key in ["awaiting_custom", "nominal_asli", "total_transfer",
-                    "admin_state", "new_produk", "restock_pid"]:
+                    "admin_state", "new_produk", "restock_pid",
+                    "konfirmasi"]:
             context.user_data.pop(key, None)
         await update.message.reply_text("✅ Dibatalkan.", reply_markup=ReplyKeyboardRemove())
         await send_main_menu_safe(update, context)
@@ -940,6 +1068,58 @@ async def handle_text(update: Update, context: CallbackContext):
             await send_main_menu_safe(update, context)
             return
 
+        if admin_state == "ubah_nama_toko":
+            nama_baru = text.strip()
+            if len(nama_baru) < 2 or len(nama_baru) > 64:
+                await update.message.reply_text("❌ Nama toko harus 2–64 karakter. Coba lagi:")
+                return
+            cfg = load_config()
+            cfg["nama_toko"] = nama_baru
+            save_config(cfg)
+            context.user_data.pop("admin_state", None)
+            await update.message.reply_text(
+                f"✅ Nama toko berhasil diubah menjadi *{nama_baru}*",
+                parse_mode="Markdown",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await send_main_menu_safe(update, context)
+            return
+
+        if admin_state == "ubah_rekening":
+            lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
+            if not lines:
+                await update.message.reply_text("❌ Rekening tidak boleh kosong. Coba lagi:")
+                return
+            cfg = load_config()
+            cfg["rekening"] = lines
+            save_config(cfg)
+            context.user_data.pop("admin_state", None)
+            rek_text = "\n".join(f"  • {r}" for r in lines)
+            await update.message.reply_text(
+                f"✅ Rekening berhasil diperbarui:\n{rek_text}",
+                parse_mode="Markdown",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await send_main_menu_safe(update, context)
+            return
+
+        if admin_state == "ubah_kontak":
+            kontak_baru = text.strip()
+            if len(kontak_baru) < 2 or len(kontak_baru) > 64:
+                await update.message.reply_text("❌ Kontak tidak valid. Coba lagi:")
+                return
+            cfg = load_config()
+            cfg["kontak_admin"] = kontak_baru
+            save_config(cfg)
+            context.user_data.pop("admin_state", None)
+            await update.message.reply_text(
+                f"✅ Kontak admin diubah menjadi `{kontak_baru}`",
+                parse_mode="Markdown",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await send_main_menu_safe(update, context)
+            return
+
     # ── Custom deposit nominal ───────────────────────────────────────
     if context.user_data.get("awaiting_custom"):
         try:
@@ -1040,6 +1220,12 @@ async def handle_photo(update: Update, context: CallbackContext):
                 )
         except Exception:
             pass
+
+    # Hapus file bukti dari disk setelah dikirim ke semua admin (data sensitif)
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
     await update.message.reply_text(
         "✅ Bukti transfer berhasil dikirim!\nTunggu konfirmasi dari admin ya.",
