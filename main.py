@@ -44,7 +44,7 @@ DEPOSIT_MIN         = 5000
 DEPOSIT_MAX         = 1_000_000
 RIWAYAT_LIMIT       = 10
 QRIS_POLL_INTERVAL  = 30   # cek mutasi setiap 30 detik
-QRIS_EXPIRY_MINUTES = 30   # pending QRIS kedaluwarsa setelah 30 menit
+QRIS_EXPIRY_MINUTES = 5    # pending QRIS kedaluwarsa setelah 5 menit
 
 URL_MUTASI     = os.getenv("URL_MUTASI")
 QRIS_BASE64    = os.getenv("QRIS_BASE64")
@@ -294,13 +294,19 @@ async def proses_mutasi(app: Application):
         return
 
     log.info("🔍 Cek mutasi ke URL_MUTASI...")
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(URL_MUTASI)
-            resp.raise_for_status()
-            raw = resp.json()
-    except Exception as e:
-        log.warning(f"❌ Gagal ambil mutasi: [{type(e).__name__}] {e}")
+    raw = None
+    for attempt in range(1, 4):  # max 3 percobaan
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(URL_MUTASI)
+                resp.raise_for_status()
+                raw = resp.json()
+            break
+        except Exception as e:
+            log.warning(f"❌ Gagal ambil mutasi (percobaan {attempt}/3): [{type(e).__name__}] {e}")
+            if attempt < 3:
+                await asyncio.sleep(2)
+    if raw is None:
         return
 
     mutation_amounts = _extract_amounts_from_mutasi(raw)
