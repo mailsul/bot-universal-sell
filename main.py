@@ -689,7 +689,7 @@ async def handle_photo(update: Update, context: CallbackContext):
     await update.message.reply_text("✅ Bukti dikirim! Tunggu konfirmasi admin.")
 
 def main(): # Made With love by @govtrashit A.K.A RzkyO
-    app = Application.builder().token("CHANGE_THIS_TO_YOUR_TOKEN").build()
+    app = Application.builder().token("1996571940:AAHweMGTLq-v5w4gHeBiuqbaCczsg88bu6w").build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
