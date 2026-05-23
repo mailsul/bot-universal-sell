@@ -589,6 +589,27 @@ def _get_logo_path() -> str | None:
     return None
 
 
+async def safe_edit(query, context, text: str, parse_mode: str = "Markdown",
+                    reply_markup=None, disable_web_page_preview: bool = False):
+    """Edit pesan (text atau caption). Fallback: hapus lama + kirim baru."""
+    kwargs = dict(parse_mode=parse_mode, reply_markup=reply_markup)
+    if disable_web_page_preview:
+        kwargs["disable_web_page_preview"] = True
+    try:
+        await query.edit_message_text(text, **kwargs)
+    except Exception:
+        try:
+            await query.edit_message_caption(text, **kwargs)
+        except Exception:
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            await context.bot.send_message(
+                chat_id=query.from_user.id, text=text, **kwargs
+            )
+
+
 async def send_main_menu(bot_or_context, chat_id: int, user):
     bot = getattr(bot_or_context, 'bot', bot_or_context)
 
@@ -1325,7 +1346,10 @@ async def handle_cancel_deposit(update: Update, context: CallbackContext):
     context.user_data.pop("nominal_asli",   None)
     context.user_data.pop("total_transfer", None)
     context.user_data.pop("awaiting_custom", None)
-    await query.edit_message_text("✅ Deposit dibatalkan.")
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
     await send_main_menu(context, query.from_user.id, query.from_user)
 
 
@@ -1338,11 +1362,10 @@ async def handle_deposit_qris(update: Update, context: CallbackContext):
     keyboard = [[InlineKeyboardButton(f"Rp{n:,}", callback_data=f"qris_dep_{n}") for n in DEPOSIT_NOMINALS]]
     keyboard.append([InlineKeyboardButton("🔧 Custom Nominal", callback_data="qris_dep_custom")])
     keyboard.append([InlineKeyboardButton("🔙 Kembali",        callback_data="deposit")])
-    await query.edit_message_text(
-        f"💳 *Deposit via QRIS*\n_(Min: Rp{DEPOSIT_MIN:,} | Max: Rp{DEPOSIT_MAX:,})_\n\n"
-        "Pilih nominal deposit:",
+    await safe_edit(
+        query, context,
+        f"💳 *Deposit via QRIS*\n_(Min: Rp{DEPOSIT_MIN:,} | Max: Rp{DEPOSIT_MAX:,})_\n\nPilih nominal deposit:",
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
     )
 
 
@@ -1563,7 +1586,10 @@ async def handle_riwayat_user(update: Update, context: CallbackContext):
             text += f"   🕐 {r['waktu']}{trx}\n\n"
 
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Kembali ke Menu", callback_data="back_to_produk")]])
-    await send_fn(text, kb)
+    if update.callback_query:
+        await safe_edit(update.callback_query, context, text, reply_markup=kb)
+    else:
+        await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
 
 
 async def cmd_riwayat(update: Update, context: CallbackContext):
@@ -1597,7 +1623,7 @@ async def handle_admin_panel(update: Update, context: CallbackContext):
         [InlineKeyboardButton("⚙️ Pengaturan Bot",  callback_data="admin_settings")],
         [InlineKeyboardButton("🔙 Kembali ke Menu", callback_data="back_to_produk")],
     ]
-    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+    await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def handle_admin_kelola_produk(update: Update, context: CallbackContext):
@@ -1607,7 +1633,7 @@ async def handle_admin_kelola_produk(update: Update, context: CallbackContext):
         return
 
     produk  = load_produk()
-    produk_list = "\n".join([f"`{pid}` - {item['nama']} ({item['stok']}x)" for pid, item in produk.items()])
+    produk_list = "\n".join([f"`{pid}` — {item['nama']}" for pid, item in produk.items()])
     text    = f"*📦 KELOLA PRODUK*\n\n{produk_list or '_Belum ada produk._'}"
     keyboard = [
         [InlineKeyboardButton("➕ Tambah Produk",  callback_data="admin_add_produk")],
@@ -1615,7 +1641,7 @@ async def handle_admin_kelola_produk(update: Update, context: CallbackContext):
         [InlineKeyboardButton("🗑 Hapus Produk",    callback_data="admin_hapus_produk")],
         [InlineKeyboardButton("🔙 Kembali",         callback_data="admin_panel")],
     ]
-    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+    await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 # ─── ADMIN: TAMBAH PRODUK ────────────────────────────────────────────────────
@@ -1701,7 +1727,7 @@ async def handle_admin_settings(update: Update, context: CallbackContext):
         [InlineKeyboardButton("📷 Upload Gambar QRIS", callback_data="admin_upload_qris")],
         [InlineKeyboardButton("🔙 Kembali",            callback_data="admin_panel")],
     ]
-    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+    await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def handle_admin_ubah_nama(update: Update, context: CallbackContext):
