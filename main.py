@@ -514,6 +514,16 @@ async def post_init(app: Application):
 
 # ─── MENU UTAMA ─────────────────────────────────────────────────────────────
 
+_LOGO_EXTS = ["png", "jpg", "jpeg", "webp"]
+
+def _get_logo_path() -> str | None:
+    for ext in _LOGO_EXTS:
+        p = os.path.join("static", f"logo.{ext}")
+        if os.path.exists(p):
+            return p
+    return None
+
+
 async def send_main_menu(bot_or_context, chat_id: int, user):
     # Menerima context (handler) atau bot langsung (background task)
     bot = getattr(bot_or_context, 'bot', bot_or_context)
@@ -543,10 +553,28 @@ async def send_main_menu(bot_or_context, chat_id: int, user):
     if is_admin(user.id):
         keyboard.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")])
 
+    markup = InlineKeyboardMarkup(keyboard)
+
+    # Kirim logo jika ada
+    logo = _get_logo_path()
+    if logo:
+        try:
+            with open(logo, "rb") as f:
+                await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=f,
+                    caption=text,
+                    reply_markup=markup,
+                    parse_mode="Markdown",
+                )
+            return
+        except Exception:
+            pass  # fallback ke send_message biasa
+
     await bot.send_message(
         chat_id=chat_id,
         text=text,
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=markup,
         parse_mode="Markdown"
     )
 

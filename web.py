@@ -118,6 +118,23 @@ def load_config() -> dict:
     except Exception:
         return {"nama_toko": "Ibra Store", "rekening": [], "kontak_admin": ""}
 
+LOGO_EXTS = ["png", "jpg", "jpeg", "webp"]
+
+def get_logo_path() -> str | None:
+    """Return path ke logo toko jika ada, misal 'static/logo.png'."""
+    for ext in LOGO_EXTS:
+        p = os.path.join("static", f"logo.{ext}")
+        if os.path.exists(p):
+            return p
+    return None
+
+def get_logo_url() -> str | None:
+    """Return URL /static/logo.ext atau None."""
+    p = get_logo_path()
+    if p:
+        return "/" + p.replace("\\", "/")
+    return None
+
 def save_config(data: dict):
     tmp = "config.json.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -222,9 +239,10 @@ def check_mutation(expected: int) -> bool:
 def _ctx():
     cfg = load_config()
     return {
-        "cfg": cfg,
-        "current_user": current_user(),
+        "cfg":           cfg,
+        "current_user":  current_user(),
         "current_saldo": db_get_saldo(session["user_tid"]) if "user_tid" in session else 0,
+        "logo_url":      get_logo_url(),
     }
 
 
@@ -929,6 +947,59 @@ def admin_produk_harga(pid):
         save_produk_raw(raw)
     flash(f"✅ Harga diperbarui ke Rp{harga:,}.", "success")
     return redirect(url_for("admin") + "#tab-produk")
+
+
+@app.route("/admin/produk/<pid>/gambar", methods=["POST"])
+@admin_required
+def admin_produk_gambar(pid):
+    """Ganti/upload gambar produk yang sudah ada."""
+    file = request.files.get("gambar")
+    if not file or not file.filename:
+        flash("Pilih file gambar terlebih dahulu.", "danger")
+        return redirect(url_for("admin") + "#tab-produk")
+    with _purchase_lock, produk_lock():
+        raw  = load_produk_raw()
+        item = raw.get(pid)
+        if not item:
+            flash("Produk tidak ditemukan.", "danger")
+            return redirect(url_for("admin") + "#tab-produk")
+        # Hapus gambar lama dulu (semua ekstensi)
+        for ext in ALLOWED_IMG:
+            old = os.path.join(PRODUK_IMG_DIR, f"{pid}.{ext}")
+            if os.path.exists(old):
+                os.remove(old)
+        gambar = _save_produk_img(pid, file)
+        if not gambar:
+            flash("Format gambar tidak valid (gunakan PNG/JPG/WEBP).", "danger")
+            return redirect(url_for("admin") + "#tab-produk")
+        item["gambar"] = gambar
+        raw[pid] = item
+        save_produk_raw(raw)
+    flash(f"✅ Gambar produk diperbarui.", "success")
+    return redirect(url_for("admin") + "#tab-produk")
+
+
+@app.route("/admin/logo", methods=["POST"])
+@admin_required
+def admin_logo_upload():
+    """Upload logo toko — dipakai di navbar web, favicon, dan bot /start."""
+    file = request.files.get("logo")
+    if not file or not file.filename:
+        flash("Pilih file logo terlebih dahulu.", "danger")
+        return redirect(url_for("admin") + "#tab-config")
+    ext = file.filename.rsplit(".", 1)[-1].lower()
+    if ext not in ALLOWED_IMG:
+        flash("Format tidak valid (gunakan PNG/JPG/WEBP).", "danger")
+        return redirect(url_for("admin") + "#tab-config")
+    # Hapus logo lama semua ekstensi
+    for e in LOGO_EXTS:
+        old = os.path.join("static", f"logo.{e}")
+        if os.path.exists(old):
+            os.remove(old)
+    dest = os.path.join("static", f"logo.{ext}")
+    file.save(dest)
+    flash("✅ Logo toko berhasil diperbarui.", "success")
+    return redirect(url_for("admin") + "#tab-config")
 
 
 @app.route("/admin/produk/<pid>/hapus", methods=["POST"])

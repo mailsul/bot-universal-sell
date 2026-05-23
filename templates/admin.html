@@ -228,6 +228,12 @@
                   <button class="btn btn-sm btn-outline-secondary" onclick="lihatStok('{{ p.id }}','{{ p.nama|replace("'","\\'")|e }}')">
                     <i class="bi bi-eye"></i> Stok
                   </button>
+                  <!-- Edit Gambar -->
+                  <button class="btn btn-sm btn-outline-warning ms-1" data-bs-toggle="modal"
+                    data-bs-target="#gambarModal" data-pid="{{ p.id }}" data-nama="{{ p.nama }}"
+                    data-gambar="{{ p.get('gambar','') }}">
+                    <i class="bi bi-camera"></i>
+                  </button>
                   <!-- Restock Modal Trigger -->
                   <button class="btn btn-sm btn-outline-success ms-1" data-bs-toggle="modal"
                     data-bs-target="#restockModal" data-pid="{{ p.id }}" data-nama="{{ p.nama }}">
@@ -329,7 +335,7 @@
 
   <!-- ── PENGATURAN ── -->
   <div class="tab-pane fade" id="tab-config">
-    <div class="row justify-content-center">
+    <div class="row justify-content-center g-4">
       <div class="col-md-7">
         <div class="card">
           <div class="card-header"><h6 class="mb-0"><i class="bi bi-gear me-1"></i>Pengaturan Toko</h6></div>
@@ -356,6 +362,34 @@
               </div>
               <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold">
                 <i class="bi bi-check-circle me-1"></i>Simpan Pengaturan
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <!-- Logo Upload -->
+      <div class="col-md-5">
+        <div class="card">
+          <div class="card-header"><h6 class="mb-0"><i class="bi bi-image me-1"></i>Logo Toko</h6></div>
+          <div class="card-body p-4">
+            {% if logo_url %}
+            <div class="text-center mb-3">
+              <img src="{{ logo_url }}" style="max-height:120px;max-width:100%;object-fit:contain;border-radius:12px;border:1.5px solid #ede9fe" alt="Logo">
+              <p class="small text-muted mt-2 mb-0">Logo aktif</p>
+            </div>
+            {% else %}
+            <div class="text-center text-muted mb-3 py-3">
+              <i class="bi bi-image fs-2 opacity-25"></i>
+              <p class="small mt-2 mb-0">Belum ada logo</p>
+            </div>
+            {% endif %}
+            <form method="post" action="/admin/logo" enctype="multipart/form-data">
+              <label class="form-label">Upload Logo Baru</label>
+              <input type="file" name="logo" class="form-control mb-1" accept="image/*" required>
+              <div class="form-text mb-3">PNG/JPG/WEBP — dipakai di navbar web, favicon, dan gambar /start bot</div>
+              <button type="submit" class="btn btn-brand w-100 fw-semibold">
+                <i class="bi bi-upload me-1"></i>Upload Logo
               </button>
             </form>
           </div>
@@ -396,6 +430,35 @@
   </div>
 
 </div><!-- end tab-content -->
+
+<!-- MODAL: Edit Gambar Produk -->
+<div class="modal fade" id="gambarModal" tabindex="-1">
+  <div class="modal-dialog modal-sm">
+    <div class="modal-content" style="border-radius:16px;border:none">
+      <div class="modal-header" style="background:linear-gradient(135deg,#5b21b6,#7c3aed);color:#fff;border-radius:16px 16px 0 0">
+        <h5 class="modal-title fw-bold" id="gambarTitle">Edit Gambar</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="post" id="gambarForm" enctype="multipart/form-data">
+        <div class="modal-body p-4">
+          <div id="gambarPreviewWrap" class="mb-3 text-center d-none">
+            <img id="gambarPreview" src="" style="max-height:120px;border-radius:10px;object-fit:contain">
+          </div>
+          <label class="form-label">Pilih Gambar Baru</label>
+          <input type="file" name="gambar" class="form-control" accept="image/*" required
+            onchange="previewGambar(this)">
+          <div class="form-text">PNG, JPG, WEBP</div>
+        </div>
+        <div class="modal-footer border-0">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Batal</button>
+          <button type="submit" class="btn btn-brand px-4 fw-semibold">
+            <i class="bi bi-upload me-1"></i>Upload
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 
 <!-- MODAL: Lihat Stok -->
 <div class="modal fade" id="stokModal" tabindex="-1">
@@ -485,6 +548,31 @@
 {% block scripts %}
 <script>
 // Setup modals
+// Edit Gambar Produk modal
+document.getElementById('gambarModal').addEventListener('show.bs.modal', function(e) {
+  const btn = e.relatedTarget;
+  document.getElementById('gambarTitle').textContent = 'Edit Gambar: ' + btn.dataset.nama;
+  document.getElementById('gambarForm').action = '/admin/produk/' + btn.dataset.pid + '/gambar';
+  const preview = document.getElementById('gambarPreview');
+  const wrap    = document.getElementById('gambarPreviewWrap');
+  if (btn.dataset.gambar) {
+    preview.src = btn.dataset.gambar;
+    wrap.classList.remove('d-none');
+  } else {
+    wrap.classList.add('d-none');
+  }
+});
+function previewGambar(input) {
+  if (input.files && input.files[0]) {
+    const reader = new FileReader();
+    reader.onload = e => {
+      document.getElementById('gambarPreview').src = e.target.result;
+      document.getElementById('gambarPreviewWrap').classList.remove('d-none');
+    };
+    reader.readAsDataURL(input.files[0]);
+  }
+}
+
 document.getElementById('restockModal').addEventListener('show.bs.modal', function(e) {
   const btn = e.relatedTarget;
   document.getElementById('restockTitle').textContent = 'Restock: ' + btn.dataset.nama;
