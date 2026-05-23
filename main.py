@@ -32,13 +32,95 @@ log = logging.getLogger(__name__)
 from qris_helper import generate_qr_with_amount
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    InputFile, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+    InputFile, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
+    MessageEntity,
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters, CallbackContext
 )
 from datetime import datetime
+
+# ─── PREMIUM EMOJI ADAPTER ────────────────────────────────────────────────────
+
+try:
+    from premium_emoji import build_http_entities as _pe_raw
+    _PE_OK = True
+except Exception:
+    _PE_OK = False
+
+# Custom emoji ID untuk tombol & teks (dari emojis.txt)
+_EID: dict[str, str] = {
+    "🛍": "5373052667671093676", "🆘": "5285071241865077373",
+    "💰": "5375296873982604963", "📜": "6077903371275083456",
+    "🛠": "5213214428958306222", "🔥": "5289722755871162900",
+    "🔙": "5352759161945867747", "🎯": "5350460637182993292",
+    "✅": "5980930633298350051", "🔴": "5411225014148014586",
+    "🟢": "5267229058659264159", "🟡": "5267176161842046521",
+    "🔵": "5267145938157184110", "💎": "5267419403019886452",
+    "⚡": "5431449001532594346", "⚠": "5447644880824181073",
+    "🛒": "5431499171045581032", "👑": "5217822164362739968",
+    "📦": "6077646300302548677", "⚙": "5341715473882955310",
+    "➕": "5226945370684140473", "🗑": "5445267414562389170",
+    "✏": "5956143844457189176", "🏦": "5264895611517300926",
+    "📞": "5467539229468793355", "📷": "5821087262099639879",
+    "🎬": "5866430606233046609", "🎨": "5866017524868452229",
+    "🎵": "5463107823946717464", "🎭": "5359441070201513074",
+    "🏰": "5429403746696189687", "🔐": "5472308992514464048",
+    "🌐": "6269490656779965144", "💧": "5393512611968995988",
+    "🖌": "5819016409258135133", "📱": "5407025283456835913",
+    "📝": "5334882760735598374", "🦉": "5445146051671497117",
+    "🤖": "5355051922862653659", "🖼": "5262517101578443800",
+    "👤": "5373012449597335010", "📌": "5397782960512444700",
+    "⭐": "5229227046290343318", "🌟": "5269721741713745479",
+    "🎁": "5199749070830197566",
+}
+
+
+def _utf16len(s: str) -> int:
+    return len(s.encode("utf-16-le")) // 2
+
+
+def _pe(text: str, pm: str = "Markdown") -> tuple[str, list]:
+    """Konversi teks Markdown ke (plain, [MessageEntity]) dengan premium emoji.
+    Jika tidak ada premium emoji atau ada entity tidak valid, fallback ke parse_mode biasa."""
+    if not _PE_OK:
+        return text, []
+    try:
+        plain, raw = _pe_raw(text, pm)
+        if not raw:
+            return text, []
+        plen = _utf16len(plain)
+        ents = []
+        for e in raw:
+            try:
+                off = e["offset"]
+                ln  = e["length"]
+                # Validasi bounds: skip entity yang melampaui panjang teks
+                if off < 0 or ln <= 0 or (off + ln) > plen:
+                    continue
+                kw: dict = {"type": e["type"], "offset": off, "length": ln}
+                if e.get("custom_emoji_id"):
+                    kw["custom_emoji_id"] = e["custom_emoji_id"]
+                if e.get("url"):
+                    kw["url"] = e["url"]
+                ents.append(MessageEntity(**kw))
+            except Exception:
+                pass
+        return (plain, ents) if ents else (text, [])
+    except Exception:
+        return text, []
+
+
+def _ikb(text: str, emoji_char: str = "", style: str = None, **kwargs) -> InlineKeyboardButton:
+    """InlineKeyboardButton dengan premium icon emoji dan warna style."""
+    kw = dict(kwargs)
+    if style:
+        kw["style"] = style
+    icon_id = _EID.get(emoji_char)
+    if icon_id:
+        kw["icon_custom_emoji_id"] = icon_id
+    return InlineKeyboardButton(text=text, **kw)
 
 # ─── KONFIGURASI ────────────────────────────────────────────────────────────
 BOT_TOKEN         = os.getenv("BOT_TOKEN")
@@ -591,23 +673,31 @@ def _get_logo_path() -> str | None:
 
 async def safe_edit(query, context, text: str, parse_mode: str = "Markdown",
                     reply_markup=None, disable_web_page_preview: bool = False):
-    """Edit pesan (text atau caption). Fallback: hapus lama + kirim baru."""
-    kwargs = dict(parse_mode=parse_mode, reply_markup=reply_markup)
+    """Edit pesan (text atau caption) dengan premium emoji. Fallback: hapus lama + kirim baru."""
+    plain, ents = _pe(text, parse_mode)
+    if ents:
+        kw_t = dict(entities=ents, reply_markup=reply_markup)
+        kw_c = dict(caption_entities=ents, reply_markup=reply_markup)
+        msg  = plain
+    else:
+        kw_t = dict(parse_mode=parse_mode, reply_markup=reply_markup)
+        kw_c = dict(parse_mode=parse_mode, reply_markup=reply_markup)
+        msg  = text
     if disable_web_page_preview:
-        kwargs["disable_web_page_preview"] = True
+        kw_t["disable_web_page_preview"] = True
     try:
-        await query.edit_message_text(text, **kwargs)
+        await query.edit_message_text(msg, **kw_t)
     except Exception:
         try:
-            await query.edit_message_caption(text, **kwargs)
+            await query.edit_message_caption(msg, **kw_c)
         except Exception:
             try:
                 await query.message.delete()
             except Exception:
                 pass
-            await context.bot.send_message(
-                chat_id=query.from_user.id, text=text, **kwargs
-            )
+            kw_s = dict(kw_t)
+            kw_s.pop("disable_web_page_preview", None)
+            await context.bot.send_message(chat_id=query.from_user.id, text=msg, **kw_s)
 
 
 async def send_main_menu(bot_or_context, chat_id: int, user):
@@ -642,38 +732,40 @@ async def send_main_menu(bot_or_context, chat_id: int, user):
     )
 
     keyboard = [
-        [InlineKeyboardButton("🛍 List Produk",    callback_data="list_produk"),
-         InlineKeyboardButton("🆘 Bantuan",         callback_data="info_bot")],
-        [InlineKeyboardButton("💰 Deposit Saldo",   callback_data="deposit")],
-        [InlineKeyboardButton("📜 Riwayat",          callback_data="riwayat_user")],
+        [_ikb("🛍 List Produk",   "🛍", "success",  callback_data="list_produk"),
+         _ikb("🆘 Bantuan",        "🆘", "danger",   callback_data="info_bot")],
+        [_ikb("💰 Deposit Saldo",  "💰", "primary",  callback_data="deposit")],
+        [_ikb("📜 Riwayat",         "📜",  None,      callback_data="riwayat_user")],
     ]
     if is_admin(user.id):
-        keyboard.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")])
+        keyboard.append([_ikb("🛠 Admin Panel", "🛠", "danger", callback_data="admin_panel")])
 
     markup = InlineKeyboardMarkup(keyboard)
+
+    # Siapkan teks dengan premium emoji
+    plain, ents = _pe(text, "Markdown")
 
     # Kirim logo jika ada
     logo = _get_logo_path()
     if logo:
         try:
             with open(logo, "rb") as f:
-                await bot.send_photo(
-                    chat_id=chat_id,
-                    photo=f,
-                    caption=text,
-                    reply_markup=markup,
-                    parse_mode="Markdown",
-                )
+                send_kw: dict = {"chat_id": chat_id, "photo": f, "reply_markup": markup}
+                if ents:
+                    send_kw["caption"] = plain
+                    send_kw["caption_entities"] = ents
+                else:
+                    send_kw["caption"] = text
+                    send_kw["parse_mode"] = "Markdown"
+                await bot.send_photo(**send_kw)
             return
         except Exception:
             pass  # fallback ke send_message biasa
 
-    await bot.send_message(
-        chat_id=chat_id,
-        text=text,
-        reply_markup=markup,
-        parse_mode="Markdown"
-    )
+    if ents:
+        await bot.send_message(chat_id=chat_id, text=plain, entities=ents, reply_markup=markup)
+    else:
+        await bot.send_message(chat_id=chat_id, text=text, reply_markup=markup, parse_mode="Markdown")
 
 
 async def send_main_menu_safe(update: Update, context: CallbackContext):
@@ -735,8 +827,9 @@ async def handle_list_produk(update: Update, context: CallbackContext):
                 ic = "🟢" if stok_t > 0 else "🔴"
                 msg += f"  {ic} {t['nama']}: Rp {t.get('harga',0):,} ({stok_t} unit)\n"
 
-        # Tombol inline: emoji + nomor, callback = pid
-        btn_row.append(InlineKeyboardButton(f"{em}{nomor}", callback_data=pid))
+        # Tombol inline: emoji + nomor, warna primary jika ada stok
+        btn_style = "primary" if total_stok > 0 else None
+        btn_row.append(_ikb(f"{em}{nomor}", em, btn_style, callback_data=pid))
         if len(btn_row) == 5:
             kb_rows.append(btn_row)
             btn_row = []
@@ -746,7 +839,7 @@ async def handle_list_produk(update: Update, context: CallbackContext):
 
     if btn_row:
         kb_rows.append(btn_row)
-    kb_rows.append([InlineKeyboardButton("🔥 Kembali ke Menu Utama", callback_data="back_to_produk")])
+    kb_rows.append([_ikb("🔥 Kembali ke Menu Utama", "🔥", "danger", callback_data="back_to_produk")])
 
     markup = InlineKeyboardMarkup(kb_rows)
     try:
@@ -806,12 +899,12 @@ def _order_text(item: dict, jumlah: int, tipe_item: dict | None = None) -> str:
 def _order_keyboard(jumlah: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("➖", callback_data="qty_minus"),
-            InlineKeyboardButton(f"  {jumlah}  ", callback_data="ignore"),
-            InlineKeyboardButton("➕", callback_data="qty_plus"),
+            _ikb("➖", "", None,       callback_data="qty_minus"),
+            _ikb(f"  {jumlah}  ", "", None, callback_data="ignore"),
+            _ikb("➕", "➕", None,    callback_data="qty_plus"),
         ],
-        [InlineKeyboardButton("✅ Konfirmasi Order", callback_data="confirm_order")],
-        [InlineKeyboardButton("🔙 Kembali",          callback_data="back_to_produk")],
+        [_ikb("✅ Konfirmasi Order", "✅", "success", callback_data="confirm_order")],
+        [_ikb("🔙 Kembali",          "🔙", "danger",  callback_data="back_to_produk")],
     ])
 
 
@@ -853,16 +946,16 @@ async def _send_produk_with_tipe(bot, chat_id: int, pid: str, item: dict, contex
         icon = "✅" if stok > 0 else "❌"
         lines.append(f"{icon} *{t['nama']}* — Rp{t.get('harga',0):,} ({stok} stok)")
         if stok > 0:
-            btn = InlineKeyboardButton(f"{t['nama']} Rp{t.get('harga',0):,}", callback_data=f"tipe_{pid}_{tid}")
+            btn = _ikb(f"{t['nama']} Rp{t.get('harga',0):,}", "", "primary", callback_data=f"tipe_{pid}_{tid}")
         else:
-            btn = InlineKeyboardButton(f"❌ {t['nama']} (habis)", callback_data="ignore")
+            btn = _ikb(f"❌ {t['nama']} (habis)", "", None, callback_data="ignore")
         row.append(btn)
         if len(row) == 2:
             kb_rows.append(row)
             row = []
     if row:
         kb_rows.append(row)
-    kb_rows.append([InlineKeyboardButton("🔙 Kembali ke Menu", callback_data="back_to_produk")])
+    kb_rows.append([_ikb("🔙 Kembali ke Menu", "🔙", "danger", callback_data="back_to_produk")])
 
     text = "\n".join(lines)
     kb   = InlineKeyboardMarkup(kb_rows)
@@ -1043,14 +1136,14 @@ async def handle_confirm_order(update: Update, context: CallbackContext):
     if _qris_available():
         kb = []
         if saldo_user >= total:
-            kb.append([InlineKeyboardButton(
-                f"💰 Bayar dengan Saldo (Rp{saldo_user:,})",
+            kb.append([_ikb(
+                f"💰 Bayar dengan Saldo (Rp{saldo_user:,})", "💰", "success",
                 callback_data="confirm_saldo"
             )])
-        kb.append([InlineKeyboardButton("💳 Bayar via QRIS (Otomatis)", callback_data="beli_qris")])
+        kb.append([_ikb("💳 Bayar via QRIS (Otomatis)", "", "primary", callback_data="beli_qris")])
         if saldo_user < total:
-            kb.append([InlineKeyboardButton("💰 Top Up Saldo dulu", callback_data="deposit")])
-        kb.append([InlineKeyboardButton("🔙 Kembali", callback_data="back_to_produk")])
+            kb.append([_ikb("💰 Top Up Saldo dulu", "💰", "primary", callback_data="deposit")])
+        kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="back_to_produk")])
         try:
             await query.edit_message_text(msg_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
         except Exception:
@@ -1095,11 +1188,11 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
 
     if saldo_user < total:
         kb_rows = [
-            [InlineKeyboardButton("💰 Deposit Saldo", callback_data="deposit")],
+            [_ikb("💰 Deposit Saldo", "💰", "primary", callback_data="deposit")],
         ]
         if _qris_available():
-            kb_rows.append([InlineKeyboardButton("💳 Bayar via QRIS (Otomatis)", callback_data="beli_qris")])
-        kb_rows.append([InlineKeyboardButton("🔙 Kembali ke Menu", callback_data="back_to_produk")])
+            kb_rows.append([_ikb("💳 Bayar via QRIS (Otomatis)", "", "primary", callback_data="beli_qris")])
+        kb_rows.append([_ikb("🔙 Kembali ke Menu", "🔙", "danger", callback_data="back_to_produk")])
         try:
             await query.edit_message_text(
                 "❌ *Saldo tidak cukup.*\nSilakan deposit atau bayar langsung via QRIS.",
@@ -1216,9 +1309,9 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
 async def handle_deposit(update: Update, context: CallbackContext):
     query         = update.callback_query
     qris_tersedia = _qris_available()
-    keyboard      = [[InlineKeyboardButton(f"Rp{n:,}", callback_data=f"deposit_{n}") for n in DEPOSIT_NOMINALS]]
-    keyboard.append([InlineKeyboardButton("🔧 Custom Nominal", callback_data="deposit_custom")])
-    keyboard.append([InlineKeyboardButton("🔙 Kembali", callback_data="back_to_produk")])
+    keyboard      = [[_ikb(f"Rp{n:,}", "", "primary", callback_data=f"deposit_{n}") for n in DEPOSIT_NOMINALS]]
+    keyboard.append([_ikb("🔧 Custom Nominal", "", None, callback_data="deposit_custom")])
+    keyboard.append([_ikb("🔙 Kembali", "🔙", None, callback_data="back_to_produk")])
     qris_note = "\n✅ _QRIS tersedia — pilih nominal lalu pilih metode!_" if qris_tersedia else ""
     text = (
         f"💰 *Pilih nominal deposit:*\n"
@@ -1286,12 +1379,12 @@ async def _show_metode_deposit(query_or_message, context, nominal: int):
     manual_aktif    = cfg.get("transfer_manual_aktif", True)
     kb = []
     if qris_tersedia:
-        kb.append([InlineKeyboardButton("💳 QRIS (Otomatis / Lebih Cepat)", callback_data=f"dep_qris_{nominal}")])
+        kb.append([_ikb("💳 QRIS (Otomatis / Lebih Cepat)", "", "primary", callback_data=f"dep_qris_{nominal}")])
     if manual_aktif:
-        kb.append([InlineKeyboardButton("🏦 Transfer Manual (Konfirmasi Admin)", callback_data=f"dep_manual_{nominal}")])
+        kb.append([_ikb("🏦 Transfer Manual (Konfirmasi Admin)", "🏦", None, callback_data=f"dep_manual_{nominal}")])
     if not kb:
-        kb.append([InlineKeyboardButton("❌ Metode deposit sedang tidak tersedia", callback_data="ignore")])
-    kb.append([InlineKeyboardButton("🔙 Kembali", callback_data="deposit")])
+        kb.append([_ikb("❌ Metode deposit sedang tidak tersedia", "", None, callback_data="ignore")])
+    kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="deposit")])
 
     hints = []
     if qris_tersedia:
@@ -1357,9 +1450,9 @@ async def handle_deposit_qris(update: Update, context: CallbackContext):
     if not _qris_available():
         await query.answer("❌ QRIS belum diatur admin.", show_alert=True)
         return
-    keyboard = [[InlineKeyboardButton(f"Rp{n:,}", callback_data=f"qris_dep_{n}") for n in DEPOSIT_NOMINALS]]
-    keyboard.append([InlineKeyboardButton("🔧 Custom Nominal", callback_data="qris_dep_custom")])
-    keyboard.append([InlineKeyboardButton("🔙 Kembali",        callback_data="deposit")])
+    keyboard = [[_ikb(f"Rp{n:,}", "", "primary", callback_data=f"qris_dep_{n}") for n in DEPOSIT_NOMINALS]]
+    keyboard.append([_ikb("🔧 Custom Nominal", "", None, callback_data="qris_dep_custom")])
+    keyboard.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="deposit")])
     await safe_edit(
         query, context,
         f"💳 *Deposit via QRIS*\n_(Min: Rp{DEPOSIT_MIN:,} | Max: Rp{DEPOSIT_MAX:,})_\n\nPilih nominal deposit:",
@@ -1428,7 +1521,7 @@ async def _show_qris_deposit(user, nominal: int, context, delete_msg=None):
             pass
 
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔄 Cek Sekarang (3x tersisa)", callback_data="cek_mutasi")
+        _ikb("🔄 Cek Sekarang (3x tersisa)", "", "primary", callback_data="cek_mutasi")
     ]])
     await _send_qris_photo(context.bot, user.id, nominal, kode, caption, reply_markup=kb)
 
@@ -1507,7 +1600,7 @@ async def handle_beli_qris(update: Update, context: CallbackContext):
         pass
 
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔄 Cek Sekarang (3x tersisa)", callback_data="cek_mutasi")
+        _ikb("🔄 Cek Sekarang (3x tersisa)", "", "primary", callback_data="cek_mutasi")
     ]])
     await _send_qris_photo(context.bot, query.from_user.id, nominal, kode, caption, reply_markup=kb)
 
@@ -1551,7 +1644,7 @@ async def handle_cek_mutasi(update: Update, context: CallbackContext):
     else:
         label = "⏳ Menunggu... (ketuk untuk info)"
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton(label, callback_data="cek_mutasi")
+        _ikb(label, "", "primary", callback_data="cek_mutasi")
     ]])
     try:
         await query.edit_message_reply_markup(reply_markup=kb)
@@ -1583,7 +1676,7 @@ async def handle_riwayat_user(update: Update, context: CallbackContext):
             text += f"   _{r['keterangan']}_\n"
             text += f"   🕐 {r['waktu']}{trx}\n\n"
 
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Kembali ke Menu", callback_data="back_to_produk")]])
+    kb = InlineKeyboardMarkup([[_ikb("🔙 Kembali ke Menu", "🔙", "danger", callback_data="back_to_produk")]])
     if update.callback_query:
         await safe_edit(update.callback_query, context, text, reply_markup=kb)
     else:
@@ -1617,9 +1710,9 @@ async def handle_admin_panel(update: Update, context: CallbackContext):
         text += "_Tidak ada._\n"
 
     keyboard = [
-        [InlineKeyboardButton("📦 Kelola Produk",   callback_data="admin_kelola_produk")],
-        [InlineKeyboardButton("⚙️ Pengaturan Bot",  callback_data="admin_settings")],
-        [InlineKeyboardButton("🔙 Kembali ke Menu", callback_data="back_to_produk")],
+        [_ikb("📦 Kelola Produk",   "📦", "primary", callback_data="admin_kelola_produk")],
+        [_ikb("⚙️ Pengaturan Bot",  "⚙",  None,      callback_data="admin_settings")],
+        [_ikb("🔙 Kembali ke Menu", "🔙", "danger",  callback_data="back_to_produk")],
     ]
     await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1634,10 +1727,10 @@ async def handle_admin_kelola_produk(update: Update, context: CallbackContext):
     produk_list = "\n".join([f"`{pid}` — {item['nama']}" for pid, item in produk.items()])
     text    = f"*📦 KELOLA PRODUK*\n\n{produk_list or '_Belum ada produk._'}"
     keyboard = [
-        [InlineKeyboardButton("➕ Tambah Produk",  callback_data="admin_add_produk")],
-        [InlineKeyboardButton("📦 Restock",         callback_data="admin_restock_produk")],
-        [InlineKeyboardButton("🗑 Hapus Produk",    callback_data="admin_hapus_produk")],
-        [InlineKeyboardButton("🔙 Kembali",         callback_data="admin_panel")],
+        [_ikb("➕ Tambah Produk",  "➕", "success", callback_data="admin_add_produk")],
+        [_ikb("📦 Restock",         "📦", "primary", callback_data="admin_restock_produk")],
+        [_ikb("🗑 Hapus Produk",    "🗑", "danger",  callback_data="admin_hapus_produk")],
+        [_ikb("🔙 Kembali",         "🔙", None,      callback_data="admin_panel")],
     ]
     await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1719,11 +1812,11 @@ async def handle_admin_settings(update: Update, context: CallbackContext):
     qris_status = "✅ Aktif via env var" if QRIS_BASE64 else ("✅ Ada (gambar)" if os.path.exists(qris_file) else "❌ Belum diatur")
     text += f"\n\n📷 *QRIS*: {qris_status}"
     keyboard = [
-        [InlineKeyboardButton("✏️ Ubah Nama Toko",    callback_data="admin_ubah_nama")],
-        [InlineKeyboardButton("🏦 Ubah Rekening",      callback_data="admin_ubah_rekening")],
-        [InlineKeyboardButton("📞 Ubah Kontak Admin",  callback_data="admin_ubah_kontak")],
-        [InlineKeyboardButton("📷 Upload Gambar QRIS", callback_data="admin_upload_qris")],
-        [InlineKeyboardButton("🔙 Kembali",            callback_data="admin_panel")],
+        [_ikb("✏️ Ubah Nama Toko",    "✏",  None,      callback_data="admin_ubah_nama")],
+        [_ikb("🏦 Ubah Rekening",      "🏦", None,      callback_data="admin_ubah_rekening")],
+        [_ikb("📞 Ubah Kontak Admin",  "📞", None,      callback_data="admin_ubah_kontak")],
+        [_ikb("📷 Upload Gambar QRIS", "📷", None,      callback_data="admin_upload_qris")],
+        [_ikb("🔙 Kembali",            "🔙", "danger",  callback_data="admin_panel")],
     ]
     await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1805,8 +1898,8 @@ async def handle_admin_confirm(update: Update, context: CallbackContext):
     query   = update.callback_query
     user_id = int(query.data.split(":")[1])
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ YA, konfirmasi",  callback_data=f"final:{user_id}")],
-        [InlineKeyboardButton("❌ Tolak deposit",   callback_data=f"reject:{user_id}")],
+        [_ikb("✅ YA, konfirmasi", "✅", "success", callback_data=f"final:{user_id}")],
+        [_ikb("❌ Tolak deposit",  "",  "danger",   callback_data=f"reject:{user_id}")],
     ])
     try:
         await query.edit_message_caption("⚠️ Konfirmasi deposit ke user ini?", reply_markup=keyboard)
@@ -1913,8 +2006,8 @@ async def handle_info_bot(update: Update, context: CallbackContext):
     kb_rows = []
     if kontak:
         tg = kontak.lstrip("@")
-        kb_rows.append([InlineKeyboardButton("👤 Hubungi Admin ↗", url=f"https://t.me/{tg}")])
-    kb_rows.append([InlineKeyboardButton("🔥 Kembali ke Menu", callback_data="back_to_produk")])
+        kb_rows.append([_ikb("👤 Hubungi Admin ↗", "👤", "primary", url=f"https://t.me/{tg}")])
+    kb_rows.append([_ikb("🔥 Kembali ke Menu", "🔥", "danger", callback_data="back_to_produk")])
     markup = InlineKeyboardMarkup(kb_rows)
     try:
         await query.edit_message_text(text, parse_mode="MarkdownV2",
@@ -2242,9 +2335,9 @@ async def handle_text(update: Update, context: CallbackContext):
             qris_tersedia = _qris_available()
             kb = []
             if qris_tersedia:
-                kb.append([InlineKeyboardButton("💳 QRIS (Otomatis / Lebih Cepat)", callback_data=f"dep_qris_{nominal}")])
-            kb.append([InlineKeyboardButton("🏦 Transfer Manual (Konfirmasi Admin)", callback_data=f"dep_manual_{nominal}")])
-            kb.append([InlineKeyboardButton("🔙 Kembali", callback_data="deposit")])
+                kb.append([_ikb("💳 QRIS (Otomatis / Lebih Cepat)", "", "primary", callback_data=f"dep_qris_{nominal}")])
+            kb.append([_ikb("🏦 Transfer Manual (Konfirmasi Admin)", "🏦", None, callback_data=f"dep_manual_{nominal}")])
+            kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="deposit")])
             metode_hint = (
                 "✅ *QRIS* — dikonfirmasi otomatis setelah bayar\n"
                 "🏦 *Transfer Manual* — perlu foto bukti & konfirmasi admin"
@@ -2330,8 +2423,8 @@ async def handle_photo(update: Update, context: CallbackContext):
     })
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Konfirmasi",  callback_data=f"confirm:{user.id}")],
-        [InlineKeyboardButton("❌ Tolak",       callback_data=f"reject:{user.id}")],
+        [_ikb("✅ Konfirmasi", "✅", "success", callback_data=f"confirm:{user.id}")],
+        [_ikb("❌ Tolak",      "",  "danger",   callback_data=f"reject:{user.id}")],
     ])
 
     # Kirim ke semua admin
