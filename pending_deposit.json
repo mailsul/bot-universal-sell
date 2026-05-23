@@ -4,9 +4,9 @@
     "username": "nopal005",
     "metode": "qris",
     "nominal": 5000,
-    "expected_amount": 5040,
-    "kode_unik": 40,
-    "waktu": "23/05/2026 11:17:59",
+    "expected_amount": 5060,
+    "kode_unik": 60,
+    "waktu": "23/05/2026 11:29:11",
     "cek_count": 0
   }
 ]

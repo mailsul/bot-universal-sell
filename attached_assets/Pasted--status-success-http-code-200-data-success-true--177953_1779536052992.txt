@@ -1,0 +1,172 @@
+{
+    "status": "success",
+    "http_code": 200,
+    "data": {
+        "success": true,
+        "qris_history": {
+            "success": true,
+            "total": 38,
+            "page": 1,
+            "pages": 4,
+            "results": [
+                {
+                    "id": 229640978,
+                    "debet": "0",
+                    "kredit": "5.040",
+                    "saldo_akhir": "15.594",
+                    "keterangan": "NOBU \/ 6281314998279",
+                    "tanggal": "23\/05\/2026 18:18:22",
+                    "status": "IN",
+                    "fee": "",
+                    "brand": {
+                        "name": "ShopeePay",
+                        "logo": "https:\/\/app.orderkuota.com\/assets\/qris\/shopeepay.png"
+                    }
+                },
+                {
+                    "id": 229635288,
+                    "debet": "0",
+                    "kredit": "5.020",
+                    "saldo_akhir": "10.554",
+                    "keterangan": "NOBU \/ 6281314998279",
+                    "tanggal": "23\/05\/2026 17:53:03",
+                    "status": "IN",
+                    "fee": "",
+                    "brand": {
+                        "name": "ShopeePay",
+                        "logo": "https:\/\/app.orderkuota.com\/assets\/qris\/shopeepay.png"
+                    }
+                },
+                {
+                    "id": 229634957,
+                    "debet": "0",
+                    "kredit": "5.006",
+                    "saldo_akhir": "5.534",
+                    "keterangan": "NOBU \/ 6281314998279",
+                    "tanggal": "23\/05\/2026 17:51:14",
+                    "status": "IN",
+                    "fee": "",
+                    "brand": {
+                        "name": "ShopeePay",
+                        "logo": "https:\/\/app.orderkuota.com\/assets\/qris\/shopeepay.png"
+                    }
+                },
+                {
+                    "id": 229487579,
+                    "debet": "320.000",
+                    "kredit": "320.000",
+                    "saldo_akhir": "528",
+                    "keterangan": "Pencairan Saldo QRIS 320.000 R#13444",
+                    "tanggal": "22\/05\/2026 22:24:04",
+                    "status": "OUT",
+                    "fee": "",
+                    "brand": {
+                        "name": "Orderkuota",
+                        "logo": "https:\/\/app.orderkuota.com\/assets\/qris\/orderkuota.png"
+                    }
+                },
+                {
+                    "id": 229484583,
+                    "debet": "0",
+                    "kredit": "320.000",
+                    "saldo_akhir": "320.528",
+                    "keterangan": "NOBU \/ EL**********",
+                    "tanggal": "22\/05\/2026 22:07:40",
+                    "status": "IN",
+                    "fee": "",
+                    "brand": {
+                        "name": "DANA",
+                        "logo": "https:\/\/app.orderkuota.com\/assets\/qris\/dana.png"
+                    }
+                },
+                {
+                    "id": 229155132,
+                    "debet": "6.000",
+                    "kredit": "6.000",
+                    "saldo_akhir": "528",
+                    "keterangan": "Pencairan Saldo QRIS 6.000 R#10812",
+                    "tanggal": "21\/05\/2026 12:20:12",
+                    "status": "OUT",
+                    "fee": "",
+                    "brand": {
+                        "name": "Orderkuota",
+                        "logo": "https:\/\/app.orderkuota.com\/assets\/qris\/orderkuota.png"
+                    }
+                },
+                {
+                    "id": 229105062,
+                    "debet": "0",
+                    "kredit": "1.118",
+                    "saldo_akhir": "6.528",
+                    "keterangan": "NOBU \/ 6281314998279",
+                    "tanggal": "21\/05\/2026 02:37:01",
+                    "status": "IN",
+                    "fee": "",
+                    "brand": {
+                        "name": "ShopeePay",
+                        "logo": "https:\/\/app.orderkuota.com\/assets\/qris\/shopeepay.png"
+                    }
+                },
+                {
+                    "id": 229096346,
+                    "debet": "0",
+                    "kredit": "4.668",
+                    "saldo_akhir": "5.410",
+                    "keterangan": "NOBU \/ 6281314998279",
+                    "tanggal": "21\/05\/2026 00:34:31",
+                    "status": "IN",
+                    "fee": "",
+                    "brand": {
+                        "name": "ShopeePay",
+                        "logo": "https:\/\/app.orderkuota.com\/assets\/qris\/shopeepay.png"
+                    }
+                },
+                {
+                    "id": 229096255,
+                    "debet": "320.000",
+                    "kredit": "320.000",
+                    "saldo_akhir": "742",
+                    "keterangan": "Pencairan Saldo QRIS 320.000 R#18419",
+                    "tanggal": "21\/05\/2026 00:33:39",
+                    "status": "OUT",
+                    "fee": "",
+                    "brand": {
+                        "name": "Orderkuota",
+                        "logo": "https:\/\/app.orderkuota.com\/assets\/qris\/orderkuota.png"
+                    }
+                },
+                {
+                    "id": 229023112,
+                    "debet": "0",
+                    "kredit": "320.000",
+                    "saldo_akhir": "320.742",
+                    "keterangan": "NOBU \/ EL**********",
+                    "tanggal": "20\/05\/2026 18:41:35",
+                    "status": "IN",
+                    "fee": "",
+                    "brand": {
+                        "name": "DANA",
+                        "logo": "https:\/\/app.orderkuota.com\/assets\/qris\/dana.png"
+                    }
+                }
+            ]
+        },
+        "account": {
+            "success": true,
+            "results": {
+                "id": 2302554,
+                "username": "ismailsult",
+                "name": "ismailsult",
+                "email": "ismailsultan920@gmail.com",
+                "phone": "0895404853397",
+                "balance": 267673,
+                "balance_str": "267.673",
+                "qris_balance": 15594,
+                "qris_balance_str": "15.594",
+                "qrcode": "https:\/\/app.orderkuota.com\/assets\/qrcode\/5cd3f40ae2d92a0f6f6e34674213a3c5b621defb.png",
+                "qris": "https:\/\/qris.orderkuota.com\/qrnobu\/2302554-d0239835fbdff920494570ab1c9301abe2aca4ef-QR.png",
+                "qris_name": "IBRA STORE"
+            }
+        }
+    }
+}

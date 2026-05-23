@@ -4,7 +4,21 @@ import asyncio
 import shutil
 import time
 import random
+import logging
 import httpx
+
+import sys
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%d/%m %H:%M:%S",
+    stream=sys.stdout,
+)
+# Bungkam log bawaan library yang terlalu ramai
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
+log = logging.getLogger(__name__)
 from qris_helper import generate_qr_with_amount
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -133,32 +147,78 @@ def _generate_kode_unik(expected_nominal: int) -> int:
     return random.randint(1, 99)
 
 
+def _parse_nominal(val) -> int:
+    """Parse nominal dari string format Indonesia: '5.040' → 5040, '1.000.000' → 1000000."""
+    try:
+        s = str(val).strip()
+        # Deteksi format: jika ada titik AND koma → titik=ribuan, koma=desimal (1.000,50)
+        if "." in s and "," in s:
+            s = s.replace(".", "").replace(",", ".")
+        # Hanya titik: bisa ribuan (5.040) atau desimal (5.5)
+        # Anggap titik = ribuan jika bagian setelah titik terakhir >= 3 digit
+        elif "." in s and not "," in s:
+            parts = s.split(".")
+            if len(parts[-1]) >= 3:
+                s = s.replace(".", "")  # ribuan: 5.040 → 5040
+            # else: desimal biasa, biarkan float handle
+        else:
+            s = s.replace(",", "")
+        return int(float(s))
+    except (ValueError, TypeError):
+        return 0
+
+
 def _extract_amounts_from_mutasi(data) -> set:
-    """Ekstrak semua nominal kredit dari berbagai format respons API mutasi."""
+    """Ekstrak semua nominal kredit masuk (IN) dari respons API mutasi.
+    Mendukung format orderkuota: data.data.qris_history.results[].kredit
+    dan berbagai format API lainnya sebagai fallback."""
     amounts = set()
-    items = []
-    if isinstance(data, list):
-        items = data
-    elif isinstance(data, dict):
-        for key in ("data", "mutasi", "records", "transactions", "result"):
-            if isinstance(data.get(key), list):
-                items = data[key]
-                break
-        if not items:
-            items = [data]
+
+    # ── Cari list transaksi secara rekursif ──────────────────────────────────
+    def _find_results(obj, depth=0) -> list:
+        if depth > 5:
+            return []
+        if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+            return obj
+        if isinstance(obj, dict):
+            # Prioritas nama key yang umum
+            for key in ("results", "qris_history", "data", "mutasi",
+                        "records", "transactions", "result", "items", "history"):
+                v = obj.get(key)
+                if isinstance(v, list) and v and isinstance(v[0], dict):
+                    return v
+                if isinstance(v, dict):
+                    found = _find_results(v, depth + 1)
+                    if found:
+                        return found
+        return []
+
+    items = _find_results(data)
+    if not items:
+        log.warning("⚠️ Tidak bisa menemukan list transaksi dalam respons mutasi")
+        return amounts
+
+    # ── Nama field nominal yang mungkin dipakai berbagai API ─────────────────
+    KREDIT_FIELDS = ("kredit", "credit", "amount", "nominal",
+                     "jumlah", "nilai", "total", "kredit_rupiah", "in")
+    IN_STATUS     = {"in", "kredit", "cr", "credit", "masuk", "success"}
+
     for item in items:
         if not isinstance(item, dict):
             continue
-        for field in ("amount", "nominal", "jumlah", "credit", "nilai", "total", "debit"):
+        # Filter: hanya transaksi masuk
+        status = str(item.get("status", "")).strip().lower()
+        if status and status not in IN_STATUS:
+            continue
+        # Cari nominal dari field yang tersedia
+        for field in KREDIT_FIELDS:
             val = item.get(field)
-            if val is not None:
-                try:
-                    v = int(float(str(val).replace(",", "").replace(".", "")))
-                    if v > 0:
-                        amounts.add(v)
-                        break
-                except (ValueError, TypeError):
-                    pass
+            if val is not None and str(val).strip() not in ("", "0"):
+                v = _parse_nominal(val)
+                if v > 0:
+                    amounts.add(v)
+                    break
+
     return amounts
 
 
@@ -233,15 +293,18 @@ async def proses_mutasi(app: Application):
     if not URL_MUTASI:
         return
 
+    log.info("🔍 Cek mutasi ke URL_MUTASI...")
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(URL_MUTASI)
             resp.raise_for_status()
             raw = resp.json()
-    except Exception:
+    except Exception as e:
+        log.warning(f"❌ Gagal ambil mutasi: [{type(e).__name__}] {e}")
         return
 
     mutation_amounts = _extract_amounts_from_mutasi(raw)
+    log.info(f"📊 Mutasi ditemukan: {len(mutation_amounts)} nominal — {sorted(mutation_amounts)}")
     if not mutation_amounts:
         return
 
@@ -259,7 +322,7 @@ async def proses_mutasi(app: Application):
         try:
             waktu = datetime.strptime(p["waktu"], "%d/%m/%Y %H:%M:%S")
             if (now - waktu).total_seconds() > QRIS_EXPIRY_MINUTES * 60:
-                # Expired — beritahu user dan buang
+                log.info(f"⏰ Pending QRIS user {p['user_id']} kedaluwarsa, dihapus.")
                 try:
                     await app.bot.send_message(
                         chat_id=p["user_id"],
@@ -274,8 +337,10 @@ async def proses_mutasi(app: Application):
 
         expected = p.get("expected_amount", 0)
         if expected in mutation_amounts:
+            log.info(f"✅ COCOK! user={p['user_id']} expected=Rp{expected:,} metode={metode}")
             to_confirm.append(p)
         else:
+            log.info(f"⏳ Belum cocok: user={p['user_id']} expected=Rp{expected:,}")
             to_keep.append(p)
 
     if not to_confirm:
@@ -294,6 +359,7 @@ async def proses_mutasi(app: Application):
             saldo[uid] = saldo.get(uid, 0) + nominal
             save_json(saldo_file, saldo, backup=True)
             add_riwayat(uid, "DEPOSIT", "QRIS Otomatis", nominal)
+            log.info(f"💰 DEPOSIT QRIS dikonfirmasi: user={uid} nominal=Rp{nominal:,} saldo_baru=Rp{saldo[uid]:,}")
             try:
                 await app.bot.send_message(
                     chat_id=p["user_id"],
@@ -335,6 +401,7 @@ async def proses_mutasi(app: Application):
                 akun_terpakai = [item["akun_list"].pop(0) for _ in range(jumlah)]
                 save_produk(produk)
                 add_riwayat(uid, "BELI", f"{item['nama']} x{jumlah} (QRIS)", nominal)
+                log.info(f"🛒 BELI QRIS dikonfirmasi: user={uid} produk={item['nama']} x{jumlah} Rp{nominal:,}")
 
                 os.makedirs("akun_dikirim", exist_ok=True)
                 stamp     = int(time.time())
@@ -394,9 +461,10 @@ async def mutasi_loop(app: Application):
                 if "waktu" in p and p.get("metode", "").startswith("qris")
             )
             if has_active:
+                log.info("🔄 Auto-poll: ada pending QRIS aktif, cek mutasi...")
                 await proses_mutasi(app)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning(f"⚠️ Error di mutasi_loop: {e}")
         # Tunggu 30 detik ATAU sampai user klik "Cek Sekarang"
         _manual_check_event.clear()
         try:
@@ -934,6 +1002,7 @@ async def _show_qris_deposit(user, nominal: int, context, delete_msg=None):
 
     kode     = _generate_kode_unik(nominal)
     expected = nominal + kode
+    log.info(f"📲 QRIS Deposit: user={user.id} (@{user.username}) nominal=Rp{nominal:,} expected=Rp{expected:,}")
 
     pending = load_json(deposit_file)
     pending = [p for p in pending if not (p["user_id"] == user.id and p.get("metode", "").startswith("qris"))]
@@ -991,6 +1060,7 @@ async def handle_beli_qris(update: Update, context: CallbackContext):
     nominal  = jumlah * item["harga"]
     kode     = _generate_kode_unik(nominal)
     expected = nominal + kode
+    log.info(f"🛒 QRIS Beli: user={query.from_user.id} produk={item['nama']} x{jumlah} nominal=Rp{nominal:,} expected=Rp{expected:,}")
 
     pending = load_json(deposit_file)
     pending = [p for p in pending if not (p["user_id"] == query.from_user.id and p.get("metode", "").startswith("qris"))]
@@ -1050,9 +1120,11 @@ async def handle_cek_mutasi(update: Update, context: CallbackContext):
 
     cek_count = user_pending.get("cek_count", 3)
     if cek_count <= 0:
+        log.info(f"🚫 Cek manual ditolak (habis): user={uid}")
         await query.answer("❌ Batas cek manual (3x) habis. Tunggu cek otomatis setiap 30 detik.", show_alert=True)
         return
 
+    log.info(f"🔍 Cek manual oleh user={uid} (sisa {cek_count-1}x setelah ini)")
     await query.answer("🔍 Mengecek pembayaran...")
 
     # Kurangi counter & simpan
@@ -1497,6 +1569,7 @@ async def button_callback(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
     data  = query.data
+    log.info(f"🖱️ Tombol: [{data}] oleh user={query.from_user.id} (@{query.from_user.username})")
 
     produk = load_produk()
     if data in produk:
