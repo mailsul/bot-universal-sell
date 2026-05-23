@@ -1,5 +1,28 @@
 {% extends "base.html" %}
 {% block title %}Admin Panel — {{ cfg.nama_toko }}{% endblock %}
+{% block head %}
+<style>
+  .nav-tabs .nav-link {
+    border-radius: 10px 10px 0 0;
+    font-weight: 600;
+    font-size: .88rem;
+    color: #6b7280;
+    border: none;
+    padding: 10px 18px;
+  }
+  .nav-tabs .nav-link.active {
+    color: var(--brand-dark);
+    background: #fff;
+    border-bottom: 3px solid var(--brand);
+  }
+  .nav-tabs { border-bottom: 2px solid #e5e7eb; }
+  .tab-content { background: transparent; }
+  .stat-card { border-radius: 14px; padding: 20px; background: #fff; border: 1.5px solid #f3f4f6; }
+  .table-action-btns { white-space: nowrap; }
+  .form-section { background: var(--brand-light); border-radius: 14px; padding: 20px; }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
   <div>
@@ -11,143 +34,430 @@
   </a>
 </div>
 
-<!-- Stats -->
-<div class="row g-3 mb-4">
-  {% for icon, val, label, color in [
-    ('bi-people-fill', users_web|length, 'Member', '#7c3aed'),
-    ('bi-piggy-bank-fill', 'Rp' + "{:,}".format(total_saldo), 'Total Saldo', '#22c55e'),
-    ('bi-hourglass-split', pending|length, 'Pending Deposit', '#f59e0b'),
-    ('bi-box-seam-fill', produk|length, 'Produk', '#3b82f6')
-  ] %}
-  <div class="col-6 col-md-3">
-    <div class="card text-center">
-      <div class="card-body py-3">
-        <i class="bi {{ icon }} fs-4 mb-2" style="color:{{ color }}"></i>
-        <div class="fw-bold" style="font-size:1.2rem;color:{{ color }}">{{ val }}</div>
-        <div class="text-muted small">{{ label }}</div>
+<!-- TABS -->
+<ul class="nav nav-tabs mb-4" id="adminTabs">
+  <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-dash"><i class="bi bi-speedometer2 me-1"></i>Dashboard</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-produk"><i class="bi bi-box-seam me-1"></i>Produk</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-saldo"><i class="bi bi-wallet2 me-1"></i>Saldo</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-config"><i class="bi bi-gear me-1"></i>Pengaturan</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-broadcast"><i class="bi bi-megaphone me-1"></i>Broadcast</button></li>
+</ul>
+
+<div class="tab-content" id="adminTabContent">
+
+  <!-- ── DASHBOARD ── -->
+  <div class="tab-pane fade show active" id="tab-dash">
+    <!-- Stats -->
+    <div class="row g-3 mb-4">
+      {% for icon, val, label, color in [
+        ('bi-people-fill',   users_web|length,                   'Member Web',     '#7c3aed'),
+        ('bi-piggy-bank-fill','Rp'+"{:,}".format(total_saldo),  'Total Saldo',    '#22c55e'),
+        ('bi-hourglass-split',pending|length,                    'Pending Deposit','#f59e0b'),
+        ('bi-box-seam-fill', produk|length,                      'Produk',         '#3b82f6')
+      ] %}
+      <div class="col-6 col-md-3">
+        <div class="stat-card text-center">
+          <i class="bi {{ icon }} fs-4 mb-2" style="color:{{ color }}"></i>
+          <div class="fw-bold" style="font-size:1.15rem;color:{{ color }}">{{ val }}</div>
+          <div class="text-muted small">{{ label }}</div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- Pending Deposits -->
+    <div class="card mb-4">
+      <div class="card-header d-flex align-items-center gap-2">
+        <h6 class="mb-0"><i class="bi bi-hourglass-split me-1"></i>Pending Deposit</h6>
+        {% if pending %}<span class="badge bg-warning text-dark">{{ pending|length }}</span>{% endif %}
+      </div>
+      <div class="card-body p-0">
+        {% if pending %}
+        <div class="table-responsive">
+          <table class="table mb-0">
+            <thead><tr><th>User ID</th><th>Metode</th><th>Nominal</th><th>Waktu</th><th>Bukti</th><th>Aksi</th></tr></thead>
+            <tbody>
+              {% for p in pending %}
+              <tr>
+                <td><code>{{ p.user_id }}</code>{% if p.get('username') %} <small class="text-muted">@{{ p.username }}</small>{% endif %}</td>
+                <td><span class="badge bg-info text-dark">{{ p.metode }}</span></td>
+                <td class="fw-bold">Rp{{ "{:,}".format(p.nominal) }}</td>
+                <td class="small text-muted">{{ p.waktu }}</td>
+                <td>
+                  {% if p.get('bukti_path') %}
+                  <a href="/{{ p.bukti_path }}" target="_blank" class="btn btn-outline-secondary btn-sm py-0 px-2"><i class="bi bi-image"></i></a>
+                  {% else %}—{% endif %}
+                </td>
+                <td class="table-action-btns">
+                  <form method="post" action="/admin/confirm/{{ p.user_id }}" class="d-inline">
+                    <button class="btn btn-success btn-sm" onclick="return confirm('Konfirmasi Rp{{ '{:,}'.format(p.nominal) }}?')"><i class="bi bi-check"></i> OK</button>
+                  </form>
+                  <form method="post" action="/admin/reject/{{ p.user_id }}" class="d-inline ms-1">
+                    <button class="btn btn-danger btn-sm" onclick="return confirm('Tolak?')"><i class="bi bi-x"></i></button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="text-center py-4 text-muted">
+          <i class="bi bi-check-all fs-3 opacity-25"></i>
+          <p class="small mt-2 mb-0">Tidak ada pending deposit</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Saldo & Members -->
+    <div class="row g-4">
+      <div class="col-md-6">
+        <div class="card">
+          <div class="card-header"><h6 class="mb-0"><i class="bi bi-people me-1"></i>Saldo User (Bot)</h6></div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table table-sm mb-0">
+                <thead><tr><th>User ID</th><th class="text-end">Saldo</th><th class="text-end">Beli</th></tr></thead>
+                <tbody>
+                  {% for uid, amt in saldo_all.items() %}
+                  <tr>
+                    <td><code>{{ uid }}</code></td>
+                    <td class="text-end fw-bold small">Rp{{ "{:,}".format(amt) }}</td>
+                    <td class="text-end small text-muted">{% if uid in stats %}{{ stats[uid].jumlah }}x{% else %}—{% endif %}</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div class="card">
+          <div class="card-header"><h6 class="mb-0"><i class="bi bi-person-badge me-1"></i>Member Website</h6></div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table table-sm mb-0">
+                <thead><tr><th>Telegram ID</th><th>Role</th><th>Terdaftar</th></tr></thead>
+                <tbody>
+                  {% for u in users_web %}
+                  <tr>
+                    <td><code>{{ u.telegram_id }}</code></td>
+                    <td><span class="badge {% if u.role=='admin' %}bg-danger{% else %}bg-secondary{% endif %}">{{ u.role }}</span></td>
+                    <td class="small text-muted">{{ u.created_at }}</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
-  {% endfor %}
+
+  <!-- ── PRODUK ── -->
+  <div class="tab-pane fade" id="tab-produk">
+    <!-- Tambah Produk -->
+    <div class="card mb-4">
+      <div class="card-header"><h6 class="mb-0"><i class="bi bi-plus-circle me-1"></i>Tambah Produk Baru</h6></div>
+      <div class="card-body p-4">
+        <form method="post" action="/admin/produk/tambah">
+          <div class="row g-3">
+            <div class="col-md-4">
+              <label class="form-label">Nama Produk</label>
+              <input type="text" name="nama" class="form-control" placeholder="Spotify Premium 1 Bulan" required>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Harga (Rp)</label>
+              <input type="number" name="harga" class="form-control" placeholder="25000" min="0" required>
+            </div>
+            <div class="col-md-5">
+              <label class="form-label">Deskripsi <span class="text-muted fw-normal">(opsional)</span></label>
+              <input type="text" name="deskripsi" class="form-control" placeholder="Akun premium 1 bulan">
+            </div>
+            <div class="col-12">
+              <label class="form-label">
+                Daftar Akun <span class="text-muted fw-normal">(opsional saat tambah, bisa restock nanti)</span>
+              </label>
+              <textarea name="akun_list" class="form-control" rows="4"
+                placeholder="Format: username|password|tipe (per baris)&#10;contoh@gmail.com|password123|Individual&#10;Atau hanya username satu baris jika tidak ada password"></textarea>
+              <div class="form-text">Satu akun per baris. Pisah dengan | untuk username|password|tipe</div>
+            </div>
+            <div class="col-12">
+              <button type="submit" class="btn btn-brand px-4 fw-semibold">
+                <i class="bi bi-plus-circle me-1"></i>Tambah Produk
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Daftar Produk -->
+    <div class="card">
+      <div class="card-header"><h6 class="mb-0"><i class="bi bi-list-ul me-1"></i>Daftar Produk ({{ produk|length }})</h6></div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table mb-0">
+            <thead><tr><th>ID</th><th>Nama</th><th class="text-center">Stok</th><th>Harga</th><th>Aksi</th></tr></thead>
+            <tbody>
+              {% for p in produk %}
+              <tr>
+                <td><code>{{ p.id }}</code></td>
+                <td class="fw-semibold small">{{ p.nama }}</td>
+                <td class="text-center">
+                  <span class="badge {% if p.stok > 0 %}bg-success{% else %}bg-danger{% endif %}">{{ p.stok }}</span>
+                </td>
+                <td class="small">Rp{{ "{:,}".format(p.harga) }}</td>
+                <td class="table-action-btns">
+                  <!-- Restock Modal Trigger -->
+                  <button class="btn btn-sm btn-outline-success" data-bs-toggle="modal"
+                    data-bs-target="#restockModal" data-pid="{{ p.id }}" data-nama="{{ p.nama }}">
+                    <i class="bi bi-plus"></i> Restock
+                  </button>
+                  <!-- Edit Harga Modal Trigger -->
+                  <button class="btn btn-sm btn-outline-primary ms-1" data-bs-toggle="modal"
+                    data-bs-target="#hargaModal" data-pid="{{ p.id }}" data-nama="{{ p.nama }}" data-harga="{{ p.harga }}">
+                    <i class="bi bi-pencil"></i> Harga
+                  </button>
+                  <!-- Hapus -->
+                  <form method="post" action="/admin/produk/{{ p.id }}/hapus" class="d-inline ms-1">
+                    <button class="btn btn-sm btn-outline-danger"
+                      onclick="return confirm('Hapus produk {{ p.nama }}? Semua stok akan hilang!')">
+                      <i class="bi bi-trash"></i>
+                    </button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SALDO ── -->
+  <div class="tab-pane fade" id="tab-saldo">
+    <div class="row g-4">
+      <div class="col-md-5">
+        <div class="card">
+          <div class="card-header"><h6 class="mb-0"><i class="bi bi-sliders me-1"></i>Atur Saldo User</h6></div>
+          <div class="card-body p-4">
+            <form method="post" action="/admin/saldo/atur">
+              <div class="mb-3">
+                <label class="form-label">Telegram ID User</label>
+                <input type="number" name="user_id" class="form-control" placeholder="1234567890" required>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Nominal (Rp)</label>
+                <input type="number" name="nominal" class="form-control" placeholder="50000" min="1" required>
+              </div>
+              <div class="mb-4">
+                <label class="form-label">Aksi</label>
+                <div class="d-flex gap-3">
+                  <div class="form-check">
+                    <input class="form-check-input" type="radio" name="aksi" value="tambah" id="aksi-tambah" checked>
+                    <label class="form-check-label fw-semibold text-success" for="aksi-tambah">
+                      <i class="bi bi-plus-circle me-1"></i>Tambah
+                    </label>
+                  </div>
+                  <div class="form-check">
+                    <input class="form-check-input" type="radio" name="aksi" value="kurangi" id="aksi-kurangi">
+                    <label class="form-check-label fw-semibold text-danger" for="aksi-kurangi">
+                      <i class="bi bi-dash-circle me-1"></i>Kurangi
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <button type="submit" class="btn btn-brand w-100 fw-semibold">
+                <i class="bi bi-check-circle me-1"></i>Simpan
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-md-7">
+        <div class="card">
+          <div class="card-header"><h6 class="mb-0"><i class="bi bi-table me-1"></i>Semua Saldo User</h6></div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table table-sm mb-0">
+                <thead><tr><th>Telegram ID</th><th class="text-end">Saldo</th><th class="text-end">Total Beli</th></tr></thead>
+                <tbody>
+                  {% for uid, amt in saldo_all.items() %}
+                  <tr>
+                    <td>
+                      <code style="cursor:pointer" onclick="document.querySelector('[name=user_id]').value='{{ uid }}';
+                        document.querySelector('#tab-saldo [type=submit]').scrollIntoView()">{{ uid }}</code>
+                    </td>
+                    <td class="text-end fw-bold small {% if amt > 0 %}text-success{% endif %}">
+                      Rp{{ "{:,}".format(amt) }}
+                    </td>
+                    <td class="text-end small text-muted">
+                      {% if uid in stats %}Rp{{ "{:,}".format(stats[uid].total_pengeluaran) }}{% else %}—{% endif %}
+                    </td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── PENGATURAN ── -->
+  <div class="tab-pane fade" id="tab-config">
+    <div class="row justify-content-center">
+      <div class="col-md-7">
+        <div class="card">
+          <div class="card-header"><h6 class="mb-0"><i class="bi bi-gear me-1"></i>Pengaturan Toko</h6></div>
+          <div class="card-body p-4">
+            <form method="post" action="/admin/config">
+              <div class="mb-3">
+                <label class="form-label">Nama Toko</label>
+                <input type="text" name="nama_toko" class="form-control"
+                  value="{{ cfg.nama_toko }}" placeholder="Ibra Store">
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Rekening Tujuan Transfer</label>
+                <textarea name="rekening" class="form-control" rows="4"
+                  placeholder="Satu rekening per baris&#10;DANA : 0812-XXXX a.n Admin&#10;BNI : 1234567890 a.n Admin">{{ cfg.rekening | join('\n') if cfg.rekening else '' }}</textarea>
+                <div class="form-text">Satu rekening per baris</div>
+              </div>
+              <div class="mb-4">
+                <label class="form-label">Kontak Admin Telegram</label>
+                <div class="input-group">
+                  <span class="input-group-text"><i class="bi bi-at"></i></span>
+                  <input type="text" name="kontak_admin" class="form-control"
+                    value="{{ cfg.kontak_admin }}" placeholder="@username">
+                </div>
+              </div>
+              <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold">
+                <i class="bi bi-check-circle me-1"></i>Simpan Pengaturan
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── BROADCAST ── -->
+  <div class="tab-pane fade" id="tab-broadcast">
+    <div class="row justify-content-center">
+      <div class="col-md-7">
+        <div class="card">
+          <div class="card-header"><h6 class="mb-0"><i class="bi bi-megaphone me-1"></i>Broadcast ke Semua User</h6></div>
+          <div class="card-body p-4">
+            <div class="alert alert-info small mb-4 py-2">
+              <i class="bi bi-info-circle me-1"></i>
+              Pesan akan dikirim ke <strong>{{ saldo_all|length + users_web|length }} user</strong>
+              (bot + website, deduplikasi otomatis). Hanya user yang belum memblokir bot yang menerima.
+            </div>
+            <form method="post" action="/admin/broadcast">
+              <div class="mb-4">
+                <label class="form-label">Pesan Broadcast</label>
+                <textarea name="pesan" class="form-control" rows="6"
+                  placeholder="Tulis pesan broadcast kamu di sini...&#10;&#10;Mendukung format Markdown Telegram:&#10;*tebal* _miring_ `kode`"
+                  required></textarea>
+                <div class="form-text">Mendukung Markdown Telegram: *tebal*, _miring_, `kode`</div>
+              </div>
+              <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold"
+                onclick="return confirm('Kirim broadcast ke semua user?')">
+                <i class="bi bi-send me-1"></i>Kirim Broadcast
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- end tab-content -->
+
+<!-- MODAL: Restock -->
+<div class="modal fade" id="restockModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content" style="border-radius:16px;border:none">
+      <div class="modal-header" style="background:linear-gradient(135deg,#5b21b6,#7c3aed);color:#fff;border-radius:16px 16px 0 0">
+        <h5 class="modal-title fw-bold" id="restockTitle">Restock Produk</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="post" id="restockForm">
+        <div class="modal-body p-4">
+          <div class="mb-3">
+            <label class="form-label">Daftar Akun Baru</label>
+            <textarea name="akun_list" class="form-control" rows="8"
+              placeholder="Format: username|password|tipe (per baris)&#10;contoh@gmail.com|password123|Individual"
+              required></textarea>
+            <div class="form-text">Satu akun per baris. Format: username|password|tipe</div>
+          </div>
+        </div>
+        <div class="modal-footer border-0">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Batal</button>
+          <button type="submit" class="btn btn-brand px-4 fw-semibold">
+            <i class="bi bi-plus-circle me-1"></i>Tambah Stok
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
 </div>
 
-<!-- Pending Deposits -->
-<div class="card mb-4">
-  <div class="card-header d-flex align-items-center gap-2">
-    <h6 class="mb-0"><i class="bi bi-hourglass-split me-1"></i>Pending Deposit</h6>
-    {% if pending %}<span class="badge bg-warning text-dark">{{ pending|length }}</span>{% endif %}
-  </div>
-  <div class="card-body p-0">
-    {% if pending %}
-    <div class="table-responsive">
-      <table class="table mb-0">
-        <thead><tr><th>User ID</th><th>Metode</th><th>Nominal</th><th>Waktu</th><th>Bukti</th><th>Aksi</th></tr></thead>
-        <tbody>
-          {% for p in pending %}
-          <tr>
-            <td><code>{{ p.user_id }}</code>{% if p.username %} <span class="text-muted small">@{{ p.username }}</span>{% endif %}</td>
-            <td><span class="badge bg-info text-dark">{{ p.metode }}</span></td>
-            <td class="fw-bold">Rp{{ "{:,}".format(p.nominal) }}</td>
-            <td class="small text-muted">{{ p.waktu }}</td>
-            <td>
-              {% if p.bukti_path %}
-              <a href="/{{ p.bukti_path }}" target="_blank" class="btn btn-outline-secondary btn-sm">
-                <i class="bi bi-image"></i>
-              </a>
-              {% else %}—{% endif %}
-            </td>
-            <td>
-              <form method="post" action="/admin/confirm/{{ p.user_id }}" class="d-inline">
-                <button class="btn btn-success btn-sm" onclick="return confirm('Konfirmasi Rp{{ '{:,}'.format(p.nominal) }}?')">
-                  <i class="bi bi-check"></i>
-                </button>
-              </form>
-              <form method="post" action="/admin/reject/{{ p.user_id }}" class="d-inline ms-1">
-                <button class="btn btn-danger btn-sm" onclick="return confirm('Tolak deposit?')">
-                  <i class="bi bi-x"></i>
-                </button>
-              </form>
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% else %}
-    <div class="text-center py-4 text-muted">
-      <i class="bi bi-check-all fs-3 opacity-25"></i>
-      <p class="small mt-2 mb-0">Tidak ada pending deposit</p>
-    </div>
-    {% endif %}
-  </div>
-</div>
-
-<div class="row g-4">
-  <!-- Produk & Stok -->
-  <div class="col-md-5">
-    <div class="card">
-      <div class="card-header"><h6><i class="bi bi-box-seam me-1"></i>Stok Produk</h6></div>
-      <div class="card-body p-0">
-        <table class="table table-sm mb-0">
-          <thead><tr><th>Produk</th><th class="text-center">Stok</th><th class="text-end">Harga</th></tr></thead>
-          <tbody>
-            {% for p in produk %}
-            <tr>
-              <td class="small fw-semibold">{{ p.nama }}</td>
-              <td class="text-center">
-                <span class="badge {% if p.stok > 0 %}bg-success{% else %}bg-danger{% endif %}">{{ p.stok }}</span>
-              </td>
-              <td class="text-end small text-muted">Rp{{ "{:,}".format(p.harga) }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+<!-- MODAL: Edit Harga -->
+<div class="modal fade" id="hargaModal" tabindex="-1">
+  <div class="modal-dialog modal-sm">
+    <div class="modal-content" style="border-radius:16px;border:none">
+      <div class="modal-header" style="background:linear-gradient(135deg,#5b21b6,#7c3aed);color:#fff;border-radius:16px 16px 0 0">
+        <h5 class="modal-title fw-bold" id="hargaTitle">Edit Harga</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
       </div>
-    </div>
-  </div>
-
-  <!-- Saldo Users -->
-  <div class="col-md-7">
-    <div class="card">
-      <div class="card-header"><h6><i class="bi bi-people me-1"></i>Saldo User (Bot)</h6></div>
-      <div class="card-body p-0">
-        <table class="table table-sm mb-0">
-          <thead><tr><th>User ID</th><th class="text-end">Saldo</th><th class="text-end">Beli</th></tr></thead>
-          <tbody>
-            {% for uid, amt in saldo_all.items() %}
-            <tr>
-              <td><code>{{ uid }}</code></td>
-              <td class="text-end fw-bold small">Rp{{ "{:,}".format(amt) }}</td>
-              <td class="text-end small text-muted">
-                {% if uid in stats %}{{ stats[uid].jumlah }}x{% else %}—{% endif %}
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
-  <!-- Web Members -->
-  <div class="col-12">
-    <div class="card">
-      <div class="card-header"><h6><i class="bi bi-person-badge me-1"></i>Member Website</h6></div>
-      <div class="card-body p-0">
-        <table class="table table-sm mb-0">
-          <thead><tr><th>Telegram ID</th><th>Role</th><th>Terdaftar</th></tr></thead>
-          <tbody>
-            {% for u in users_web %}
-            <tr>
-              <td><code>{{ u.telegram_id }}</code></td>
-              <td><span class="badge {% if u.role=='admin' %}bg-danger{% else %}bg-secondary{% endif %}">{{ u.role }}</span></td>
-              <td class="small text-muted">{{ u.created_at }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
+      <form method="post" id="hargaForm">
+        <div class="modal-body p-4">
+          <label class="form-label">Harga Baru (Rp)</label>
+          <input type="number" name="harga" id="hargaInput" class="form-control form-control-lg" min="0" required>
+        </div>
+        <div class="modal-footer border-0">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Batal</button>
+          <button type="submit" class="btn btn-brand px-4 fw-semibold">Simpan</button>
+        </div>
+      </form>
     </div>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Setup modals
+document.getElementById('restockModal').addEventListener('show.bs.modal', function(e) {
+  const btn = e.relatedTarget;
+  document.getElementById('restockTitle').textContent = 'Restock: ' + btn.dataset.nama;
+  document.getElementById('restockForm').action = '/admin/produk/' + btn.dataset.pid + '/restock';
+});
+document.getElementById('hargaModal').addEventListener('show.bs.modal', function(e) {
+  const btn = e.relatedTarget;
+  document.getElementById('hargaTitle').textContent = 'Edit Harga: ' + btn.dataset.nama;
+  document.getElementById('hargaForm').action = '/admin/produk/' + btn.dataset.pid + '/harga';
+  document.getElementById('hargaInput').value = btn.dataset.harga;
+});
+
+// Aktifkan tab dari URL hash
+const hashMap = {
+  '#tab-produk':    'tab-produk',
+  '#tab-saldo':     'tab-saldo',
+  '#tab-config':    'tab-config',
+  '#tab-broadcast': 'tab-broadcast',
+};
+if (hashMap[location.hash]) {
+  const tabEl = document.querySelector(`[data-bs-target="#${hashMap[location.hash]}"]`);
+  if (tabEl) new bootstrap.Tab(tabEl).show();
+}
+</script>
 {% endblock %}

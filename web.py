@@ -100,6 +100,12 @@ def load_config() -> dict:
     except Exception:
         return {"nama_toko": "Ibra Store", "rekening": [], "kontak_admin": ""}
 
+def save_config(data: dict):
+    tmp = "config.json.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    shutil.move(tmp, "config.json")
+
 def send_telegram(chat_id: int, text: str) -> bool:
     if not BOT_TOKEN:
         return False
@@ -583,7 +589,7 @@ def riwayat():
 @app.route("/deposit")
 @login_required
 def deposit():
-    return render_template("deposit.html")
+    return render_template("deposit.html", qris_ok=bool(QRIS_BASE64))
 
 
 @app.route("/deposit/upload", methods=["POST"])
@@ -689,6 +695,278 @@ def admin_password():
 @admin_required
 def serve_bukti(filename):
     return send_from_directory("bukti", filename)
+
+
+# ─── DEPOSIT QRIS (otomatis) ──────────────────────────────────────────────────
+
+@app.route("/deposit/qris", methods=["POST"])
+@login_required
+def deposit_qris_init():
+    tid = session["user_tid"]
+    if not QRIS_BASE64:
+        flash("QRIS belum dikonfigurasi.", "danger")
+        return redirect(url_for("deposit"))
+    raw = request.form.get("nominal","0").replace(".","").strip()
+    try:
+        nominal = int(raw)
+        if nominal < 10_000:
+            flash("Nominal minimal Rp10.000.", "danger")
+            return redirect(url_for("deposit"))
+    except ValueError:
+        flash("Nominal tidak valid.", "danger")
+        return redirect(url_for("deposit"))
+
+    kode_unik = random.randint(1, 999)
+    total     = nominal + kode_unik
+
+    db_remove_pending_any_by_user(tid)
+    db_add_pending({
+        "user_id":         tid,
+        "metode":          "qris_deposit_web",
+        "nominal":         nominal,
+        "expected_amount": total,
+        "kode_unik":       kode_unik,
+        "total_transfer":  total,
+        "waktu":           datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+    })
+    session["dq_uid"]     = tid
+    session["dq_total"]   = total
+    session["dq_nominal"] = nominal
+    session["dq_kode"]    = kode_unik
+    session["dq_start"]   = int(time.time())
+    return redirect(url_for("deposit_qris_waiting"))
+
+
+@app.route("/deposit/qris/waiting")
+@login_required
+def deposit_qris_waiting():
+    if "dq_uid" not in session:
+        return redirect(url_for("deposit"))
+    total     = session.get("dq_total", 0)
+    nominal   = session.get("dq_nominal", 0)
+    kode_unik = session.get("dq_kode", 0)
+    start     = session.get("dq_start", int(time.time()))
+    remaining_sec = max(0, QRIS_EXPIRY_SEC - (int(time.time()) - start))
+    return render_template("deposit_qris.html",
+        total=total, nominal=nominal, kode_unik=kode_unik, remaining_sec=remaining_sec)
+
+
+@app.route("/deposit/qris/qr.png")
+@login_required
+def deposit_qris_qr():
+    total = session.get("dq_total", 0)
+    if not total or not QRIS_BASE64:
+        return "Not found", 404
+    try:
+        img, _ = generate_qr_with_amount(QRIS_BASE64, int(total))
+        if not img:
+            return "QR error", 500
+        img.seek(0)
+        return send_file(img, mimetype="image/png")
+    except Exception as e:
+        return f"Error: {e}", 500
+
+
+@app.route("/api/deposit/check")
+@login_required
+def api_deposit_check():
+    uid     = session.get("dq_uid")
+    total   = session.get("dq_total", 0)
+    nominal = session.get("dq_nominal", 0)
+    start   = session.get("dq_start", 0)
+    if not uid or not total:
+        return jsonify({"status": "error"})
+
+    if int(time.time()) - start > QRIS_EXPIRY_SEC:
+        db_remove_pending_any_by_user(uid)
+        for k in ["dq_uid","dq_total","dq_nominal","dq_kode","dq_start"]:
+            session.pop(k, None)
+        return jsonify({"status": "expired"})
+
+    pending = db_get_pending_any_by_user(uid)
+    if not pending:
+        return jsonify({"status": "error"})
+    if not check_mutation(int(total)):
+        return jsonify({"status": "pending"})
+
+    db_remove_pending_by_id(pending["id"])
+    db_add_saldo(uid, nominal)
+    trx_id = db_add_riwayat(uid, "DEPOSIT", f"QRIS Otomatis (Web) +kode unik Rp{total-nominal}", nominal)
+    for k in ["dq_uid","dq_total","dq_nominal","dq_kode","dq_start"]:
+        session.pop(k, None)
+    send_telegram(uid, f"✅ Deposit QRIS *Rp{nominal:,}* berhasil!\n🔖 TRX: `{trx_id}`")
+    flash(f"✅ Deposit Rp{nominal:,} berhasil dikonfirmasi otomatis! TRX: {trx_id}", "success")
+    return jsonify({"status": "success", "redirect": url_for("dashboard")})
+
+
+# ─── ADMIN MANAGEMENT ─────────────────────────────────────────────────────────
+
+@app.route("/admin/produk/tambah", methods=["POST"])
+@admin_required
+def admin_produk_tambah():
+    nama      = request.form.get("nama","").strip()
+    harga_raw = request.form.get("harga","0").replace(".","").strip()
+    deskripsi = request.form.get("deskripsi","").strip()
+    akun_raw  = request.form.get("akun_list","").strip()
+    if not nama:
+        flash("Nama produk wajib diisi.", "danger")
+        return redirect(url_for("admin") + "#tab-produk")
+    try:
+        harga = int(harga_raw)
+    except ValueError:
+        flash("Harga tidak valid.", "danger")
+        return redirect(url_for("admin") + "#tab-produk")
+
+    akun_list = _parse_akun_lines(akun_raw)
+    with _purchase_lock:
+        raw = load_produk_raw()
+        nums = [int(k) for k in raw.keys() if k.isdigit()]
+        pid  = str(max(nums, default=0) + 1)
+        raw[pid] = {"nama": nama, "harga": harga, "deskripsi": deskripsi,
+                    "stok": len(akun_list), "akun_list": akun_list}
+        save_produk_raw(raw)
+    flash(f"✅ Produk '{nama}' ditambah ({len(akun_list)} akun).", "success")
+    return redirect(url_for("admin") + "#tab-produk")
+
+
+@app.route("/admin/produk/<pid>/restock", methods=["POST"])
+@admin_required
+def admin_produk_restock(pid):
+    akun_raw = request.form.get("akun_list","").strip()
+    if not akun_raw:
+        flash("Masukkan akun untuk restock.", "danger")
+        return redirect(url_for("admin") + "#tab-produk")
+    akun_baru = _parse_akun_lines(akun_raw)
+    with _purchase_lock:
+        raw  = load_produk_raw()
+        item = raw.get(pid)
+        if not item:
+            flash("Produk tidak ditemukan.", "danger")
+            return redirect(url_for("admin") + "#tab-produk")
+        item["akun_list"] = item.get("akun_list",[]) + akun_baru
+        item["stok"]      = len(item["akun_list"])
+        raw[pid] = item
+        save_produk_raw(raw)
+    flash(f"✅ Restock {len(akun_baru)} akun untuk '{item['nama']}'.", "success")
+    return redirect(url_for("admin") + "#tab-produk")
+
+
+@app.route("/admin/produk/<pid>/harga", methods=["POST"])
+@admin_required
+def admin_produk_harga(pid):
+    try:
+        harga = int(request.form.get("harga","0").replace(".","").strip())
+    except ValueError:
+        flash("Harga tidak valid.", "danger")
+        return redirect(url_for("admin") + "#tab-produk")
+    with _purchase_lock:
+        raw = load_produk_raw()
+        if pid not in raw:
+            flash("Produk tidak ditemukan.", "danger")
+            return redirect(url_for("admin") + "#tab-produk")
+        raw[pid]["harga"] = harga
+        save_produk_raw(raw)
+    flash(f"✅ Harga diperbarui ke Rp{harga:,}.", "success")
+    return redirect(url_for("admin") + "#tab-produk")
+
+
+@app.route("/admin/produk/<pid>/hapus", methods=["POST"])
+@admin_required
+def admin_produk_hapus(pid):
+    with _purchase_lock:
+        raw = load_produk_raw()
+        if pid not in raw:
+            flash("Produk tidak ditemukan.", "danger")
+            return redirect(url_for("admin") + "#tab-produk")
+        nama = raw.pop(pid, {}).get("nama","")
+        save_produk_raw(raw)
+    flash(f"✅ Produk '{nama}' berhasil dihapus.", "success")
+    return redirect(url_for("admin") + "#tab-produk")
+
+
+@app.route("/admin/config", methods=["POST"])
+@admin_required
+def admin_config_save():
+    cfg           = load_config()
+    nama_toko     = request.form.get("nama_toko","").strip()
+    rekening_raw  = request.form.get("rekening","").strip()
+    kontak        = request.form.get("kontak_admin","").strip()
+    if nama_toko:
+        cfg["nama_toko"] = nama_toko
+    if rekening_raw:
+        cfg["rekening"] = [r.strip() for r in rekening_raw.splitlines() if r.strip()]
+    cfg["kontak_admin"] = kontak
+    save_config(cfg)
+    flash("✅ Pengaturan berhasil disimpan.", "success")
+    return redirect(url_for("admin") + "#tab-config")
+
+
+@app.route("/admin/saldo/atur", methods=["POST"])
+@admin_required
+def admin_saldo_atur():
+    try:
+        uid     = int(request.form.get("user_id","").strip())
+        nominal = int(request.form.get("nominal","0").replace(".","").strip())
+        if nominal <= 0:
+            raise ValueError()
+    except ValueError:
+        flash("User ID atau nominal tidak valid.", "danger")
+        return redirect(url_for("admin") + "#tab-saldo")
+    aksi = request.form.get("aksi","tambah")
+    if aksi == "kurangi":
+        saldo = db_get_saldo(uid)
+        if saldo < nominal:
+            flash(f"Saldo tidak cukup (saldo: Rp{saldo:,}).", "danger")
+            return redirect(url_for("admin") + "#tab-saldo")
+        db_add_saldo(uid, -nominal)
+        db_add_riwayat(uid, "KURANGI", "Dikurangi Admin (Web)", nominal)
+        send_telegram(uid, f"⚠️ Saldo kamu dikurangi *Rp{nominal:,}* oleh admin.")
+        flash(f"✅ Saldo {uid} dikurangi Rp{nominal:,}.", "success")
+    else:
+        db_add_saldo(uid, nominal)
+        trx_id = db_add_riwayat(uid, "DEPOSIT", "Tambah Saldo Manual (Admin)", nominal)
+        send_telegram(uid, f"✅ Saldo kamu ditambah *Rp{nominal:,}* oleh admin.\n🔖 TRX: `{trx_id}`")
+        flash(f"✅ Saldo {uid} ditambah Rp{nominal:,}.", "success")
+    return redirect(url_for("admin") + "#tab-saldo")
+
+
+@app.route("/admin/broadcast", methods=["POST"])
+@admin_required
+def admin_broadcast():
+    pesan = request.form.get("pesan","").strip()
+    if not pesan:
+        flash("Pesan tidak boleh kosong.", "danger")
+        return redirect(url_for("admin") + "#tab-broadcast")
+    saldo_all = db_get_all_saldo()
+    users_web = web_get_all_users()
+    uids = set(int(k) for k in saldo_all.keys())
+    for u in users_web:
+        uids.add(int(u["telegram_id"]))
+    nama_toko = load_config().get("nama_toko","")
+    ok_count = sum(
+        1 for uid in uids
+        if send_telegram(uid, f"📢 *Broadcast {nama_toko}*\n\n{pesan}")
+    )
+    flash(f"✅ Broadcast terkirim ke {ok_count}/{len(uids)} user.", "success")
+    return redirect(url_for("admin") + "#tab-broadcast")
+
+
+def _parse_akun_lines(raw: str) -> list:
+    result = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if "|" in line:
+            parts = line.split("|", 2)
+            result.append({
+                "username": parts[0].strip(),
+                "password": parts[1].strip() if len(parts) > 1 else "",
+                "tipe":     parts[2].strip() if len(parts) > 2 else "",
+            })
+        else:
+            result.append({"username": line, "password": "", "tipe": ""})
+    return result
 
 
 if __name__ == "__main__":

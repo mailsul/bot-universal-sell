@@ -24,7 +24,10 @@
       background: var(--surface);
       color: #1e1b4b;
       min-height: 100vh;
+      display: flex;
+      flex-direction: column;
     }
+    .main-wrap { flex: 1; }
 
     /* ── NAVBAR ── */
     .navbar {
@@ -142,7 +145,6 @@
       background: linear-gradient(135deg, var(--brand-dark), var(--brand));
       color: rgba(255,255,255,.75);
       padding: 20px 0;
-      margin-top: 60px;
       font-size: .85rem;
     }
     footer a { color: #fde68a; text-decoration: none; }
@@ -206,7 +208,7 @@
   </div>
 </nav>
 
-<div class="container py-4">
+<div class="main-wrap"><div class="container py-4">
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% for cat, msg in messages %}
     <div class="alert alert-{{ cat }} alert-dismissible fade show d-flex align-items-start gap-2" role="alert">
@@ -218,7 +220,7 @@
   {% endwith %}
 
   {% block content %}{% endblock %}
-</div>
+</div></div>
 
 <footer class="text-center">
   <div class="container">

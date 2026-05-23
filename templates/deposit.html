@@ -1,65 +1,159 @@
 {% extends "base.html" %}
 {% block title %}Deposit — {{ cfg.nama_toko }}{% endblock %}
+{% block head %}
+<style>
+  .method-tab {
+    border: 2px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 14px 20px;
+    cursor: pointer;
+    transition: all .2s;
+    background: #fff;
+    flex: 1;
+    text-align: center;
+  }
+  .method-tab:hover { border-color: var(--brand); }
+  .method-tab.active {
+    border-color: var(--brand);
+    background: var(--brand-light);
+    color: var(--brand-dark);
+  }
+  .method-tab i { font-size: 1.5rem; display: block; margin-bottom: 4px; }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="mb-4">
   <h4 class="page-header mb-0"><i class="bi bi-wallet2 me-2"></i>Deposit Saldo</h4>
   <p class="page-sub">Top up saldo untuk pembelian lebih mudah</p>
 </div>
 
-<div class="row g-4">
-  <!-- Rekening -->
-  <div class="col-md-5">
-    <div class="card h-100">
-      <div class="card-header"><h6><i class="bi bi-bank me-2"></i>Rekening Tujuan</h6></div>
-      <div class="card-body">
-        {% if cfg.rekening %}
-          {% for rek in cfg.rekening %}
-          <div class="p-3 mb-2 bg-brand-light rounded-3">
-            <pre class="mb-0 small fw-bold text-dark" style="white-space:pre-wrap">{{ rek }}</pre>
-          </div>
-          {% endfor %}
-        {% else %}
-        <p class="text-muted small">Hubungi admin untuk rekening.</p>
-        {% endif %}
+<!-- Method Selector -->
+<div class="d-flex gap-3 mb-4">
+  <div class="method-tab active" id="tab-manual-btn" onclick="switchTab('manual')">
+    <i class="bi bi-receipt"></i>
+    <div class="fw-semibold" style="font-size:.9rem">Transfer Manual</div>
+    <div class="text-muted" style="font-size:.78rem">Upload bukti, konfirmasi admin</div>
+  </div>
+  {% if qris_ok %}
+  <div class="method-tab" id="tab-qris-btn" onclick="switchTab('qris')">
+    <i class="bi bi-qr-code"></i>
+    <div class="fw-semibold" style="font-size:.9rem">QRIS Otomatis</div>
+    <div class="text-muted" style="font-size:.78rem">Konfirmasi instan ~1-2 menit</div>
+  </div>
+  {% endif %}
+</div>
 
-        {% if cfg.kontak_admin %}
-        <a href="https://t.me/{{ cfg.kontak_admin | replace('@','') }}" target="_blank"
-           class="btn btn-brand w-100 mt-3">
-          <i class="bi bi-telegram me-1"></i>Konfirmasi via Bot
-        </a>
-        {% endif %}
+<!-- MANUAL TAB -->
+<div id="tab-manual">
+  <div class="row g-4">
+    <div class="col-md-5">
+      <div class="card h-100">
+        <div class="card-header"><h6><i class="bi bi-bank me-2"></i>Rekening Tujuan</h6></div>
+        <div class="card-body">
+          {% if cfg.rekening %}
+            {% for rek in cfg.rekening %}
+            <div class="p-3 mb-2 bg-brand-light rounded-3 d-flex justify-content-between align-items-center">
+              <code class="small fw-bold text-dark">{{ rek }}</code>
+              <button class="btn btn-sm btn-outline-secondary ms-2 py-0 px-2 copy-btn"
+                onclick="navigator.clipboard.writeText('{{ rek }}').then(()=>{this.innerHTML='✓';setTimeout(()=>{this.innerHTML='⎘'},1000)})">⎘</button>
+            </div>
+            {% endfor %}
+          {% else %}
+          <p class="text-muted small mb-0">Hubungi admin untuk rekening.</p>
+          {% endif %}
+
+          {% if cfg.kontak_admin %}
+          <a href="https://t.me/{{ cfg.kontak_admin | replace('@','') }}" target="_blank"
+             class="btn btn-brand w-100 mt-3">
+            <i class="bi bi-telegram me-1"></i>Konfirmasi via Bot
+          </a>
+          {% endif %}
+        </div>
       </div>
     </div>
-  </div>
 
-  <!-- Upload -->
-  <div class="col-md-7">
-    <div class="card">
-      <div class="card-header"><h6><i class="bi bi-upload me-2"></i>Upload Bukti Transfer</h6></div>
-      <div class="card-body p-4">
-        <form method="post" action="/deposit/upload" enctype="multipart/form-data">
-          <div class="mb-3">
-            <label class="form-label">Nominal Transfer</label>
-            <div class="input-group">
-              <span class="input-group-text">Rp</span>
-              <input type="number" name="nominal" class="form-control" placeholder="50000" min="10000" required>
+    <div class="col-md-7">
+      <div class="card">
+        <div class="card-header"><h6><i class="bi bi-upload me-2"></i>Upload Bukti Transfer</h6></div>
+        <div class="card-body p-4">
+          <form method="post" action="/deposit/upload" enctype="multipart/form-data">
+            <div class="mb-3">
+              <label class="form-label">Nominal Transfer</label>
+              <div class="input-group">
+                <span class="input-group-text">Rp</span>
+                <input type="number" name="nominal" class="form-control" placeholder="50000" min="10000" required>
+              </div>
+              <div class="form-text">Minimal Rp10.000</div>
             </div>
-            <div class="form-text">Minimal Rp10.000</div>
+            <div class="mb-4">
+              <label class="form-label">Bukti Transfer</label>
+              <input type="file" name="bukti" class="form-control" accept="image/*" required>
+            </div>
+            <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold">
+              <i class="bi bi-send me-1"></i>Kirim untuk Dikonfirmasi
+            </button>
+          </form>
+          <div class="alert alert-warning small mt-3 mb-0 py-2">
+            <i class="bi bi-clock me-1"></i>
+            Konfirmasi dalam <strong>5–15 menit</strong>. Notifikasi dikirim ke Telegram.
           </div>
-          <div class="mb-4">
-            <label class="form-label">Bukti Transfer</label>
-            <input type="file" name="bukti" class="form-control" accept="image/*" required>
-          </div>
-          <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold">
-            <i class="bi bi-send me-1"></i>Kirim untuk Dikonfirmasi
-          </button>
-        </form>
-        <div class="alert alert-warning small mt-3 mb-0 py-2">
-          <i class="bi bi-clock me-1"></i>
-          Konfirmasi dalam <strong>5–15 menit</strong>. Notifikasi akan dikirim ke Telegram kamu.
         </div>
       </div>
     </div>
   </div>
 </div>
+
+<!-- QRIS TAB -->
+{% if qris_ok %}
+<div id="tab-qris" class="d-none">
+  <div class="row justify-content-center">
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-header"><h6><i class="bi bi-qr-code me-2"></i>Deposit via QRIS (Otomatis)</h6></div>
+        <div class="card-body p-4">
+          <div class="alert alert-info small mb-4 py-2">
+            <i class="bi bi-lightning-fill me-1"></i>
+            Saldo masuk <strong>otomatis</strong> setelah pembayaran terdeteksi (~1-2 menit).
+            Tidak perlu upload bukti atau menunggu admin.
+          </div>
+          <form method="post" action="/deposit/qris">
+            <div class="mb-4">
+              <label class="form-label">Nominal Deposit</label>
+              <div class="input-group">
+                <span class="input-group-text">Rp</span>
+                <input type="number" name="nominal" class="form-control form-control-lg"
+                  placeholder="50000" min="10000" required>
+              </div>
+              <div class="form-text">
+                Minimal Rp10.000 · Kode unik kecil (Rp1–999) akan ditambahkan ke nominal
+              </div>
+            </div>
+            <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold">
+              <i class="bi bi-qr-code me-1"></i>Generate QR &amp; Lanjutkan
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+function switchTab(t) {
+  document.getElementById('tab-manual').classList.toggle('d-none', t !== 'manual');
+  {% if qris_ok %}
+  document.getElementById('tab-qris').classList.toggle('d-none', t !== 'qris');
+  {% endif %}
+  document.getElementById('tab-manual-btn').classList.toggle('active', t === 'manual');
+  {% if qris_ok %}
+  document.getElementById('tab-qris-btn').classList.toggle('active', t === 'qris');
+  {% endif %}
+}
+// Aktifkan tab dari URL hash
+if (location.hash === '#qris') switchTab('qris');
+</script>
 {% endblock %}
