@@ -3,4 +3,8 @@ name = "repl-nix-workspace"
 version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "python-telegram-bot>=22.7",
+    "httpx>=0.28.1",
+    "qrcode[pil]>=7.4",
+]
