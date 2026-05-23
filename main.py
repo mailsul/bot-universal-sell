@@ -6,6 +6,7 @@ import time
 import random
 import logging
 import httpx
+from produk_lock import produk_lock
 from db import (
     init_db,
     db_get_saldo, db_add_saldo, db_set_saldo, db_get_all_saldo,
@@ -319,11 +320,12 @@ async def proses_mutasi(app: Application):
                 reserved_akun = p.get("reserved_akun", [])
                 if reserved_akun:
                     async with purchase_lock:
-                        produk_r = load_produk()
-                        item_r   = produk_r.get(p.get("produk_id"))
-                        if item_r:
-                            item_r["akun_list"] = reserved_akun + item_r["akun_list"]
-                            save_produk(produk_r)
+                        with produk_lock():
+                            produk_r = load_produk()
+                            item_r   = produk_r.get(p.get("produk_id"))
+                            if item_r:
+                                item_r["akun_list"] = reserved_akun + item_r["akun_list"]
+                                save_produk(produk_r)
                             log.info(f"↩️ Stok dikembalikan: {len(reserved_akun)} akun → {p.get('produk_id')}")
                 try:
                     await app.bot.send_message(
@@ -801,16 +803,17 @@ async def _proses_beli_saldo(query, context, info, item, jumlah, total, saldo_us
         return
 
     async with purchase_lock:
-        produk = load_produk()
-        item   = produk.get(produk_id)
+        with produk_lock():
+            produk = load_produk()
+            item   = produk.get(produk_id)
 
-        if not item or item["stok"] < jumlah or len(item.get("akun_list", [])) < jumlah:
-            await query.edit_message_text("❌ Stok tidak mencukupi saat diproses. Coba lagi.")
-            return
+            if not item or item["stok"] < jumlah or len(item.get("akun_list", [])) < jumlah:
+                await query.edit_message_text("❌ Stok tidak mencukupi saat diproses. Coba lagi.")
+                return
 
-        new_saldo     = db_add_saldo(uid, -total)
-        akun_terpakai = [item["akun_list"].pop(0) for _ in range(jumlah)]
-        save_produk(produk)
+            new_saldo     = db_add_saldo(uid, -total)
+            akun_terpakai = [item["akun_list"].pop(0) for _ in range(jumlah)]
+            save_produk(produk)
         trx_id = db_add_riwayat(uid, "BELI", f"{item['nama']} x{jumlah}", total)
 
         os.makedirs("akun_dikirim", exist_ok=True)

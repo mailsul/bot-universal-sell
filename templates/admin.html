@@ -2,19 +2,21 @@
 {% block title %}Admin Panel — {{ cfg.nama_toko }}{% endblock %}
 {% block head %}
 <style>
-  .nav-tabs .nav-link {
+  #adminTabs .nav-link {
     border-radius: 10px 10px 0 0;
     font-weight: 600;
     font-size: .88rem;
-    color: #6b7280;
+    color: #4b5563 !important;
     border: none;
     padding: 10px 18px;
+    background: transparent;
   }
-  .nav-tabs .nav-link.active {
-    color: var(--brand-dark);
+  #adminTabs .nav-link.active {
+    color: var(--brand-dark) !important;
     background: #fff;
     border-bottom: 3px solid var(--brand);
   }
+  #adminTabs .nav-link:hover:not(.active) { color: var(--brand) !important; }
   .nav-tabs { border-bottom: 2px solid #e5e7eb; }
   .tab-content { background: transparent; }
   .stat-card { border-radius: 14px; padding: 20px; background: #fff; border: 1.5px solid #f3f4f6; }
@@ -163,7 +165,7 @@
     <div class="card mb-4">
       <div class="card-header"><h6 class="mb-0"><i class="bi bi-plus-circle me-1"></i>Tambah Produk Baru</h6></div>
       <div class="card-body p-4">
-        <form method="post" action="/admin/produk/tambah">
+        <form method="post" action="/admin/produk/tambah" enctype="multipart/form-data">
           <div class="row g-3">
             <div class="col-md-4">
               <label class="form-label">Nama Produk</label>
@@ -177,12 +179,17 @@
               <label class="form-label">Deskripsi <span class="text-muted fw-normal">(opsional)</span></label>
               <input type="text" name="deskripsi" class="form-control" placeholder="Akun premium 1 bulan">
             </div>
-            <div class="col-12">
+            <div class="col-md-6">
+              <label class="form-label">Gambar Produk <span class="text-muted fw-normal">(opsional)</span></label>
+              <input type="file" name="gambar" class="form-control" accept="image/*">
+              <div class="form-text">PNG, JPG, WEBP — tampil di katalog</div>
+            </div>
+            <div class="col-md-6">
               <label class="form-label">
-                Daftar Akun <span class="text-muted fw-normal">(opsional saat tambah, bisa restock nanti)</span>
+                Daftar Akun <span class="text-muted fw-normal">(opsional saat tambah)</span>
               </label>
-              <textarea name="akun_list" class="form-control" rows="4"
-                placeholder="Format: username|password|tipe (per baris)&#10;contoh@gmail.com|password123|Individual&#10;Atau hanya username satu baris jika tidak ada password"></textarea>
+              <textarea name="akun_list" class="form-control" rows="3"
+                placeholder="Format: username|password|tipe (per baris)&#10;contoh@gmail.com|password123|Individual&#10;Atau hanya username satu baris"></textarea>
               <div class="form-text">Satu akun per baris. Pisah dengan | untuk username|password|tipe</div>
             </div>
             <div class="col-12">
@@ -206,14 +213,23 @@
               {% for p in produk %}
               <tr>
                 <td><code>{{ p.id }}</code></td>
-                <td class="fw-semibold small">{{ p.nama }}</td>
+                <td class="fw-semibold small">
+                  {% if p.get('gambar') %}
+                  <img src="{{ p.gambar }}" style="width:28px;height:28px;object-fit:cover;border-radius:6px;margin-right:6px" alt="">
+                  {% endif %}
+                  {{ p.nama }}
+                </td>
                 <td class="text-center">
                   <span class="badge {% if p.stok > 0 %}bg-success{% else %}bg-danger{% endif %}">{{ p.stok }}</span>
                 </td>
                 <td class="small">Rp{{ "{:,}".format(p.harga) }}</td>
                 <td class="table-action-btns">
+                  <!-- Lihat Stok -->
+                  <button class="btn btn-sm btn-outline-secondary" onclick="lihatStok('{{ p.id }}','{{ p.nama|replace("'","\\'")|e }}')">
+                    <i class="bi bi-eye"></i> Stok
+                  </button>
                   <!-- Restock Modal Trigger -->
-                  <button class="btn btn-sm btn-outline-success" data-bs-toggle="modal"
+                  <button class="btn btn-sm btn-outline-success ms-1" data-bs-toggle="modal"
                     data-bs-target="#restockModal" data-pid="{{ p.id }}" data-nama="{{ p.nama }}">
                     <i class="bi bi-plus"></i> Restock
                   </button>
@@ -381,6 +397,39 @@
 
 </div><!-- end tab-content -->
 
+<!-- MODAL: Lihat Stok -->
+<div class="modal fade" id="stokModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content" style="border-radius:16px;border:none">
+      <div class="modal-header" style="background:linear-gradient(135deg,#5b21b6,#7c3aed);color:#fff;border-radius:16px 16px 0 0">
+        <h5 class="modal-title fw-bold" id="stokModalTitle">Stok Akun</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body p-0">
+        <div id="stokLoading" class="text-center py-5 text-muted">
+          <div class="spinner-border spinner-border-sm me-2"></div>Memuat...
+        </div>
+        <div id="stokContent" class="d-none">
+          <div class="table-responsive">
+            <table class="table table-sm mb-0">
+              <thead><tr><th>#</th><th>Username / Email</th><th>Password</th><th>Tipe</th><th class="text-end">Aksi</th></tr></thead>
+              <tbody id="stokTbody"></tbody>
+            </table>
+          </div>
+          <div id="stokEmpty" class="text-center py-4 text-muted d-none">
+            <i class="bi bi-inbox fs-3 opacity-25"></i>
+            <p class="small mt-2 mb-0">Stok kosong</p>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer border-0 d-flex justify-content-between">
+        <small class="text-muted" id="stokSisa"></small>
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Tutup</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL: Restock -->
 <div class="modal fade" id="restockModal" tabindex="-1">
   <div class="modal-dialog">
@@ -447,6 +496,69 @@ document.getElementById('hargaModal').addEventListener('show.bs.modal', function
   document.getElementById('hargaForm').action = '/admin/produk/' + btn.dataset.pid + '/harga';
   document.getElementById('hargaInput').value = btn.dataset.harga;
 });
+
+// Lihat Stok
+let _stokPid = null;
+function lihatStok(pid, nama) {
+  _stokPid = pid;
+  document.getElementById('stokModalTitle').textContent = 'Stok: ' + nama;
+  document.getElementById('stokLoading').classList.remove('d-none');
+  document.getElementById('stokContent').classList.add('d-none');
+  const modal = new bootstrap.Modal(document.getElementById('stokModal'));
+  modal.show();
+  fetch('/admin/produk/' + pid + '/akun')
+    .then(r => r.json())
+    .then(data => {
+      document.getElementById('stokLoading').classList.add('d-none');
+      document.getElementById('stokContent').classList.remove('d-none');
+      renderStok(data.akun || []);
+    })
+    .catch(() => {
+      document.getElementById('stokLoading').textContent = 'Gagal memuat data.';
+    });
+}
+function renderStok(daftar) {
+  const tbody = document.getElementById('stokTbody');
+  const empty = document.getElementById('stokEmpty');
+  const sisa  = document.getElementById('stokSisa');
+  tbody.innerHTML = '';
+  sisa.textContent = daftar.length + ' akun tersedia';
+  if (!daftar.length) { empty.classList.remove('d-none'); return; }
+  empty.classList.add('d-none');
+  daftar.forEach(a => {
+    const tr = document.createElement('tr');
+    tr.id = 'stok-row-' + a.idx;
+    tr.innerHTML = `
+      <td class="text-muted small">${a.idx + 1}</td>
+      <td><code class="small">${a.username || '—'}</code></td>
+      <td><code class="small">${a.password || '—'}</code></td>
+      <td class="small text-muted">${a.tipe || '—'}</td>
+      <td class="text-end">
+        <button class="btn btn-sm btn-outline-danger py-0 px-2"
+          onclick="hapusAkun(${a.idx}, this)">
+          <i class="bi bi-trash"></i>
+        </button>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+}
+function hapusAkun(idx, btn) {
+  if (!confirm('Hapus akun #' + (idx + 1) + '? Akun ini akan hilang permanen.')) return;
+  btn.disabled = true;
+  fetch('/admin/produk/' + _stokPid + '/akun/' + idx + '/hapus', {method:'POST'})
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        document.getElementById('stok-row-' + idx).remove();
+        document.getElementById('stokSisa').textContent = d.sisa + ' akun tersedia';
+        if (d.sisa === 0) document.getElementById('stokEmpty').classList.remove('d-none');
+      } else {
+        alert('Gagal hapus: ' + (d.error || 'unknown'));
+        btn.disabled = false;
+      }
+    })
+    .catch(() => { btn.disabled = false; });
+}
 
 // Aktifkan tab dari URL hash
 const hashMap = {

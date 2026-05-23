@@ -118,8 +118,8 @@
 
       <div class="d-flex gap-2">
         <a href="/" class="btn btn-outline-secondary flex-fill">Kembali</a>
-        <button onclick="window.print()" class="btn btn-brand flex-fill">
-          <i class="bi bi-printer me-1"></i>Cetak
+        <button onclick="downloadTxt()" class="btn btn-brand flex-fill">
+          <i class="bi bi-download me-1"></i>Download .txt
         </button>
       </div>
     </div>
@@ -135,6 +135,31 @@ function copyText(id, btn) {
     btn.innerHTML = '<i class="bi bi-check-lg text-success"></i>';
     setTimeout(() => { btn.innerHTML = '<i class="bi bi-clipboard"></i>'; }, 1500);
   });
+}
+function downloadTxt() {
+  const nama    = {{ item.get('nama','') | tojson }};
+  const harga   = {{ item.get('harga',0) }};
+  const trxId   = document.getElementById('val-trx').textContent.trim();
+  const user    = (document.getElementById('val-user') || {textContent:''}).textContent.trim();
+  const pass_   = (document.getElementById('val-pass') || {textContent:''}).textContent.trim();
+  const metode  = {{ metode | tojson }};
+  const tipe    = {{ akun.get('tipe','') | tojson }};
+  let txt = `=== DETAIL PEMBELIAN ===\n`;
+  txt += `ID Transaksi : ${trxId}\n`;
+  txt += `Produk       : ${nama}\n`;
+  txt += `Harga        : Rp${harga.toLocaleString('id-ID')}\n`;
+  txt += `Metode       : ${metode}\n`;
+  txt += `Waktu        : ${new Date().toLocaleString('id-ID')}\n\n`;
+  txt += `=== DETAIL AKUN ===\n`;
+  if (user)  txt += `Username : ${user}\n`;
+  if (pass_) txt += `Password : ${pass_}\n`;
+  if (tipe)  txt += `Tipe     : ${tipe}\n`;
+  txt += `\n⚠️ Simpan file ini. Jangan bagikan ke siapapun.`;
+  const blob = new Blob([txt], {type:'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${trxId}.txt`;
+  a.click();
 }
 </script>
 {% endblock %}

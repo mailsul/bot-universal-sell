@@ -82,6 +82,19 @@
       <div class="card-body p-4">
 
         <!-- Optional Telegram ID -->
+        {% if current_user %}
+        <div class="mb-4">
+          <div class="alert alert-info py-2 mb-0 d-flex align-items-center gap-2">
+            <i class="bi bi-telegram fs-5"></i>
+            <div>
+              <span class="fw-semibold">Akun terkirim juga ke Telegram ID kamu</span>
+              <code class="ms-1">{{ current_user.telegram_id }}</code>
+              <div class="small text-muted mt-1">Pastikan kamu sudah start bot dan tidak memblokir.</div>
+            </div>
+          </div>
+          <input type="hidden" id="tg_input" value="{{ current_user.telegram_id }}">
+        </div>
+        {% else %}
         <div class="mb-4">
           <label class="form-label">
             <i class="bi bi-telegram me-1 text-brand"></i>
@@ -93,6 +106,7 @@
             Cari ID kamu di <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a>.
           </div>
         </div>
+        {% endif %}
 
         <!-- Metode -->
         <div class="row g-3 mb-4">

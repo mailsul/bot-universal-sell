@@ -17,6 +17,8 @@ from flask import (
     url_for, session, flash, send_file, jsonify, send_from_directory
 )
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
+from produk_lock import produk_lock
 
 from db import (
     init_db, init_web_tables,
@@ -92,6 +94,22 @@ def save_produk_raw(data: dict):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     shutil.move(tmp, "produk.json")
+
+PRODUK_IMG_DIR = os.path.join("static", "produk_img")
+os.makedirs(PRODUK_IMG_DIR, exist_ok=True)
+
+ALLOWED_IMG = {"png", "jpg", "jpeg", "webp", "gif"}
+
+def _save_produk_img(pid: str, file) -> str | None:
+    """Save uploaded image, return relative URL path or None."""
+    if not file or not file.filename:
+        return None
+    ext = file.filename.rsplit(".", 1)[-1].lower()
+    if ext not in ALLOWED_IMG:
+        return None
+    fname = f"{pid}.{ext}"
+    file.save(os.path.join(PRODUK_IMG_DIR, fname))
+    return f"/static/produk_img/{fname}"
 
 def load_config() -> dict:
     try:
@@ -348,7 +366,7 @@ def beli_saldo(pid):
 
     tg_kirim = request.form.get("telegram_id","").strip()
 
-    with _purchase_lock:
+    with _purchase_lock, produk_lock():
         raw  = load_produk_raw()
         item = raw.get(pid)
         if not item or item.get("stok",0) < 1 or not item.get("akun_list"):
@@ -399,7 +417,7 @@ def beli_qris(pid):
 
     tg_kirim = request.form.get("telegram_id","").strip()
 
-    with _purchase_lock:
+    with _purchase_lock, produk_lock():
         raw  = load_produk_raw()
         item = raw.get(pid)
         if not item or item.get("stok",0) < 1 or not item.get("akun_list"):
@@ -491,7 +509,7 @@ def api_beli_check():
             reserved = pending.get("reserved_akun", [])
             pid      = session.get("bq_pid")
             if reserved and pid:
-                with _purchase_lock:
+                with _purchase_lock, produk_lock():
                     raw  = load_produk_raw()
                     item = raw.get(pid, {})
                     if item:
@@ -818,12 +836,16 @@ def admin_produk_tambah():
         return redirect(url_for("admin") + "#tab-produk")
 
     akun_list = _parse_akun_lines(akun_raw)
-    with _purchase_lock:
+    with _purchase_lock, produk_lock():
         raw = load_produk_raw()
         nums = [int(k) for k in raw.keys() if k.isdigit()]
         pid  = str(max(nums, default=0) + 1)
-        raw[pid] = {"nama": nama, "harga": harga, "deskripsi": deskripsi,
-                    "stok": len(akun_list), "akun_list": akun_list}
+        gambar = _save_produk_img(pid, request.files.get("gambar"))
+        entry  = {"nama": nama, "harga": harga, "deskripsi": deskripsi,
+                  "stok": len(akun_list), "akun_list": akun_list}
+        if gambar:
+            entry["gambar"] = gambar
+        raw[pid] = entry
         save_produk_raw(raw)
     flash(f"✅ Produk '{nama}' ditambah ({len(akun_list)} akun).", "success")
     return redirect(url_for("admin") + "#tab-produk")
@@ -837,7 +859,7 @@ def admin_produk_restock(pid):
         flash("Masukkan akun untuk restock.", "danger")
         return redirect(url_for("admin") + "#tab-produk")
     akun_baru = _parse_akun_lines(akun_raw)
-    with _purchase_lock:
+    with _purchase_lock, produk_lock():
         raw  = load_produk_raw()
         item = raw.get(pid)
         if not item:
@@ -851,6 +873,45 @@ def admin_produk_restock(pid):
     return redirect(url_for("admin") + "#tab-produk")
 
 
+@app.route("/admin/produk/<pid>/akun")
+@admin_required
+def admin_produk_akun(pid):
+    """JSON: daftar akun di stok untuk Lihat Stok modal."""
+    raw  = load_produk_raw()
+    item = raw.get(pid)
+    if not item:
+        return jsonify({"error": "Produk tidak ditemukan"}), 404
+    daftar = []
+    for i, a in enumerate(item.get("akun_list", [])):
+        daftar.append({
+            "idx":      i,
+            "username": a.get("username",""),
+            "password": a.get("password",""),
+            "tipe":     a.get("tipe",""),
+        })
+    return jsonify({"nama": item["nama"], "akun": daftar})
+
+
+@app.route("/admin/produk/<pid>/akun/<int:idx>/hapus", methods=["POST"])
+@admin_required
+def admin_produk_akun_hapus(pid, idx):
+    """Hapus satu akun dari stok berdasarkan index."""
+    with _purchase_lock, produk_lock():
+        raw  = load_produk_raw()
+        item = raw.get(pid)
+        if not item:
+            return jsonify({"error": "Produk tidak ditemukan"}), 404
+        lst = item.get("akun_list", [])
+        if idx < 0 or idx >= len(lst):
+            return jsonify({"error": "Index tidak valid"}), 400
+        lst.pop(idx)
+        item["akun_list"] = lst
+        item["stok"]      = len(lst)
+        raw[pid] = item
+        save_produk_raw(raw)
+    return jsonify({"ok": True, "sisa": len(lst)})
+
+
 @app.route("/admin/produk/<pid>/harga", methods=["POST"])
 @admin_required
 def admin_produk_harga(pid):
@@ -859,7 +920,7 @@ def admin_produk_harga(pid):
     except ValueError:
         flash("Harga tidak valid.", "danger")
         return redirect(url_for("admin") + "#tab-produk")
-    with _purchase_lock:
+    with _purchase_lock, produk_lock():
         raw = load_produk_raw()
         if pid not in raw:
             flash("Produk tidak ditemukan.", "danger")
@@ -873,7 +934,7 @@ def admin_produk_harga(pid):
 @app.route("/admin/produk/<pid>/hapus", methods=["POST"])
 @admin_required
 def admin_produk_hapus(pid):
-    with _purchase_lock:
+    with _purchase_lock, produk_lock():
         raw = load_produk_raw()
         if pid not in raw:
             flash("Produk tidak ditemukan.", "danger")

@@ -81,9 +81,15 @@
         {% endfor %}
 
         <div class="d-flex justify-content-between align-items-start mb-3">
+          {% if p.get('gambar') %}
+          <div class="produk-icon p-0 overflow-hidden">
+            <img src="{{ p.gambar }}" style="width:100%;height:100%;object-fit:cover;border-radius:12px" alt="{{ p.nama }}">
+          </div>
+          {% else %}
           <div class="produk-icon">
             <i class="bi {{ icon_class }} text-brand"></i>
           </div>
+          {% endif %}
           {% if p.stok > 0 %}
           <span class="badge bg-success stok-badge"><i class="bi bi-check-circle me-1"></i>Stok {{ p.stok }}</span>
           {% else %}
