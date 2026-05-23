@@ -711,7 +711,7 @@ async def handle_list_produk(update: Update, context: CallbackContext):
 
     SEP = "━━━━━━━━━━━━━━━━━━━━━━━━\n"
     msg = "🛒 *DAFTAR PRODUK*\n⚡ _Pilihan Produk Terbaik_ ⚡\n\n"
-    keyboard, row = [], []
+    btn_row, kb_rows = [], []
 
     for nomor, (pid, item) in enumerate(produk.items(), start=1):
         tipe_dict  = item.get("tipe", {})
@@ -722,11 +722,7 @@ async def handle_list_produk(update: Update, context: CallbackContext):
 
         stok_icon = "🟢" if total_stok > LOW_STOCK_THRESHOLD else ("🟡" if total_stok > 0 else "🔴")
         stok_str  = f"{stok_icon} {total_stok} Stok" if total_stok > 0 else "🔴 Habis"
-
-        if tipe_count > 1:
-            harga_str = f"Rp {min_harga:,}+"
-        else:
-            harga_str = f"Rp {min_harga:,}"
+        harga_str = f"Rp {min_harga:,}+" if tipe_count > 1 else f"Rp {min_harga:,}"
 
         msg += SEP
         msg += f"{em} *[{nomor}] {item['nama']}*\n"
@@ -739,32 +735,34 @@ async def handle_list_produk(update: Update, context: CallbackContext):
                 ic = "🟢" if stok_t > 0 else "🔴"
                 msg += f"  {ic} {t['nama']}: Rp {t.get('harga',0):,} ({stok_t} unit)\n"
 
-        btn_label = f"{em}{nomor}"
-        if total_stok > 0:
-            row.append(KeyboardButton(pid))
-        else:
-            row.append(KeyboardButton(f"{pid} SOLDOUT ❌"))
-        if len(row) == 5:
-            keyboard.append(row)
-            row = []
+        # Tombol inline: emoji + nomor, callback = pid
+        btn_row.append(InlineKeyboardButton(f"{em}{nomor}", callback_data=pid))
+        if len(btn_row) == 5:
+            kb_rows.append(btn_row)
+            btn_row = []
 
     msg += SEP
-    msg += "\n📌 *Silakan pilih produk di bawah:*"
+    msg += "\n🚀 *Silakan pilih nomor produk:*"
 
-    if row:
-        keyboard.append(row)
-    keyboard.append([KeyboardButton("🔥 Kembali ke Menu Utama")])
+    if btn_row:
+        kb_rows.append(btn_row)
+    kb_rows.append([InlineKeyboardButton("🔥 Kembali ke Menu Utama", callback_data="back_to_produk")])
 
+    markup = InlineKeyboardMarkup(kb_rows)
     try:
-        await query.message.delete()
+        await query.edit_message_text(msg, reply_markup=markup, parse_mode="Markdown")
     except Exception:
-        pass
-    await context.bot.send_message(
-        chat_id=query.from_user.id,
-        text=msg,
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True),
-        parse_mode="Markdown"
-    )
+        try:
+            await query.edit_message_caption(msg, reply_markup=markup, parse_mode="Markdown")
+        except Exception:
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            await context.bot.send_message(
+                chat_id=query.from_user.id, text=msg,
+                reply_markup=markup, parse_mode="Markdown"
+            )
 
 
 async def handle_cek_stok(update: Update, context: CallbackContext):
