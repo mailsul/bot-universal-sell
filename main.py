@@ -588,11 +588,10 @@ async def handle_confirm_order(update: Update, context: CallbackContext):
         total = jumlah * item["harga"]
 
         if saldo.get(uid, 0) < total:
-            qris_ready = os.path.exists(qris_file) and bool(URL_MUTASI)
             kb_rows = [
                 [InlineKeyboardButton("💰 Deposit Saldo", callback_data="deposit")],
             ]
-            if qris_ready:
+            if os.path.exists(qris_file):
                 kb_rows.append([InlineKeyboardButton("💳 Bayar via QRIS (Otomatis)", callback_data="beli_qris")])
             kb_rows.append([InlineKeyboardButton("🔙 Kembali ke Menu", callback_data="back_to_produk")])
             await query.edit_message_text(
@@ -670,15 +669,13 @@ async def handle_confirm_order(update: Update, context: CallbackContext):
 
 async def handle_deposit(update: Update, context: CallbackContext):
     query       = update.callback_query
-    qris_ready  = os.path.exists(qris_file) and bool(URL_MUTASI)
+    qris_tersedia = os.path.exists(qris_file)
     keyboard    = [[InlineKeyboardButton(f"Rp{n:,}", callback_data=f"deposit_{n}") for n in DEPOSIT_NOMINALS]]
     keyboard.append([InlineKeyboardButton("🔧 Custom Nominal", callback_data="deposit_custom")])
-    if qris_ready:
-        keyboard.append([InlineKeyboardButton("💳 Bayar via QRIS (Otomatis)", callback_data="deposit_qris")])
     keyboard.append([InlineKeyboardButton("🔙 Kembali", callback_data="back_to_produk")])
-    metode_text = "\n\n✅ _QRIS tersedia — konfirmasi otomatis!_" if qris_ready else ""
+    qris_note = "\n✅ _QRIS tersedia — pilih nominal lalu pilih metode!_" if qris_tersedia else ""
     await query.edit_message_text(
-        f"💰 *Pilih nominal deposit:*\n_(Min: Rp{DEPOSIT_MIN:,} | Max: Rp{DEPOSIT_MAX:,})_{metode_text}",
+        f"💰 *Pilih nominal deposit:*\n_(Min: Rp{DEPOSIT_MIN:,} | Max: Rp{DEPOSIT_MAX:,})_{qris_note}",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
@@ -717,9 +714,60 @@ async def handle_deposit_nominal(update: Update, context: CallbackContext):
         return
 
     nominal = int(data.split("_")[1])
-    context.user_data["nominal_asli"]    = nominal
-    context.user_data["total_transfer"]  = nominal + 23
-    await _send_deposit_instructions(query, context, nominal, is_message=False)
+    context.user_data["nominal_asli"]   = nominal
+    context.user_data["total_transfer"] = nominal + 23
+    await _show_metode_deposit(query, context, nominal)
+
+
+async def _show_metode_deposit(query_or_message, context, nominal: int):
+    """Tampilkan pilihan metode: Manual Transfer atau QRIS."""
+    qris_tersedia = os.path.exists(qris_file)
+    kb = []
+    if qris_tersedia:
+        kb.append([InlineKeyboardButton("💳 QRIS (Otomatis / Lebih Cepat)", callback_data=f"dep_qris_{nominal}")])
+    kb.append([InlineKeyboardButton("🏦 Transfer Manual (Konfirmasi Admin)", callback_data=f"dep_manual_{nominal}")])
+    kb.append([InlineKeyboardButton("🔙 Kembali", callback_data="deposit")])
+
+    text = (
+        f"💰 *Pilih metode pembayaran*\n\n"
+        f"Nominal: *Rp{nominal:,}*\n\n"
+        + ("✅ *QRIS* — dikonfirmasi otomatis setelah bayar\n"
+           "🏦 *Transfer Manual* — perlu foto bukti & konfirmasi admin"
+           if qris_tersedia else
+           "🏦 *Transfer Manual* — perlu foto bukti & konfirmasi admin")
+    )
+
+    try:
+        await query_or_message.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+    except Exception:
+        try:
+            await query_or_message.message.delete()
+        except Exception:
+            pass
+        await context.bot.send_message(
+            chat_id=query_or_message.from_user.id,
+            text=text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+
+
+async def handle_dep_metode(update: Update, context: CallbackContext):
+    """Callback dep_manual_XXXXX atau dep_qris_XXXXX — arahkan ke metode yang dipilih."""
+    query = update.callback_query
+    data  = query.data  # dep_manual_10000 atau dep_qris_10000
+
+    parts   = data.split("_", 2)   # ['dep', 'manual'/'qris', '10000']
+    metode  = parts[1]
+    nominal = int(parts[2])
+
+    context.user_data["nominal_asli"]   = nominal
+    context.user_data["total_transfer"] = nominal + 23
+
+    if metode == "qris":
+        await _show_qris_deposit(query.from_user, nominal, context, delete_msg=query.message)
+    else:
+        await _send_deposit_instructions(query, context, nominal, is_message=False)
 
 
 async def handle_cancel_deposit(update: Update, context: CallbackContext):
@@ -1294,6 +1342,8 @@ async def button_callback(update: Update, context: CallbackContext):
         await handle_produk_detail(update, context)
     elif data.startswith("deposit_"):
         await handle_deposit_nominal(update, context)
+    elif data.startswith("dep_manual_") or data.startswith("dep_qris_"):
+        await handle_dep_metode(update, context)
     elif data.startswith("qris_dep_"):
         await handle_qris_dep_nominal(update, context)
     elif data.startswith("confirm:"):
@@ -1537,16 +1587,36 @@ async def handle_text(update: Update, context: CallbackContext):
     # ── Custom deposit nominal ───────────────────────────────────────
     if context.user_data.get("awaiting_custom"):
         try:
-            nominal = int(text.replace(".", "").replace(",", ""))
+            nominal = int(text.replace(".", "").replace(",", "").replace(" ", ""))
             if nominal < DEPOSIT_MIN or nominal > DEPOSIT_MAX:
                 await update.message.reply_text(
                     f"❌ Nominal harus antara Rp{DEPOSIT_MIN:,} dan Rp{DEPOSIT_MAX:,}. Coba lagi:"
                 )
                 return
-            context.user_data["awaiting_custom"]  = False
-            context.user_data["nominal_asli"]      = nominal
-            context.user_data["total_transfer"]    = nominal + 23
-            await _send_deposit_instructions(update.message, context, nominal, is_message=True)
+            context.user_data["awaiting_custom"] = False
+            context.user_data["nominal_asli"]    = nominal
+            context.user_data["total_transfer"]  = nominal + 23
+            # Tunjukkan pilihan metode (Manual vs QRIS) lalu hapus keyboard
+            await update.message.reply_text("✅", reply_markup=ReplyKeyboardRemove())
+
+            # Kirim method selection sebagai pesan inline baru
+            qris_tersedia = os.path.exists(qris_file)
+            kb = []
+            if qris_tersedia:
+                kb.append([InlineKeyboardButton("💳 QRIS (Otomatis / Lebih Cepat)", callback_data=f"dep_qris_{nominal}")])
+            kb.append([InlineKeyboardButton("🏦 Transfer Manual (Konfirmasi Admin)", callback_data=f"dep_manual_{nominal}")])
+            kb.append([InlineKeyboardButton("🔙 Kembali", callback_data="deposit")])
+            metode_hint = (
+                "✅ *QRIS* — dikonfirmasi otomatis setelah bayar\n"
+                "🏦 *Transfer Manual* — perlu foto bukti & konfirmasi admin"
+                if qris_tersedia else
+                "🏦 *Transfer Manual* — perlu foto bukti & konfirmasi admin"
+            )
+            await update.message.reply_text(
+                f"💰 *Pilih metode pembayaran*\n\nNominal: *Rp{nominal:,}*\n\n{metode_hint}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
         except ValueError:
             await update.message.reply_text("❌ Format salah. Ketik angka saja, contoh: 50000")
         return
