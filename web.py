@@ -1,9 +1,11 @@
 """web.py — Website versi bot Ibra Store"""
 
 import os
+import re
 import random
 import string
 import json
+import secrets
 import threading
 import time
 import shutil
@@ -14,7 +16,7 @@ from functools import wraps
 import httpx
 from flask import (
     Flask, render_template, request, redirect,
-    url_for, session, flash, send_file, jsonify, send_from_directory
+    url_for, session, flash, send_file, jsonify, send_from_directory, abort
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -24,6 +26,8 @@ from db import (
     init_db, init_web_tables,
     web_get_user_by_tid, web_create_user, web_update_password, web_update_role,
     web_get_all_users, web_save_otp, web_verify_otp,
+    web_get_user_by_email, web_get_user_by_phone,
+    web_get_user_by_identifier, web_update_profile,
     db_get_saldo, db_add_saldo, db_get_riwayat, db_add_riwayat,
     db_get_all_pending, db_get_pending_any_by_user,
     db_remove_pending_any_by_user, db_add_pending, db_remove_pending_by_id,
@@ -38,19 +42,32 @@ WEB_PORT    = int(os.getenv("WEB_PORT", "5000"))
 URL_MUTASI  = os.getenv("URL_MUTASI", "")
 QRIS_BASE64 = os.getenv("QRIS_BASE64", "")
 
-QRIS_EXPIRY_SEC  = 5 * 60   # 5 menit
-RATE_LIMIT_MAX   = 5         # pembelian per window
-RATE_LIMIT_WIN   = 3600      # 1 jam
+QRIS_EXPIRY_SEC   = 5 * 60   # 5 menit
+RATE_LIMIT_MAX    = 5         # pembelian per window
+RATE_LIMIT_WIN    = 3600      # 1 jam
+LOGIN_FAIL_MAX    = 5         # gagal login per window
+LOGIN_FAIL_WIN    = 900       # 15 menit
+
+_RE_PHONE = re.compile(r'^\+62[0-9]{8,13}$')
+_RE_EMAIL  = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
+app.config.update(
+    SESSION_COOKIE_HTTPONLY = True,
+    SESSION_COOKIE_SAMESITE = "Lax",
+    SESSION_COOKIE_SECURE   = False,   # set True di production HTTPS
+    PERMANENT_SESSION_LIFETIME = timedelta(days=7),
+)
 
 init_db()
 init_web_tables()
 
 _purchase_lock = threading.Lock()
-_rate_data: dict[str, list] = defaultdict(list)
-_rate_lock = threading.Lock()
+_rate_data:     dict[str, list] = defaultdict(list)
+_rate_lock      = threading.Lock()
+_login_fail:    dict[str, list] = defaultdict(list)
+_login_fl_lock  = threading.Lock()
 
 
 # ─── RATE LIMIT ───────────────────────────────────────────────────────────────
@@ -74,6 +91,41 @@ def _rl_remaining(ip: str) -> int:
     with _rate_lock:
         times = [t for t in _rate_data[ip] if now - t < RATE_LIMIT_WIN]
     return max(0, RATE_LIMIT_MAX - len(times))
+
+
+# ─── BRUTE FORCE PROTECTION (login) ──────────────────────────────────────────
+
+def _login_check(ip: str) -> bool:
+    """Return True jika boleh mencoba login (belum kena block)."""
+    now = time.time()
+    with _login_fl_lock:
+        times = [t for t in _login_fail[ip] if now - t < LOGIN_FAIL_WIN]
+        _login_fail[ip] = times
+        return len(times) < LOGIN_FAIL_MAX
+
+def _login_record_fail(ip: str):
+    now = time.time()
+    with _login_fl_lock:
+        _login_fail[ip].append(now)
+
+def _login_clear(ip: str):
+    with _login_fl_lock:
+        _login_fail[ip] = []
+
+
+# ─── CSRF ─────────────────────────────────────────────────────────────────────
+
+def _csrf_token() -> str:
+    if "_csrf" not in session:
+        session["_csrf"] = secrets.token_hex(32)
+    return session["_csrf"]
+
+def _csrf_ok() -> bool:
+    t = session.get("_csrf")
+    s = request.form.get("_csrf") or request.headers.get("X-CSRF-Token", "")
+    return bool(t and s and secrets.compare_digest(t, s))
+
+app.jinja_env.globals["csrf_token"] = _csrf_token
 
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -309,21 +361,44 @@ def index():
 
 # ─── AUTH ─────────────────────────────────────────────────────────────────────
 
+def _validate_password_web(pw: str):
+    if len(pw) < 8:
+        return "Password minimal 8 karakter"
+    if not re.search(r'[A-Z]', pw):
+        return "Password harus ada huruf kapital (A–Z)"
+    if not re.search(r'[0-9]', pw):
+        return "Password harus ada angka (0–9)"
+    if not re.search(r'[!@#$%^&*()\-_=+\[\]{};:\'",.<>?/\\|`~]', pw):
+        return "Password harus ada simbol (!@#$%^&* dll)"
+    return None
+
+
 @app.route("/register", methods=["GET","POST"])
 def register():
     if "user_tid" in session:
         return redirect(url_for("dashboard"))
     if request.method == "POST":
-        raw = request.form.get("telegram_id","").strip()
-        pw  = request.form.get("password","").strip()
-        pw2 = request.form.get("password2","").strip()
+        if not _csrf_ok():
+            abort(403)
+        raw   = request.form.get("telegram_id","").strip()
+        phone = request.form.get("phone","").strip() or None
+        email = (request.form.get("email","").strip().lower()) or None
+        pw    = request.form.get("password","").strip()
+        pw2   = request.form.get("password2","").strip()
         try:
             tid = int(raw)
         except ValueError:
             flash("Telegram ID harus berupa angka.", "danger")
             return redirect(url_for("register"))
-        if len(pw) < 6:
-            flash("Password minimal 6 karakter.", "danger")
+        if phone and not _RE_PHONE.match(phone):
+            flash("Format nomor HP tidak valid. Gunakan: +6281234567890", "danger")
+            return redirect(url_for("register"))
+        if email and not _RE_EMAIL.match(email):
+            flash("Format email tidak valid.", "danger")
+            return redirect(url_for("register"))
+        pw_err = _validate_password_web(pw)
+        if pw_err:
+            flash(pw_err, "danger")
             return redirect(url_for("register"))
         if pw != pw2:
             flash("Konfirmasi password tidak cocok.", "danger")
@@ -331,26 +406,34 @@ def register():
         if web_get_user_by_tid(tid):
             flash("Telegram ID sudah terdaftar. Silakan login.", "warning")
             return redirect(url_for("login"))
+        if phone and web_get_user_by_phone(phone):
+            flash("Nomor HP sudah terdaftar.", "warning")
+            return redirect(url_for("login"))
+        if email and web_get_user_by_email(email):
+            flash("Email sudah terdaftar.", "warning")
+            return redirect(url_for("login"))
 
         otp     = gen_otp()
         expires = (datetime.now() + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
         web_save_otp(tid, otp, expires)
-        ok = send_telegram(
+        toko = load_config().get('nama_toko','Ibra Store')
+        ok   = send_telegram(
             tid,
-            f"🔐 *Kode OTP Registrasi {load_config().get('nama_toko','Ibra Store')}*\n\n"
-            f"Kode OTP: *{otp}*\n\nBerlaku 5 menit."
+            f"🔐 *Kode OTP Registrasi {toko}*\n\n"
+            f"Kode OTP: *{otp}*\n\nBerlaku 5 menit.\nJangan bagikan ke siapapun."
         )
         if not ok:
             flash(
-                "Gagal mengirim OTP. Kemungkinan kamu memblokir bot atau belum pernah "
-                "memulai percakapan. Buka Telegram → cari bot kami → klik Start, "
-                "lalu coba daftar lagi.",
+                "Gagal mengirim OTP. Pastikan sudah pernah memulai percakapan "
+                "dengan bot kami di Telegram, lalu coba daftar lagi.",
                 "danger"
             )
             return redirect(url_for("register"))
 
         session["reg_tid"]     = tid
         session["reg_pw_hash"] = generate_password_hash(pw)
+        session["reg_phone"]   = phone
+        session["reg_email"]   = email
         flash("OTP berhasil dikirim ke Telegram kamu!", "success")
         return redirect(url_for("verify"))
     return render_template("register.html")
@@ -361,14 +444,20 @@ def verify():
     if "reg_tid" not in session:
         return redirect(url_for("register"))
     if request.method == "POST":
-        tid = session["reg_tid"]
-        otp = request.form.get("otp","").strip()
+        if not _csrf_ok():
+            abort(403)
+        tid   = session["reg_tid"]
+        otp   = request.form.get("otp","").strip()
         if not web_verify_otp(tid, otp):
             flash("OTP salah atau kedaluwarsa. Silakan daftar ulang.", "danger")
-            session.pop("reg_tid", None); session.pop("reg_pw_hash", None)
+            for k in ("reg_tid","reg_pw_hash","reg_phone","reg_email"):
+                session.pop(k, None)
             return redirect(url_for("register"))
-        role = "admin" if tid == OWNER_ID else "user"
-        web_create_user(tid, None, session.pop("reg_pw_hash"), role)
+        role  = "admin" if tid == OWNER_ID else "user"
+        phone = session.pop("reg_phone", None)
+        email = session.pop("reg_email", None)
+        web_create_user(tid, None, session.pop("reg_pw_hash"), role,
+                        phone=phone, email=email)
         session.pop("reg_tid", None)
         flash("Akun berhasil dibuat! Silakan login.", "success")
         return redirect(url_for("login"))
@@ -380,27 +469,89 @@ def login():
     if "user_tid" in session:
         return redirect(url_for("dashboard"))
     if request.method == "POST":
-        raw = request.form.get("telegram_id","").strip()
+        if not _csrf_ok():
+            abort(403)
+        ip  = _ip()
+        if not _login_check(ip):
+            flash("Terlalu banyak percobaan login. Coba lagi dalam 15 menit.", "danger")
+            return redirect(url_for("login"))
+        idf = request.form.get("identifier","").strip()
         pw  = request.form.get("password","").strip()
-        try:
-            tid = int(raw)
-        except ValueError:
-            flash("Telegram ID harus berupa angka.", "danger")
-            return redirect(url_for("login"))
-        user = web_get_user_by_tid(tid)
+        user = web_get_user_by_identifier(idf)
         if not user or not check_password_hash(user["password_hash"], pw):
-            flash("Telegram ID atau password salah.", "danger")
+            _login_record_fail(ip)
+            flash("Email / nomor HP / ID atau password salah.", "danger")
             return redirect(url_for("login"))
-        # Auto-promote OWNER_ID ke admin jika role belum benar
+        _login_clear(ip)
+        tid  = user["telegram_id"]
         role = user["role"]
         if tid == OWNER_ID and role != "admin":
             web_update_role(tid, "admin")
             role = "admin"
         session["user_tid"]  = tid
         session["user_role"] = role
+        session.permanent    = True
         flash("Selamat datang kembali!", "success")
         return redirect(url_for("admin") if role == "admin" else url_for("dashboard"))
-    return render_template("login.html")
+    return render_template("login.html", prefill=request.args.get("id",""))
+
+
+@app.route("/forgot-password", methods=["GET","POST"])
+def forgot_password():
+    if request.method == "POST":
+        if not _csrf_ok():
+            abort(403)
+        idf  = request.form.get("identifier","").strip()
+        user = web_get_user_by_identifier(idf)
+        if not user:
+            flash("Akun tidak ditemukan. Pastikan email/nomor HP sudah benar.", "danger")
+            return redirect(url_for("forgot_password"))
+        tid  = user["telegram_id"]
+        otp  = gen_otp()
+        exp  = (datetime.now() + timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
+        web_save_otp(tid, otp, exp)
+        toko = load_config().get("nama_toko","Ibra Store")
+        ok   = send_telegram(
+            tid,
+            f"🔑 *Reset Password {toko}*\n\n"
+            f"Kode OTP: *{otp}*\nBerlaku 10 menit.\n\n"
+            "Jangan bagikan kode ini ke siapapun!"
+        )
+        if not ok:
+            flash("Gagal mengirim OTP ke Telegram. Pastikan bot belum diblokir.", "danger")
+            return redirect(url_for("forgot_password"))
+        session["reset_tid"] = tid
+        flash("OTP dikirim ke Telegram kamu!", "success")
+        return redirect(url_for("reset_password"))
+    return render_template("forgot_password.html")
+
+
+@app.route("/reset-password", methods=["GET","POST"])
+def reset_password():
+    if "reset_tid" not in session:
+        return redirect(url_for("forgot_password"))
+    if request.method == "POST":
+        if not _csrf_ok():
+            abort(403)
+        tid  = session["reset_tid"]
+        otp  = request.form.get("otp","").strip()
+        pw   = request.form.get("password","").strip()
+        pw2  = request.form.get("password2","").strip()
+        if not web_verify_otp(tid, otp):
+            flash("OTP salah atau kedaluwarsa.", "danger")
+            return redirect(url_for("reset_password"))
+        pw_err = _validate_password_web(pw)
+        if pw_err:
+            flash(pw_err, "danger")
+            return redirect(url_for("reset_password"))
+        if pw != pw2:
+            flash("Konfirmasi password tidak cocok.", "danger")
+            return redirect(url_for("reset_password"))
+        web_update_password(tid, generate_password_hash(pw))
+        session.pop("reset_tid", None)
+        flash("Password berhasil direset! Silakan login.", "success")
+        return redirect(url_for("login"))
+    return render_template("reset_password.html")
 
 
 @app.route("/logout")
@@ -712,6 +863,57 @@ def beli_sukses():
 
 
 # ─── USER ─────────────────────────────────────────────────────────────────────
+
+@app.route("/profile", methods=["GET","POST"])
+@login_required
+def profile():
+    tid  = session["user_tid"]
+    user = web_get_user_by_tid(tid)
+    if request.method == "POST":
+        if not _csrf_ok():
+            abort(403)
+        action = request.form.get("action","")
+        if action == "change_password":
+            old_pw  = request.form.get("old_password","").strip()
+            new_pw  = request.form.get("new_password","").strip()
+            conf_pw = request.form.get("confirm_password","").strip()
+            if not check_password_hash(user["password_hash"], old_pw):
+                flash("Password lama salah.", "danger")
+                return redirect(url_for("profile"))
+            pw_err = _validate_password_web(new_pw)
+            if pw_err:
+                flash(pw_err, "danger")
+                return redirect(url_for("profile"))
+            if new_pw != conf_pw:
+                flash("Konfirmasi password tidak cocok.", "danger")
+                return redirect(url_for("profile"))
+            web_update_password(tid, generate_password_hash(new_pw))
+            flash("Password berhasil diperbarui!", "success")
+            return redirect(url_for("profile"))
+        elif action == "update_contact":
+            phone = request.form.get("phone","").strip() or None
+            email = (request.form.get("email","").strip().lower()) or None
+            if phone and not _RE_PHONE.match(phone):
+                flash("Format nomor HP tidak valid.", "danger")
+                return redirect(url_for("profile"))
+            if email and not _RE_EMAIL.match(email):
+                flash("Format email tidak valid.", "danger")
+                return redirect(url_for("profile"))
+            if phone and phone != user.get("phone"):
+                existing = web_get_user_by_phone(phone)
+                if existing and existing["telegram_id"] != tid:
+                    flash("Nomor HP sudah digunakan akun lain.", "danger")
+                    return redirect(url_for("profile"))
+            if email and email != user.get("email"):
+                existing = web_get_user_by_email(email)
+                if existing and existing["telegram_id"] != tid:
+                    flash("Email sudah digunakan akun lain.", "danger")
+                    return redirect(url_for("profile"))
+            web_update_profile(tid, phone=phone, email=email)
+            flash("Profil berhasil diperbarui!", "success")
+            return redirect(url_for("profile"))
+    return render_template("profile.html", user=user)
+
 
 @app.route("/dashboard")
 @login_required

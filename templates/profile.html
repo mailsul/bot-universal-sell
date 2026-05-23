@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Profil — {{ cfg.nama_toko }}{% endblock %}
+{% block content %}
+<div class="row g-4">
+  <div class="col-12">
+    <h4 class="page-header mb-1"><i class="bi bi-person-fill me-2"></i>Profil Akun</h4>
+    <p class="page-sub">Kelola informasi akun dan keamanan</p>
+  </div>
+
+  <!-- Info Akun -->
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header"><h6><i class="bi bi-person-badge me-2"></i>Informasi Akun</h6></div>
+      <div class="card-body p-4">
+        <div class="mb-3">
+          <div class="small fw-semibold" style="color:var(--text-muted)">Telegram ID</div>
+          <code>{{ user.telegram_id }}</code>
+        </div>
+        {% if user.username %}
+        <div class="mb-3">
+          <div class="small fw-semibold" style="color:var(--text-muted)">Username Telegram</div>
+          <span>@{{ user.username }}</span>
+        </div>
+        {% endif %}
+        <div class="mb-3">
+          <div class="small fw-semibold" style="color:var(--text-muted)">Role</div>
+          <span class="badge {% if user.role == 'admin' %}bg-danger{% else %}bg-primary{% endif %}">{{ user.role | upper }}</span>
+        </div>
+        <div class="mb-3">
+          <div class="small fw-semibold" style="color:var(--text-muted)">Terdaftar</div>
+          <span class="small">{{ user.created_at }}</span>
+        </div>
+
+        <hr>
+        <h6 class="fw-bold mb-3">Update Kontak</h6>
+        <form method="post" action="/profile">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="update_contact">
+          <div class="mb-3">
+            <label class="form-label"><i class="bi bi-phone me-1 text-brand"></i>Nomor HP</label>
+            <input type="tel" name="phone" class="form-control"
+              value="{{ user.phone or '' }}" placeholder="+6281234567890">
+          </div>
+          <div class="mb-3">
+            <label class="form-label"><i class="bi bi-envelope me-1 text-brand"></i>Email</label>
+            <input type="email" name="email" class="form-control"
+              value="{{ user.email or '' }}" placeholder="nama@gmail.com">
+          </div>
+          <button type="submit" class="btn btn-brand btn-sm px-4 fw-semibold">
+            <i class="bi bi-check-circle me-1"></i>Simpan
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Ganti Password -->
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header"><h6><i class="bi bi-lock-fill me-2"></i>Ganti Password</h6></div>
+      <div class="card-body p-4">
+        <form method="post" action="/profile">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="change_password">
+          <div class="mb-3">
+            <label class="form-label">Password Lama</label>
+            <input type="password" name="old_password" class="form-control"
+              placeholder="Password saat ini" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Password Baru</label>
+            <input type="password" name="new_password" class="form-control"
+              placeholder="Min 8 karakter, kapital, angka, simbol" required minlength="8">
+          </div>
+          <div class="mb-4">
+            <label class="form-label">Konfirmasi Password Baru</label>
+            <input type="password" name="confirm_password" class="form-control"
+              placeholder="Ulangi password baru" required>
+          </div>
+          <button type="submit" class="btn btn-brand btn-sm px-4 fw-semibold">
+            <i class="bi bi-key me-1"></i>Ganti Password
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

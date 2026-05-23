@@ -433,7 +433,9 @@ def init_web_tables():
             username      TEXT,
             password_hash TEXT NOT NULL,
             role          TEXT NOT NULL DEFAULT 'user',
-            created_at    TEXT NOT NULL
+            created_at    TEXT NOT NULL,
+            phone         TEXT,
+            email         TEXT
         )""")
         conn.execute("""
         CREATE TABLE IF NOT EXISTS web_otp (
@@ -443,6 +445,12 @@ def init_web_tables():
             expires_at  TEXT NOT NULL,
             used        INTEGER DEFAULT 0
         )""")
+        # Migrasi: tambah kolom phone/email ke tabel lama jika belum ada
+        for col in ("phone", "email"):
+            try:
+                conn.execute(f"ALTER TABLE web_users ADD COLUMN {col} TEXT")
+            except Exception:
+                pass
         conn.commit()
         conn.close()
 
@@ -455,18 +463,71 @@ def web_get_user_by_tid(telegram_id: int) -> dict | None:
     return dict(row) if row else None
 
 
-def web_create_user(telegram_id: int, username, password_hash: str, role: str = "user") -> int:
+def web_create_user(telegram_id: int, username, password_hash: str, role: str = "user",
+                    phone: str = None, email: str = None) -> int:
     now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    email_norm = email.lower().strip() if email else None
     with _lock:
         conn = _get_conn()
         cur  = conn.execute(
-            "INSERT INTO web_users (telegram_id,username,password_hash,role,created_at) VALUES (?,?,?,?,?)",
-            (int(telegram_id), username, password_hash, role, now)
+            "INSERT INTO web_users (telegram_id,username,password_hash,role,created_at,phone,email) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (int(telegram_id), username, password_hash, role, now, phone, email_norm)
         )
         conn.commit()
         new_id = cur.lastrowid
         conn.close()
     return new_id
+
+
+def web_get_user_by_email(email: str) -> dict | None:
+    email_norm = email.lower().strip() if email else ""
+    if not email_norm:
+        return None
+    with _lock:
+        conn = _get_conn()
+        row  = conn.execute("SELECT * FROM web_users WHERE LOWER(email)=?", (email_norm,)).fetchone()
+        conn.close()
+    return dict(row) if row else None
+
+
+def web_get_user_by_phone(phone: str) -> dict | None:
+    if not phone:
+        return None
+    with _lock:
+        conn = _get_conn()
+        row  = conn.execute("SELECT * FROM web_users WHERE phone=?", (phone.strip(),)).fetchone()
+        conn.close()
+    return dict(row) if row else None
+
+
+def web_get_user_by_identifier(identifier: str) -> dict | None:
+    """Cari user by email, phone, atau telegram_id (backward compat)."""
+    if not identifier:
+        return None
+    u = web_get_user_by_email(identifier)
+    if u:
+        return u
+    u = web_get_user_by_phone(identifier)
+    if u:
+        return u
+    try:
+        u = web_get_user_by_tid(int(identifier))
+    except (ValueError, TypeError):
+        pass
+    return u
+
+
+def web_update_profile(telegram_id: int, phone: str = None, email: str = None):
+    with _lock:
+        conn = _get_conn()
+        if phone is not None:
+            conn.execute("UPDATE web_users SET phone=? WHERE telegram_id=?", (phone, int(telegram_id)))
+        if email is not None:
+            conn.execute("UPDATE web_users SET email=? WHERE telegram_id=?",
+                         (email.lower().strip(), int(telegram_id)))
+        conn.commit()
+        conn.close()
 
 
 def web_update_password(telegram_id: int, password_hash: str):

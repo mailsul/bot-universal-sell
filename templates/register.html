@@ -2,44 +2,108 @@
 {% block title %}Daftar — {{ cfg.nama_toko }}{% endblock %}
 {% block content %}
 <div class="row justify-content-center">
-  <div class="col-md-5 col-lg-4">
+  <div class="col-md-6 col-lg-5">
     <div class="text-center mb-4">
-      <div style="width:56px;height:56px;background:var(--brand-light);border-radius:16px;display:flex;align-items:center;justify-content:center;margin:0 auto 12px;font-size:1.6rem;">
+      <div class="auth-icon-wrap">
         <i class="bi bi-person-plus-fill text-brand"></i>
       </div>
       <h4 class="fw-bold mb-0">Buat Akun</h4>
-      <p class="text-muted small">{{ cfg.nama_toko }}</p>
+      <p class="small" style="color:var(--text-muted)">{{ cfg.nama_toko }}</p>
     </div>
+
     <div class="card">
       <div class="card-body p-4">
+
         <div class="alert alert-info small mb-4 py-2">
           <i class="bi bi-telegram me-1"></i>
-          Pastikan kamu sudah pernah <strong>start bot</strong> kami di Telegram agar OTP bisa terkirim.
+          Pastikan sudah <strong>start bot</strong> kami di Telegram agar OTP bisa terkirim.
+          Atau daftar langsung via bot dengan perintah <strong>/start</strong>.
         </div>
-        <form method="post" action="/register">
+
+        <form method="post" action="/register" autocomplete="off">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+
           <div class="mb-3">
-            <label class="form-label">Telegram ID</label>
-            <input type="number" name="telegram_id" class="form-control" placeholder="1234567890" required autofocus>
-            <div class="form-text">Cek via <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a></div>
+            <label class="form-label"><i class="bi bi-telegram me-1 text-brand"></i>Telegram ID</label>
+            <input type="number" name="telegram_id" class="form-control"
+              placeholder="1234567890" required autofocus>
+            <div class="form-text">
+              Cek via <a href="https://t.me/userinfobot" target="_blank" class="text-brand">@userinfobot</a>
+            </div>
           </div>
+
           <div class="mb-3">
-            <label class="form-label">Password</label>
-            <input type="password" name="password" class="form-control" placeholder="Minimal 6 karakter" required minlength="6">
+            <label class="form-label"><i class="bi bi-phone me-1 text-brand"></i>Nomor HP</label>
+            <input type="tel" name="phone" class="form-control"
+              placeholder="+6281234567890" pattern="^\+62[0-9]{8,13}$">
+            <div class="form-text">Format: +62…  (opsional, tapi wajib untuk login via HP)</div>
           </div>
+
+          <div class="mb-3">
+            <label class="form-label"><i class="bi bi-envelope me-1 text-brand"></i>Email</label>
+            <input type="email" name="email" class="form-control"
+              placeholder="nama@gmail.com">
+            <div class="form-text">Email untuk login di website (opsional, sangat disarankan)</div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label"><i class="bi bi-lock me-1 text-brand"></i>Password</label>
+            <div class="input-group">
+              <input type="password" name="password" id="pw1" class="form-control"
+                placeholder="Min 8 karakter" required minlength="8">
+              <button type="button" class="btn btn-outline-secondary border-start-0"
+                style="border-radius:0 10px 10px 0;background:var(--brand-light);border-color:var(--border)"
+                onclick="var p=document.getElementById('pw1');p.type=p.type==='password'?'text':'password'">
+                <i class="bi bi-eye"></i>
+              </button>
+            </div>
+            <div class="form-text">Min 8 karakter, huruf kapital, angka, dan simbol</div>
+          </div>
+
           <div class="mb-4">
-            <label class="form-label">Konfirmasi Password</label>
-            <input type="password" name="password2" class="form-control" placeholder="Ulangi password" required>
+            <label class="form-label"><i class="bi bi-lock-fill me-1 text-brand"></i>Konfirmasi Password</label>
+            <input type="password" name="password2" id="pw2" class="form-control"
+              placeholder="Ulangi password" required>
           </div>
+
+          <!-- Indikator kekuatan password -->
+          <div class="mb-3" id="pwStrengthWrap" style="display:none">
+            <div class="small mb-1" style="color:var(--text-muted)">Kekuatan password:</div>
+            <div class="d-flex gap-2 flex-wrap" id="pwChecks">
+              <span id="ck-len"  class="badge bg-secondary">≥ 8 karakter</span>
+              <span id="ck-up"   class="badge bg-secondary">Huruf kapital</span>
+              <span id="ck-num"  class="badge bg-secondary">Angka</span>
+              <span id="ck-sym"  class="badge bg-secondary">Simbol</span>
+            </div>
+          </div>
+
           <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold">
             <i class="bi bi-send me-1"></i>Kirim OTP ke Telegram
           </button>
         </form>
+
         <hr class="my-3">
-        <p class="text-center mb-0 small text-muted">
+        <p class="text-center mb-0 small" style="color:var(--text-muted)">
           Sudah punya akun? <a href="/login" class="fw-semibold text-brand text-decoration-none">Login</a>
         </p>
       </div>
     </div>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var pw1 = document.getElementById('pw1');
+var pw2 = document.getElementById('pw2');
+pw1.addEventListener('input', function(){
+  var v = pw1.value;
+  document.getElementById('pwStrengthWrap').style.display = v ? '' : 'none';
+  function upd(id, ok){ document.getElementById(id).className = 'badge ' + (ok?'bg-success':'bg-secondary'); }
+  upd('ck-len', v.length >= 8);
+  upd('ck-up',  /[A-Z]/.test(v));
+  upd('ck-num', /[0-9]/.test(v));
+  upd('ck-sym', /[!@#$%^&*()\-_=+\[\]{};:'",./<>?\\|`~]/.test(v));
+});
+</script>
 {% endblock %}

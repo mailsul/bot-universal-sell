@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="id">
+<html lang="id" data-theme="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -11,157 +11,266 @@
   {% if logo_url %}
   <link rel="icon" type="image/png" href="{{ logo_url }}">
   {% endif %}
-  <style>
-    :root {
-      --brand: #7c3aed;
-      --brand-dark: #5b21b6;
-      --brand-light: #ede9fe;
-      --brand-mid: #8b5cf6;
-      --surface: #f8f7ff;
-      --card-shadow: 0 1px 3px rgba(0,0,0,.06), 0 4px 16px rgba(124,58,237,.08);
-      --card-shadow-hover: 0 8px 32px rgba(124,58,237,.18);
+
+  <!-- Theme script — jalankan sebelum render untuk hindari flash -->
+  <script>
+  (function(){
+    function shouldDark(){
+      var s=localStorage.getItem('ibra-theme');
+      if(s==='dark') return true;
+      if(s==='light') return false;
+      var h=new Date().getHours();
+      return h>=20||h<6;
     }
+    document.documentElement.setAttribute('data-theme', shouldDark()?'dark':'light');
+  })();
+  </script>
+
+  <style>
+    /* ── LIGHT THEME (default) ── */
+    :root {
+      --brand:        #7c3aed;
+      --brand-dark:   #5b21b6;
+      --brand-light:  #ede9fe;
+      --brand-mid:    #8b5cf6;
+      --bg:           #f8f7ff;
+      --bg2:          #fff;
+      --surface:      #f8f7ff;
+      --text:         #1e1b4b;
+      --text-muted:   #6b7280;
+      --border:       #e5e7eb;
+      --card-shadow:  0 1px 3px rgba(0,0,0,.06), 0 4px 16px rgba(124,58,237,.08);
+      --card-shadow-h:0 8px 32px rgba(124,58,237,.18);
+      --input-bg:     #fff;
+      --table-hover:  #ede9fe;
+      --navbar-text:  rgba(255,255,255,.85);
+      --footer-text:  rgba(255,255,255,.75);
+      --dropdown-bg:  #fff;
+      --dropdown-border:#e5e7eb;
+      --hr-color:     #e5e7eb;
+      --code-bg:      #ede9fe;
+      --code-color:   #5b21b6;
+      --scrollbar-track: #f1f5f9;
+      --scrollbar-thumb: #c4b5fd;
+      --alert-bg-info: #eff6ff;
+      --alert-text-info: #1e40af;
+    }
+
+    /* ── DARK THEME ── */
+    [data-theme="dark"] {
+      --brand:        #a78bfa;
+      --brand-dark:   #7c3aed;
+      --brand-light:  #2d1d5e;
+      --brand-mid:    #8b5cf6;
+      --bg:           #0d0b1a;
+      --bg2:          #120f24;
+      --surface:      #0d0b1a;
+      --text:         #e5e7eb;
+      --text-muted:   #9ca3af;
+      --border:       #2d2560;
+      --card-shadow:  0 1px 4px rgba(0,0,0,.4), 0 4px 20px rgba(124,58,237,.12);
+      --card-shadow-h:0 8px 36px rgba(124,58,237,.3);
+      --input-bg:     #1a1535;
+      --table-hover:  #1e1640;
+      --navbar-text:  rgba(255,255,255,.9);
+      --footer-text:  rgba(255,255,255,.6);
+      --dropdown-bg:  #1a1535;
+      --dropdown-border:#2d2560;
+      --hr-color:     #2d2560;
+      --code-bg:      #1e1640;
+      --code-color:   #a78bfa;
+      --scrollbar-track: #1a1535;
+      --scrollbar-thumb: #5b21b6;
+      --alert-bg-info: #1a1d3a;
+      --alert-text-info: #93c5fd;
+    }
+
     *, *::before, *::after { box-sizing: border-box; }
+
     body {
       font-family: 'Inter', system-ui, sans-serif;
-      background: var(--surface);
-      color: #1e1b4b;
+      background: var(--bg);
+      color: var(--text);
       min-height: 100vh;
       display: flex;
       flex-direction: column;
+      transition: background .25s, color .25s;
     }
     .main-wrap { flex: 1; }
 
     /* ── NAVBAR ── */
     .navbar {
-      background: linear-gradient(135deg, var(--brand-dark) 0%, var(--brand) 60%, var(--brand-mid) 100%) !important;
-      box-shadow: 0 2px 20px rgba(91,33,182,.3);
+      background: linear-gradient(135deg, var(--brand-dark) 0%, #7c3aed 60%, #8b5cf6 100%) !important;
+      box-shadow: 0 2px 20px rgba(91,33,182,.35);
       padding: 12px 0;
     }
     .navbar-brand {
-      font-weight: 800;
-      font-size: 1.2rem;
-      letter-spacing: -.3px;
-      color: #fff !important;
+      font-weight: 800; font-size: 1.2rem; letter-spacing: -.3px; color: #fff !important;
     }
     .navbar-brand i { opacity: .9; }
-    .nav-link { color: rgba(255,255,255,.85) !important; font-weight: 500; font-size: .9rem; transition: color .15s; }
+    .nav-link { color: var(--navbar-text) !important; font-weight: 500; font-size: .9rem; transition: color .15s; }
     .nav-link:hover { color: #fff !important; }
     .nav-saldo { color: #fde68a !important; font-weight: 700; }
     .btn-nav-register {
       background: rgba(255,255,255,.15);
       border: 1px solid rgba(255,255,255,.3);
       color: #fff !important;
-      border-radius: 8px;
-      font-size: .85rem;
-      font-weight: 600;
-      padding: 6px 14px;
+      border-radius: 8px; font-size: .85rem; font-weight: 600; padding: 6px 14px;
       transition: background .15s;
     }
     .btn-nav-register:hover { background: rgba(255,255,255,.25); }
 
+    /* Theme toggle */
+    .btn-theme {
+      background: rgba(255,255,255,.12);
+      border: 1px solid rgba(255,255,255,.2);
+      color: #fff;
+      border-radius: 8px;
+      width: 36px; height: 36px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; font-size: 1rem; transition: background .15s;
+    }
+    .btn-theme:hover { background: rgba(255,255,255,.22); color: #fde68a; }
+
     /* ── CARDS ── */
     .card {
-      border: none;
+      border: 1px solid var(--border);
       border-radius: 16px;
       box-shadow: var(--card-shadow);
-      transition: box-shadow .2s, transform .2s;
-      background: #fff;
+      transition: box-shadow .2s, transform .2s, background .25s;
+      background: var(--bg2);
+      color: var(--text);
     }
-    .card:hover { box-shadow: var(--card-shadow-hover); }
+    .card:hover { box-shadow: var(--card-shadow-h); }
     .card-header {
-      background: linear-gradient(135deg, var(--brand-dark), var(--brand));
-      color: #fff;
+      background: linear-gradient(135deg, var(--brand-dark), var(--brand)) !important;
+      color: #fff !important;
       border-radius: 16px 16px 0 0 !important;
-      padding: 14px 20px;
-      font-weight: 600;
-      border: none;
+      padding: 14px 20px; font-weight: 600; border: none !important;
     }
     .card-header h6, .card-header h5 { margin: 0; font-weight: 700; }
 
     /* ── BUTTONS ── */
     .btn-brand {
-      background: linear-gradient(135deg, var(--brand-dark), var(--brand));
-      color: #fff;
-      border: none;
-      border-radius: 10px;
-      font-weight: 600;
+      background: linear-gradient(135deg, var(--brand-dark), #7c3aed);
+      color: #fff; border: none; border-radius: 10px; font-weight: 600;
       transition: opacity .15s, transform .1s;
     }
     .btn-brand:hover { color: #fff; opacity: .92; transform: translateY(-1px); }
     .btn-brand:active { transform: translateY(0); }
     .btn-outline-brand {
-      border: 2px solid var(--brand);
-      color: var(--brand);
-      border-radius: 10px;
-      font-weight: 600;
-      transition: all .15s;
+      border: 2px solid var(--brand); color: var(--brand);
+      border-radius: 10px; font-weight: 600; transition: all .15s;
     }
     .btn-outline-brand:hover { background: var(--brand); color: #fff; }
 
     /* ── FORMS ── */
     .form-control, .form-select {
       border-radius: 10px;
-      border: 1.5px solid #e5e7eb;
-      padding: 10px 14px;
-      font-size: .93rem;
-      transition: border-color .15s, box-shadow .15s;
+      border: 1.5px solid var(--border);
+      padding: 10px 14px; font-size: .93rem;
+      background: var(--input-bg) !important;
+      color: var(--text) !important;
+      transition: border-color .15s, box-shadow .15s, background .25s;
     }
     .form-control:focus, .form-select:focus {
       border-color: var(--brand);
-      box-shadow: 0 0 0 3px rgba(124,58,237,.12);
+      box-shadow: 0 0 0 3px rgba(124,58,237,.15);
+      background: var(--input-bg) !important;
     }
-    .form-label { font-weight: 600; font-size: .88rem; color: #374151; margin-bottom: 6px; }
-    .input-group-text { border-radius: 10px 0 0 10px; background: var(--brand-light); border-color: #e5e7eb; color: var(--brand); font-weight: 600; }
+    .form-control::placeholder { color: var(--text-muted); opacity: .75; }
+    .form-label { font-weight: 600; font-size: .88rem; color: var(--text); margin-bottom: 6px; }
+    .input-group-text {
+      border-radius: 10px 0 0 10px !important;
+      background: var(--brand-light) !important;
+      border-color: var(--border) !important;
+      color: var(--brand) !important;
+      font-weight: 600;
+    }
+    .form-text { color: var(--text-muted); font-size: .82rem; }
 
     /* ── ALERTS ── */
     .alert { border-radius: 12px; border: none; font-size: .9rem; }
     .alert-success { background: #f0fdf4; color: #166534; border-left: 4px solid #22c55e; }
     .alert-danger  { background: #fef2f2; color: #991b1b; border-left: 4px solid #ef4444; }
     .alert-warning { background: #fffbeb; color: #92400e; border-left: 4px solid #f59e0b; }
-    .alert-info    { background: #eff6ff; color: #1e40af; border-left: 4px solid #3b82f6; }
+    .alert-info    { background: var(--alert-bg-info); color: var(--alert-text-info); border-left: 4px solid #3b82f6; }
+    [data-theme="dark"] .alert-success { background: #052e16; color: #86efac; }
+    [data-theme="dark"] .alert-danger  { background: #2d0a0a; color: #fca5a5; }
+    [data-theme="dark"] .alert-warning { background: #2d1a00; color: #fcd34d; }
 
     /* ── BADGES ── */
     .badge { border-radius: 6px; font-weight: 600; font-size: .75rem; }
 
     /* ── SALDO BOX ── */
     .saldo-box {
-      background: linear-gradient(135deg, var(--brand-dark) 0%, var(--brand) 70%, #a855f7 100%);
-      color: #fff;
-      border-radius: 16px;
-      padding: 24px;
+      background: linear-gradient(135deg, var(--brand-dark) 0%, #7c3aed 70%, #a855f7 100%);
+      color: #fff; border-radius: 16px; padding: 24px;
     }
     .saldo-box .label { font-size: .82rem; opacity: .8; font-weight: 500; margin-bottom: 4px; }
     .saldo-box .amount { font-size: 1.8rem; font-weight: 800; letter-spacing: -.5px; }
 
     /* ── TABLE ── */
-    .table { font-size: .88rem; }
-    .table thead th { font-weight: 700; font-size: .8rem; text-transform: uppercase; letter-spacing: .5px; color: #6b7280; border-bottom: 2px solid #f3f4f6; }
-    .table tbody tr:hover { background: var(--brand-light); }
+    .table { font-size: .88rem; color: var(--text); }
+    .table thead th {
+      font-weight: 700; font-size: .8rem; text-transform: uppercase;
+      letter-spacing: .5px; color: var(--text-muted);
+      border-bottom: 2px solid var(--border);
+      background: var(--bg);
+    }
+    .table tbody tr:hover { background: var(--table-hover); }
+    .table td, .table th { border-color: var(--border); }
+
+    /* ── DROPDOWN ── */
+    .dropdown-menu {
+      background: var(--dropdown-bg) !important;
+      border-color: var(--dropdown-border) !important;
+      border-radius: 12px !important;
+      box-shadow: 0 8px 30px rgba(0,0,0,.15);
+    }
+    .dropdown-item { color: var(--text) !important; }
+    .dropdown-item:hover { background: var(--brand-light) !important; }
+    .dropdown-divider { border-color: var(--hr-color); }
+    .dropdown-item.text-danger { color: #ef4444 !important; }
 
     /* ── PAGE HEADER ── */
-    .page-header { font-size: 1.4rem; font-weight: 800; color: var(--brand-dark); margin-bottom: 6px; }
-    .page-sub { color: #6b7280; font-size: .9rem; margin-bottom: 0; }
+    .page-header { font-size: 1.4rem; font-weight: 800; color: var(--brand); margin-bottom: 6px; }
+    .page-sub { color: var(--text-muted); font-size: .9rem; margin-bottom: 0; }
 
     /* ── FOOTER ── */
     footer {
-      background: linear-gradient(135deg, var(--brand-dark), var(--brand));
-      color: rgba(255,255,255,.75);
-      padding: 20px 0;
-      font-size: .85rem;
+      background: linear-gradient(135deg, var(--brand-dark), #7c3aed);
+      color: var(--footer-text); padding: 20px 0; font-size: .85rem;
     }
     footer a { color: #fde68a; text-decoration: none; }
     footer a:hover { color: #fff; }
 
+    /* ── HR ── */
+    hr { border-color: var(--hr-color); }
+
     /* ── MISC ── */
     .text-brand { color: var(--brand) !important; }
-    .bg-brand-light { background: var(--brand-light); }
-    code { background: var(--brand-light); color: var(--brand-dark); border-radius: 5px; padding: 2px 6px; font-size: .85em; }
+    .bg-brand-light { background: var(--brand-light) !important; }
+    code { background: var(--code-bg); color: var(--code-color); border-radius: 5px; padding: 2px 6px; font-size: .85em; }
+    .text-muted { color: var(--text-muted) !important; }
+    small { color: inherit; }
 
     /* scrollbar */
     ::-webkit-scrollbar { width: 6px; }
-    ::-webkit-scrollbar-track { background: #f1f5f9; }
-    ::-webkit-scrollbar-thumb { background: #c4b5fd; border-radius: 3px; }
+    ::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+    ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
+
+    /* ── AUTH CARD special ── */
+    .auth-icon-wrap {
+      width: 60px; height: 60px;
+      background: var(--brand-light);
+      border-radius: 18px;
+      display: flex; align-items: center; justify-content: center;
+      margin: 0 auto 14px; font-size: 1.7rem;
+    }
+
+    /* navbar user text */
+    .nav-user-text { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   </style>
   {% block head %}{% endblock %}
 </head>
@@ -188,18 +297,29 @@
         <li class="nav-item"><a class="nav-link" href="/admin"><i class="bi bi-shield-fill-check me-1"></i>Admin</a></li>
         {% endif %}
         {% endif %}
+        {% if cfg.website_url %}
+        <li class="nav-item"><a class="nav-link" href="{{ cfg.website_url }}" target="_blank"><i class="bi bi-globe me-1"></i>Website</a></li>
+        {% endif %}
       </ul>
       <ul class="navbar-nav align-items-center gap-2">
+        <!-- Dark/Light toggle -->
+        <li class="nav-item">
+          <button class="btn-theme" id="themeToggle" title="Ganti tema" onclick="toggleIbraTheme()" aria-label="Toggle dark/light mode">
+            <i class="bi" id="themeIcon"></i>
+          </button>
+        </li>
         {% if current_user %}
         <li class="nav-item">
           <span class="nav-link nav-saldo"><i class="bi bi-coin me-1"></i>Rp{{ "{:,}".format(current_saldo) }}</span>
         </li>
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle" href="#" data-bs-toggle="dropdown">
-            <i class="bi bi-person-circle me-1"></i>{{ current_user.telegram_id }}
+            <i class="bi bi-person-circle me-1"></i>
+            <span class="nav-user-text">{{ current_user.email or current_user.phone or current_user.telegram_id }}</span>
           </a>
-          <ul class="dropdown-menu dropdown-menu-end shadow border-0" style="border-radius:12px">
+          <ul class="dropdown-menu dropdown-menu-end shadow border-0">
             <li><a class="dropdown-item" href="/dashboard"><i class="bi bi-speedometer2 me-2"></i>Dashboard</a></li>
+            <li><a class="dropdown-item" href="/profile"><i class="bi bi-person-fill me-2"></i>Profil</a></li>
             {% if current_user.role == 'admin' %}
             <li><a class="dropdown-item" href="/admin/password"><i class="bi bi-key me-2"></i>Ganti Password</a></li>
             {% endif %}
@@ -238,10 +358,49 @@
       <i class="bi bi-telegram me-1"></i>{{ cfg.kontak_admin }}
     </a>
     {% endif %}
+    {% if cfg.website_url %}
+    &nbsp;·&nbsp;
+    <a href="{{ cfg.website_url }}" target="_blank"><i class="bi bi-globe me-1"></i>Website</a>
+    {% endif %}
   </div>
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// ── AUTO DARK/LIGHT THEME ────────────────────────────────────────────────────
+(function(){
+  function shouldDark(){
+    var s=localStorage.getItem('ibra-theme');
+    if(s==='dark') return true;
+    if(s==='light') return false;
+    var h=new Date().getHours();
+    return h>=20||h<6;
+  }
+  function applyTheme(){
+    var dark=shouldDark();
+    document.documentElement.setAttribute('data-theme',dark?'dark':'light');
+    var ic=document.getElementById('themeIcon');
+    if(ic){ ic.className=dark?'bi bi-sun-fill':'bi bi-moon-fill'; }
+  }
+  window.toggleIbraTheme=function(){
+    var stored=localStorage.getItem('ibra-theme');
+    var isDark=document.documentElement.getAttribute('data-theme')==='dark';
+    if(!stored){
+      // auto → manual override
+      localStorage.setItem('ibra-theme', isDark?'light':'dark');
+    } else {
+      // toggle stored value
+      localStorage.setItem('ibra-theme', isDark?'light':'dark');
+    }
+    applyTheme();
+  };
+  applyTheme();
+  // Re-check setiap menit (untuk auto switch jam 20:00 / 06:00)
+  setInterval(function(){
+    if(!localStorage.getItem('ibra-theme')) applyTheme();
+  }, 60000);
+})();
+</script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

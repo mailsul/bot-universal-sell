@@ -1,20 +1,24 @@
 import json  # Made With love by @govtrashit A.K.A RzkyO
 import os    # DON'T CHANGE AUTHOR NAME!
+import re
 import asyncio
 import shutil
 import time
 import random
 import logging
 import httpx
+from werkzeug.security import generate_password_hash
 from produk_lock import produk_lock
 from db import (
-    init_db,
+    init_db, init_web_tables,
     db_get_saldo, db_add_saldo, db_set_saldo, db_get_all_saldo,
     db_get_all_pending, db_get_pending_by_user, db_get_pending_any_by_user,
     db_add_pending, db_remove_pending_by_user, db_remove_pending_any_by_user,
     db_update_pending_cek_count, db_remove_pending_by_id,
     db_add_riwayat, db_get_riwayat,
     db_update_statistik, db_get_statistik_user, db_get_all_statistik,
+    web_get_user_by_tid, web_create_user,
+    web_get_user_by_email, web_get_user_by_phone, web_update_profile,
 )
 
 import sys
@@ -132,6 +136,22 @@ ADMIN_IDS         = set(
 
 LOW_STOCK_THRESHOLD = 2
 DEPOSIT_NOMINALS    = [10000, 15000, 20000, 25000, 50000]
+
+_RE_PHONE = re.compile(r'^\+62[0-9]{8,13}$')
+_RE_EMAIL  = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
+
+def _validate_password(pw: str):
+    """Validasi kekuatan password. Return pesan error atau None jika valid."""
+    if len(pw) < 8:
+        return "Password minimal *8 karakter*"
+    if not re.search(r'[A-Z]', pw):
+        return "Password harus ada huruf *KAPITAL* (A–Z)"
+    if not re.search(r'[0-9]', pw):
+        return "Password harus ada *angka* (0–9)"
+    if not re.search(r'[!@#$%^&*()\-_=+\[\]{};:\'",.<>?/\\|`~]', pw):
+        return "Password harus ada *simbol* (!@#$%^&* dll)"
+    return None
+
 DEPOSIT_MIN         = 5000
 DEPOSIT_MAX         = 1_000_000
 RIWAYAT_LIMIT       = 10
@@ -161,6 +181,7 @@ _CONFIG_DEFAULT = {
     "nama_toko":    "Store Ekha",
     "rekening":     ["DANA : 0812-XXXX-XXXX a.n Admin"],
     "kontak_admin": "@admin",
+    "website_url":  "",
 }
 
 
@@ -655,6 +676,7 @@ async def mutasi_loop(app: Application):
 
 async def post_init(app: Application):
     init_db()
+    init_web_tables()
     if URL_MUTASI:
         asyncio.create_task(mutasi_loop(app))
 
@@ -731,6 +753,7 @@ async def send_main_menu(bot_or_context, chat_id: int, user):
         f"🔴 _Pilih menu di bawah untuk melanjutkan._"
     )
 
+    cfg_full = load_config()
     keyboard = [
         [_ikb("🛍 List Produk",   "🛍", "success",  callback_data="list_produk"),
          _ikb("🆘 Bantuan",        "🆘", "danger",   callback_data="info_bot")],
@@ -739,6 +762,9 @@ async def send_main_menu(bot_or_context, chat_id: int, user):
     ]
     if is_admin(user.id):
         keyboard.append([_ikb("🛠 Admin Panel", "🛠", "danger", callback_data="admin_panel")])
+    _ws = cfg_full.get("website_url", "").strip()
+    if _ws:
+        keyboard.append([_ikb("🌐 Kunjungi Website Toko", "🌐", "primary", url=_ws)])
 
     markup = InlineKeyboardMarkup(keyboard)
 
@@ -842,20 +868,7 @@ async def handle_list_produk(update: Update, context: CallbackContext):
     kb_rows.append([_ikb("🔥 Kembali ke Menu Utama", "🔥", "danger", callback_data="back_to_produk")])
 
     markup = InlineKeyboardMarkup(kb_rows)
-    try:
-        await query.edit_message_text(msg, reply_markup=markup, parse_mode="Markdown")
-    except Exception:
-        try:
-            await query.edit_message_caption(msg, reply_markup=markup, parse_mode="Markdown")
-        except Exception:
-            try:
-                await query.message.delete()
-            except Exception:
-                pass
-            await context.bot.send_message(
-                chat_id=query.from_user.id, text=msg,
-                reply_markup=markup, parse_mode="Markdown"
-            )
+    await safe_edit(query, context, msg, reply_markup=markup)
 
 
 async def handle_cek_stok(update: Update, context: CallbackContext):
@@ -1803,11 +1816,13 @@ async def handle_admin_settings(update: Update, context: CallbackContext):
         return
     cfg  = load_config()
     rek  = "\n".join(f"  • {r}" for r in cfg.get("rekening", []))
+    website_url = cfg.get("website_url", "") or "Belum diatur"
     text = (
         f"⚙️ *PENGATURAN BOT*\n\n"
         f"🏪 *Nama Toko*: `{cfg['nama_toko']}`\n\n"
         f"🏦 *Rekening*:\n{rek}\n\n"
-        f"📞 *Kontak Admin*: `{cfg['kontak_admin']}`"
+        f"📞 *Kontak Admin*: `{cfg['kontak_admin']}`\n\n"
+        f"🌐 *Website URL*: `{website_url}`"
     )
     qris_status = "✅ Aktif via env var" if QRIS_BASE64 else ("✅ Ada (gambar)" if os.path.exists(qris_file) else "❌ Belum diatur")
     text += f"\n\n📷 *QRIS*: {qris_status}"
@@ -1815,6 +1830,7 @@ async def handle_admin_settings(update: Update, context: CallbackContext):
         [_ikb("✏️ Ubah Nama Toko",    "✏",  None,      callback_data="admin_ubah_nama")],
         [_ikb("🏦 Ubah Rekening",      "🏦", None,      callback_data="admin_ubah_rekening")],
         [_ikb("📞 Ubah Kontak Admin",  "📞", None,      callback_data="admin_ubah_kontak")],
+        [_ikb("🌐 Ubah Website URL",   "🌐", None,      callback_data="admin_ubah_website")],
         [_ikb("📷 Upload Gambar QRIS", "📷", None,      callback_data="admin_upload_qris")],
         [_ikb("🔙 Kembali",            "🔙", "danger",  callback_data="admin_panel")],
     ]
@@ -1868,6 +1884,27 @@ async def handle_admin_ubah_kontak(update: Update, context: CallbackContext):
     await context.bot.send_message(
         chat_id=query.from_user.id,
         text=f"📞 Kontak admin saat ini: `{load_config()['kontak_admin']}`\n\nKetik kontak admin baru (contoh: @username):",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
+    )
+
+
+async def handle_admin_ubah_website(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    context.user_data["admin_state"] = "ubah_website"
+    cur = load_config().get("website_url", "") or "Belum diatur"
+    await query.message.delete()
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text=(
+            f"🌐 *Ubah Website URL*\n\n"
+            f"URL saat ini: `{cur}`\n\n"
+            "Ketik URL website (contoh: `https://toko-saya.replit.app`).\n"
+            "Kosongkan/ketik `-` untuk menghapus."
+        ),
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
     )
@@ -2048,6 +2085,7 @@ CALLBACK_MAP = {
     "admin_ubah_nama":        handle_admin_ubah_nama,
     "admin_ubah_rekening":    handle_admin_ubah_rekening,
     "admin_ubah_kontak":      handle_admin_ubah_kontak,
+    "admin_ubah_website":     handle_admin_ubah_website,
     "admin_upload_qris":      handle_admin_upload_qris,
     "deposit_qris":           handle_deposit_qris,
     "qris_dep_custom":        handle_qris_dep_nominal,
@@ -2105,14 +2143,108 @@ async def handle_text(update: Update, context: CallbackContext):
     # ── Batal universal ──────────────────────────────────────────────
     if text == "❌ Batal" or text == "❌ Batalkan Deposit":
         db_remove_pending_any_by_user(uid)
-        # Bersihkan semua state
         for key in ["awaiting_custom", "awaiting_qris_custom", "nominal_asli", "total_transfer",
-                    "admin_state", "new_produk", "restock_pid",
-                    "konfirmasi"]:
+                    "admin_state", "new_produk", "restock_pid", "konfirmasi",
+                    "reg_state", "reg_phone", "reg_email"]:
             context.user_data.pop(key, None)
         await update.message.reply_text("✅ Dibatalkan.", reply_markup=ReplyKeyboardRemove())
         await send_main_menu_safe(update, context)
         return
+
+    # ── Alur registrasi bot ──────────────────────────────────────────
+    reg_state = context.user_data.get("reg_state")
+    if reg_state:
+        if reg_state == "reg_phone":
+            phone = text.strip()
+            if not _RE_PHONE.match(phone):
+                await update.message.reply_text(
+                    "❌ Format nomor HP tidak valid.\n"
+                    "Gunakan format: `+6281234567890`\n\nCoba lagi:",
+                    parse_mode="Markdown"
+                )
+                return
+            if web_get_user_by_phone(phone):
+                await update.message.reply_text(
+                    "❌ Nomor HP ini sudah terdaftar. Gunakan nomor lain:"
+                )
+                return
+            context.user_data["reg_phone"] = phone
+            context.user_data["reg_state"] = "reg_email"
+            await update.message.reply_text(
+                "✅ Nomor HP diterima!\n\n"
+                "📧 *Langkah 2/3* — Masukkan *email* kamu:\n"
+                "Contoh: `nama@gmail.com`",
+                parse_mode="Markdown"
+            )
+            return
+
+        if reg_state == "reg_email":
+            email = text.strip().lower()
+            if not _RE_EMAIL.match(email):
+                await update.message.reply_text(
+                    "❌ Format email tidak valid. Coba lagi:"
+                )
+                return
+            if web_get_user_by_email(email):
+                await update.message.reply_text(
+                    "❌ Email ini sudah terdaftar. Gunakan email lain:"
+                )
+                return
+            context.user_data["reg_email"] = email
+            context.user_data["reg_state"] = "reg_password"
+            await update.message.reply_text(
+                "✅ Email diterima!\n\n"
+                "🔐 *Langkah 3/3* — Buat *password* kamu:\n\n"
+                "Syarat password:\n"
+                "• Minimal *8 karakter*\n"
+                "• Ada huruf *KAPITAL* (A–Z)\n"
+                "• Ada *angka* (0–9)\n"
+                "• Ada *simbol* (!@#$%^&\\* dll)\n\n"
+                "Ketik password kamu:",
+                parse_mode="Markdown"
+            )
+            return
+
+        if reg_state == "reg_password":
+            password = text.strip()
+            pw_err = _validate_password(password)
+            if pw_err:
+                await update.message.reply_text(
+                    f"❌ {pw_err}\n\nCoba lagi:",
+                    parse_mode="Markdown"
+                )
+                return
+            phone = context.user_data.pop("reg_phone", None)
+            email = context.user_data.pop("reg_email", None)
+            context.user_data.pop("reg_state", None)
+            pw_hash = generate_password_hash(password)
+            role = "admin" if is_admin(update.effective_user.id) else "user"
+            try:
+                web_create_user(
+                    update.effective_user.id,
+                    update.effective_user.username,
+                    pw_hash, role,
+                    phone=phone, email=email
+                )
+            except Exception as e:
+                log.error(f"web_create_user error: {e}")
+                await update.message.reply_text(
+                    "❌ Terjadi kesalahan saat membuat akun. Coba lagi nanti.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return
+            await update.message.reply_text(
+                "🎉 *Akun berhasil dibuat!*\n\n"
+                f"📱 HP: `{phone}`\n"
+                f"📧 Email: `{email}`\n\n"
+                "✅ Kamu sudah bisa login ke website menggunakan email/nomor HP dan password kamu.\n\n"
+                "Selamat berbelanja!",
+                parse_mode="Markdown",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await send_main_menu_safe(update, context)
+            return
+        return  # state tidak dikenal, abaikan
 
     # ── QRIS custom nominal ──────────────────────────────────────────
     if context.user_data.get("awaiting_qris_custom"):
@@ -2316,6 +2448,29 @@ async def handle_text(update: Update, context: CallbackContext):
             await send_main_menu_safe(update, context)
             return
 
+        if admin_state == "ubah_website":
+            raw_url = text.strip()
+            if raw_url == "-":
+                raw_url = ""
+            if raw_url and not (raw_url.startswith("http://") or raw_url.startswith("https://")):
+                await update.message.reply_text(
+                    "❌ URL harus dimulai dengan `http://` atau `https://`\nCoba lagi:",
+                    parse_mode="Markdown"
+                )
+                return
+            cfg = load_config()
+            cfg["website_url"] = raw_url
+            save_config(cfg)
+            context.user_data.pop("admin_state", None)
+            label = f"`{raw_url}`" if raw_url else "_(dihapus)_"
+            await update.message.reply_text(
+                f"✅ Website URL diperbarui: {label}",
+                parse_mode="Markdown",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await send_main_menu_safe(update, context)
+            return
+
     # ── Custom deposit nominal ───────────────────────────────────────
     if context.user_data.get("awaiting_custom"):
         try:
@@ -2462,7 +2617,26 @@ async def handle_photo(update: Update, context: CallbackContext):
 # ─── ENTRY POINT ─────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: CallbackContext):
-    await send_main_menu(context, update.effective_chat.id, update.effective_user)
+    user = update.effective_user
+    # Cek apakah user sudah punya akun web
+    existing = web_get_user_by_tid(user.id)
+    if not existing:
+        # Mulai alur registrasi
+        context.user_data["reg_state"] = "reg_phone"
+        cfg_r = load_config()
+        await update.message.reply_text(
+            f"👋 *Selamat datang di {cfg_r.get('nama_toko','Ibra Store')}!*\n\n"
+            "Untuk mulai berbelanja, kamu perlu *mendaftar* dulu.\n\n"
+            "📱 *Langkah 1/3* — Masukkan nomor HP kamu:\n"
+            "Format: `+6281234567890`\n\n"
+            "_(Nomor ini untuk login di website)_",
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton("❌ Batal")]], resize_keyboard=True, one_time_keyboard=True
+            ),
+        )
+        return
+    await send_main_menu(context, update.effective_chat.id, user)
 
 
 def main():  # Made With love by @govtrashit A.K.A RzkyO
