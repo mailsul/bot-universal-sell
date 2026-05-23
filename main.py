@@ -45,6 +45,9 @@ qris_file      = "qris.jpg"
 # Lock global untuk mencegah race condition saat beli produk
 purchase_lock = asyncio.Lock()
 
+# Event untuk reset timer loop mutasi ketika user menekan "Cek Sekarang"
+_manual_check_event = asyncio.Event()
+
 
 # ─── HELPER: CONFIG ──────────────────────────────────────────────────────────
 
@@ -196,28 +199,31 @@ def _qris_available() -> bool:
     return bool(QRIS_BASE64) or os.path.exists(qris_file)
 
 
-async def _send_qris_photo(bot, chat_id: int, nominal: int, kode: int, caption: str):
-    """Generate QR dinamis dan kirim ke user. Fallback ke file statis jika perlu."""
-    expected = nominal + kode
+async def _send_qris_photo(bot, chat_id: int, nominal: int, kode: int, caption: str,
+                           reply_markup=None):
+    """Generate QR dinamis dan kirim ke user. Fallback ke file statis jika perlu.
+    Mengembalikan objek Message yang terkirim."""
     if QRIS_BASE64:
         img_bytes, _ = generate_qr_with_amount(QRIS_BASE64, nominal, kode)
         if img_bytes:
-            await bot.send_photo(
+            return await bot.send_photo(
                 chat_id=chat_id,
                 photo=InputFile(img_bytes, filename="qris.png"),
                 caption=caption,
-                parse_mode="Markdown"
+                parse_mode="Markdown",
+                reply_markup=reply_markup
             )
-            return
     # Fallback ke file statis
     if os.path.exists(qris_file):
         with open(qris_file, "rb") as f:
-            await bot.send_photo(
+            return await bot.send_photo(
                 chat_id=chat_id,
                 photo=InputFile(f),
                 caption=caption,
-                parse_mode="Markdown"
+                parse_mode="Markdown",
+                reply_markup=reply_markup
             )
+    return None
 
 
 # ─── QRIS: CEK MUTASI OTOMATIS ───────────────────────────────────────────────
@@ -374,14 +380,29 @@ async def proses_mutasi(app: Application):
 
 
 async def mutasi_loop(app: Application):
-    """Background task — polling mutasi QRIS setiap QRIS_POLL_INTERVAL detik."""
-    await asyncio.sleep(10)  # delay awal supaya bot siap
+    """Background task — polling setiap 30 detik, aktif hanya saat ada pending QRIS < 5 menit."""
+    await asyncio.sleep(10)
     while True:
+        # Cek apakah ada pending QRIS yang masih aktif (< 5 menit)
         try:
-            await proses_mutasi(app)
+            pending = load_json(deposit_file)
+            now = datetime.now()
+            has_active = any(
+                p.get("metode", "").startswith("qris") and
+                (now - datetime.strptime(p["waktu"], "%d/%m/%Y %H:%M:%S")).total_seconds() < 300
+                for p in pending
+                if "waktu" in p and p.get("metode", "").startswith("qris")
+            )
+            if has_active:
+                await proses_mutasi(app)
         except Exception:
             pass
-        await asyncio.sleep(QRIS_POLL_INTERVAL)
+        # Tunggu 30 detik ATAU sampai user klik "Cek Sekarang"
+        _manual_check_event.clear()
+        try:
+            await asyncio.wait_for(_manual_check_event.wait(), timeout=QRIS_POLL_INTERVAL)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def post_init(app: Application):
@@ -921,7 +942,8 @@ async def _show_qris_deposit(user, nominal: int, context, delete_msg=None):
         "nominal":         nominal,
         "expected_amount": expected,
         "kode_unik":       kode,
-        "waktu":           datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        "waktu":           datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        "cek_count":       3,
     })
     save_json(deposit_file, pending)
 
@@ -940,7 +962,10 @@ async def _show_qris_deposit(user, nominal: int, context, delete_msg=None):
         except Exception:
             pass
 
-    await _send_qris_photo(context.bot, user.id, nominal, kode, caption)
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔄 Cek Sekarang (3x tersisa)", callback_data="cek_mutasi")
+    ]])
+    await _send_qris_photo(context.bot, user.id, nominal, kode, caption, reply_markup=kb)
 
 
 async def handle_beli_qris(update: Update, context: CallbackContext):
@@ -976,7 +1001,8 @@ async def handle_beli_qris(update: Update, context: CallbackContext):
         "nominal":         nominal,
         "expected_amount": expected,
         "kode_unik":       kode,
-        "waktu":           datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        "waktu":           datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        "cek_count":       3,
     })
     save_json(deposit_file, pending)
     context.user_data.pop("konfirmasi", None)
@@ -996,7 +1022,67 @@ async def handle_beli_qris(update: Update, context: CallbackContext):
     except Exception:
         pass
 
-    await _send_qris_photo(context.bot, query.from_user.id, nominal, kode, caption)
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔄 Cek Sekarang (3x tersisa)", callback_data="cek_mutasi")
+    ]])
+    await _send_qris_photo(context.bot, query.from_user.id, nominal, kode, caption, reply_markup=kb)
+
+
+# ─── QRIS: CEK SEKARANG (manual trigger) ─────────────────────────────────────
+
+async def handle_cek_mutasi(update: Update, context: CallbackContext):
+    """User klik tombol 'Cek Sekarang' — cek mutasi langsung, max 3x per pending."""
+    query = update.callback_query
+    uid   = query.from_user.id
+
+    pending = load_json(deposit_file)
+    user_pending = None
+    for p in pending:
+        if p["user_id"] == uid and p.get("metode", "").startswith("qris"):
+            user_pending = p
+            break
+
+    if not user_pending:
+        await query.answer("✅ Tidak ada pembayaran aktif.", show_alert=True)
+        return
+
+    cek_count = user_pending.get("cek_count", 3)
+    if cek_count <= 0:
+        await query.answer("❌ Batas cek manual (3x) habis. Tunggu cek otomatis setiap 30 detik.", show_alert=True)
+        return
+
+    await query.answer("🔍 Mengecek pembayaran...")
+
+    # Kurangi counter & simpan
+    user_pending["cek_count"] = cek_count - 1
+    save_json(deposit_file, pending)
+
+    # Jalankan cek mutasi sekarang + reset timer 30-detik loop
+    await proses_mutasi(context.application)
+    _manual_check_event.set()
+
+    # Cek apakah pembayaran sudah terkonfirmasi
+    pending_after = load_json(deposit_file)
+    still_pending = any(
+        p["user_id"] == uid and p.get("metode", "").startswith("qris")
+        for p in pending_after
+    )
+    if not still_pending:
+        return  # Sudah terkonfirmasi — proses_mutasi sudah kirim pesan sukses
+
+    new_count = cek_count - 1
+    if new_count > 0:
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"🔄 Cek Sekarang ({new_count}x tersisa)", callback_data="cek_mutasi")
+        ]])
+    else:
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("⏳ Tunggu konfirmasi otomatis...", callback_data="ignore")
+        ]])
+    try:
+        await query.edit_message_reply_markup(reply_markup=kb)
+    except Exception:
+        pass
 
 
 # ─── RIWAYAT USER ─────────────────────────────────────────────────────────────
@@ -1154,7 +1240,7 @@ async def handle_admin_settings(update: Update, context: CallbackContext):
         f"🏦 *Rekening*:\n{rek}\n\n"
         f"📞 *Kontak Admin*: `{cfg['kontak_admin']}`"
     )
-    qris_status = "✅ Aktif (QRIS_BASE64)" if QRIS_BASE64 else ("✅ Ada (gambar)" if os.path.exists(qris_file) else "❌ Belum diatur")
+    qris_status = "✅ Aktif via env var" if QRIS_BASE64 else ("✅ Ada (gambar)" if os.path.exists(qris_file) else "❌ Belum diatur")
     text += f"\n\n📷 *QRIS*: {qris_status}"
     keyboard = [
         [InlineKeyboardButton("✏️ Ubah Nama Toko",    callback_data="admin_ubah_nama")],
@@ -1394,6 +1480,7 @@ CALLBACK_MAP = {
     "deposit_qris":           handle_deposit_qris,
     "qris_dep_custom":        handle_qris_dep_nominal,
     "beli_qris":              handle_beli_qris,
+    "cek_mutasi":             handle_cek_mutasi,
     "qty_plus":               handle_qty_plus,
     "qty_minus":              handle_qty_minus,
     "confirm_order":          handle_confirm_order,
