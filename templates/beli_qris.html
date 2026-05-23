@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}Bayar QRIS — {{ cfg.nama_toko }}{% endblock %}
+{% block head %}
+<style>
+  .qris-wrap {
+    background: #fff;
+    border-radius: 20px;
+    box-shadow: var(--card-shadow-hover);
+    padding: 32px;
+    max-width: 420px;
+    margin: 0 auto;
+    text-align: center;
+  }
+  .qr-img { border-radius: 12px; border: 3px solid var(--brand-light); }
+  .amount-tag {
+    background: var(--brand-light);
+    color: var(--brand-dark);
+    border-radius: 10px;
+    padding: 10px 20px;
+    font-size: 1.4rem;
+    font-weight: 800;
+    display: inline-block;
+    margin: 12px 0;
+  }
+  .countdown { font-size: 1rem; font-weight: 700; }
+  .status-badge {
+    border-radius: 20px;
+    padding: 8px 20px;
+    font-weight: 600;
+    font-size: .9rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .status-pending { background: #fffbeb; color: #92400e; }
+  .status-checking { background: #eff6ff; color: #1e40af; }
+  .status-success { background: #f0fdf4; color: #166534; }
+  .status-expired { background: #fef2f2; color: #991b1b; }
+  .spinner-sm { width: 16px; height: 16px; border-width: 2px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6">
+    <div class="qris-wrap">
+      <p class="text-muted small mb-1 fw-semibold text-uppercase">Pembayaran QRIS</p>
+      <h5 class="fw-bold mb-3">{{ nama }}</h5>
+
+      <img src="/beli/qr.png" alt="QR Code" class="qr-img" width="220" height="220" id="qr-img">
+
+      <div>
+        <p class="text-muted small mb-0 mt-3">Total Transfer (termasuk kode unik)</p>
+        <div class="amount-tag">Rp{{ "{:,}".format(total) }}</div>
+        <p class="text-muted small">⚠️ Transfer tepat nominal di atas untuk konfirmasi otomatis</p>
+      </div>
+
+      <div id="status-area" class="my-3">
+        <span class="status-badge status-pending" id="status-badge">
+          <span class="spinner-border spinner-sm" role="status"></span>
+          Menunggu pembayaran...
+        </span>
+      </div>
+
+      <div class="d-flex justify-content-center align-items-center gap-2 mb-3">
+        <i class="bi bi-clock text-muted"></i>
+        <span class="countdown text-muted" id="countdown">{{ remaining_sec }}s</span>
+      </div>
+
+      <div class="row g-2 text-start mt-3 mb-1">
+        <div class="col-12">
+          <div class="alert alert-info small mb-0 py-2">
+            <i class="bi bi-info-circle me-1"></i>
+            Pembayaran terdeteksi otomatis. Jika sudah transfer, tunggu sebentar.
+            Jangan tutup halaman ini.
+          </div>
+        </div>
+      </div>
+
+      <a href="/" class="btn btn-outline-secondary btn-sm mt-2 w-100">Batal &amp; Kembali</a>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let remaining = {{ remaining_sec }};
+let polling = true;
+
+const countdown = document.getElementById('countdown');
+const badge     = document.getElementById('status-badge');
+
+// Countdown timer
+const timer = setInterval(() => {
+  remaining--;
+  if (remaining <= 0) {
+    clearInterval(timer);
+    countdown.textContent = '0s';
+    badge.className = 'status-badge status-expired';
+    badge.innerHTML = '<i class="bi bi-x-circle"></i> Waktu habis';
+    polling = false;
+  } else {
+    const m = Math.floor(remaining / 60);
+    const s = remaining % 60;
+    countdown.textContent = m > 0 ? `${m}m ${s}s` : `${s}s`;
+  }
+}, 1000);
+
+// Poll setiap 4 detik
+async function checkStatus() {
+  if (!polling) return;
+  try {
+    badge.className = 'status-badge status-checking';
+    badge.innerHTML = '<span class="spinner-border spinner-sm" role="status"></span> Mengecek pembayaran...';
+
+    const res  = await fetch('/api/beli/check');
+    const data = await res.json();
+
+    if (data.status === 'success') {
+      clearInterval(timer);
+      polling = false;
+      badge.className = 'status-badge status-success';
+      badge.innerHTML = '<i class="bi bi-check-circle-fill"></i> Pembayaran berhasil!';
+      setTimeout(() => { window.location.href = data.redirect; }, 1200);
+    } else if (data.status === 'expired') {
+      clearInterval(timer);
+      polling = false;
+      badge.className = 'status-badge status-expired';
+      badge.innerHTML = '<i class="bi bi-x-circle"></i> Waktu habis — stok dikembalikan';
+    } else {
+      badge.className = 'status-badge status-pending';
+      badge.innerHTML = '<span class="spinner-border spinner-sm" role="status"></span> Menunggu pembayaran...';
+    }
+  } catch(e) {
+    badge.className = 'status-badge status-pending';
+    badge.innerHTML = '<i class="bi bi-wifi-off"></i> Cek koneksi...';
+  }
+}
+
+// Mulai polling setelah 3 detik
+setTimeout(() => {
+  checkStatus();
+  setInterval(() => { if (polling) checkStatus(); }, 4000);
+}, 3000);
+</script>
+{% endblock %}

@@ -1,48 +1,111 @@
 {% extends "base.html" %}
 {% block title %}Produk — {{ cfg.nama_toko }}{% endblock %}
+{% block head %}
+<style>
+  .hero {
+    background: linear-gradient(135deg, #5b21b6 0%, #7c3aed 60%, #a855f7 100%);
+    border-radius: 20px;
+    color: #fff;
+    padding: 36px 32px;
+    margin-bottom: 32px;
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::after {
+    content: '';
+    position: absolute;
+    right: -40px; top: -40px;
+    width: 220px; height: 220px;
+    background: rgba(255,255,255,.06);
+    border-radius: 50%;
+  }
+  .hero::before {
+    content: '';
+    position: absolute;
+    right: 80px; bottom: -60px;
+    width: 160px; height: 160px;
+    background: rgba(255,255,255,.05);
+    border-radius: 50%;
+  }
+  .produk-card { cursor: pointer; }
+  .produk-card:hover { transform: translateY(-4px); }
+  .produk-icon {
+    width: 48px; height: 48px;
+    border-radius: 12px;
+    background: var(--brand-light);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.4rem;
+    margin-bottom: 14px;
+  }
+  .harga-tag { font-size: 1.3rem; font-weight: 800; color: var(--brand-dark); }
+  .stok-badge { font-size: .75rem; }
+</style>
+{% endblock %}
 
 {% block content %}
-<div class="row g-4">
-  <div class="col-12">
-    <h4 class="fw-bold text-purple"><i class="bi bi-grid-fill"></i> Katalog Produk Digital</h4>
-    <p class="text-muted">Akun digital berkualitas dengan harga terjangkau. Beli via bot Telegram atau langsung di sini.</p>
-  </div>
-
-  {% if not current_user %}
-  <div class="col-12">
-    <div class="alert alert-info d-flex align-items-center gap-2">
-      <i class="bi bi-info-circle-fill fs-5"></i>
-      <span>Untuk membeli, <a href="/login" class="fw-bold">login</a> atau <a href="/register" class="fw-bold">daftar</a> terlebih dahulu.</span>
+<!-- Hero -->
+<div class="hero">
+  <div class="position-relative" style="z-index:1">
+    <p class="mb-1" style="opacity:.8;font-size:.9rem;font-weight:500"><i class="bi bi-lightning-fill me-1"></i>Toko Digital Terpercaya</p>
+    <h2 class="fw-800 mb-2" style="font-size:1.8rem;font-weight:800">{{ cfg.nama_toko }}</h2>
+    <p class="mb-3" style="opacity:.85;font-size:.95rem">Akun premium berkualitas — YouTube, Canva, Spotify, VPN & lebih banyak lagi.</p>
+    {% if not current_user %}
+    <div class="d-flex gap-2 flex-wrap">
+      <a href="/register" class="btn btn-light btn-sm fw-bold px-4">Daftar Gratis</a>
+      <a href="/login" class="btn btn-outline-light btn-sm fw-semibold px-4">Login</a>
     </div>
+    {% else %}
+    <a href="/deposit" class="btn btn-light btn-sm fw-bold px-4"><i class="bi bi-wallet2 me-1"></i>Top Up Saldo</a>
+    {% endif %}
   </div>
-  {% endif %}
+</div>
+
+<!-- Products -->
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h5 class="fw-bold mb-0 text-brand"><i class="bi bi-grid-fill me-2"></i>Katalog Produk</h5>
+  <span class="text-muted small">{{ produk|length }} produk tersedia</span>
+</div>
+
+<div class="row g-3">
+  {% set icons = {'youtube':'bi-youtube','canva':'bi-palette-fill','spotify':'bi-music-note-beamed','vpn':'bi-shield-lock-fill','netflix':'bi-play-circle-fill','disney':'bi-star-fill','prime':'bi-box-fill'} %}
 
   {% for p in produk %}
   <div class="col-md-6 col-lg-4">
-    <div class="card produk-card h-100">
-      <div class="card-body">
-        <div class="d-flex justify-content-between align-items-start mb-2">
-          <h5 class="card-title fw-bold mb-0">{{ p.nama }}</h5>
+    <div class="card produk-card h-100" onclick="window.location='/beli/{{ p.id }}'">
+      <div class="card-body p-4">
+
+        {% set nama_lower = p.nama | lower %}
+        {% set icon_class = 'bi-bag-fill' %}
+        {% for kw, ic in icons.items() %}
+          {% if kw in nama_lower %}{% set icon_class = ic %}{% endif %}
+        {% endfor %}
+
+        <div class="d-flex justify-content-between align-items-start mb-3">
+          <div class="produk-icon">
+            <i class="bi {{ icon_class }} text-brand"></i>
+          </div>
           {% if p.stok > 0 %}
-          <span class="badge bg-success"><i class="bi bi-check-circle"></i> Stok: {{ p.stok }}</span>
+          <span class="badge bg-success stok-badge"><i class="bi bi-check-circle me-1"></i>Stok {{ p.stok }}</span>
           {% else %}
-          <span class="badge bg-secondary">Habis</span>
+          <span class="badge bg-secondary stok-badge">Stok Habis</span>
           {% endif %}
         </div>
-        <p class="card-text text-muted small">{{ p.deskripsi or '' }}</p>
-        <div class="d-flex justify-content-between align-items-center mt-3">
-          <span class="fs-5 fw-bold text-purple">Rp{{ "{:,}".format(p.harga) }}</span>
+
+        <h6 class="fw-bold mb-1" style="font-size:.95rem">{{ p.nama }}</h6>
+        {% if p.get('deskripsi') %}
+        <p class="text-muted small mb-3">{{ p.deskripsi }}</p>
+        {% else %}
+        <p class="text-muted small mb-3">Akun premium siap pakai</p>
+        {% endif %}
+
+        <div class="d-flex justify-content-between align-items-center mt-auto">
+          <span class="harga-tag">Rp{{ "{:,}".format(p.harga) }}</span>
           {% if p.stok > 0 %}
-            {% if current_user %}
-            <a href="https://t.me/{{ cfg.kontak_admin | replace('@','') }}?start=beli_{{ p.id }}"
-               class="btn btn-brand btn-sm" target="_blank">
-              <i class="bi bi-telegram"></i> Beli via Bot
-            </a>
-            {% else %}
-            <a href="/login" class="btn btn-outline-secondary btn-sm">Login untuk Beli</a>
-            {% endif %}
+          <a href="/beli/{{ p.id }}" class="btn btn-brand btn-sm px-3" onclick="event.stopPropagation()">
+            <i class="bi bi-cart-plus me-1"></i>Beli
+          </a>
           {% else %}
-          <button class="btn btn-secondary btn-sm" disabled>Stok Habis</button>
+          <button class="btn btn-secondary btn-sm px-3" disabled>Habis</button>
           {% endif %}
         </div>
       </div>
@@ -50,8 +113,8 @@
   </div>
   {% else %}
   <div class="col-12 text-center py-5 text-muted">
-    <i class="bi bi-box-seam display-4"></i>
-    <p class="mt-2">Belum ada produk tersedia.</p>
+    <i class="bi bi-box-seam display-3 opacity-25"></i>
+    <p class="mt-3 mb-0">Belum ada produk.</p>
   </div>
   {% endfor %}
 </div>

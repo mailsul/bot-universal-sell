@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block title %}Beli {{ item.nama }} — {{ cfg.nama_toko }}{% endblock %}
+{% block head %}
+<style>
+  .method-card {
+    border: 2px solid #e5e7eb;
+    border-radius: 14px;
+    padding: 20px;
+    cursor: pointer;
+    transition: all .2s;
+    background: #fff;
+  }
+  .method-card:hover { border-color: var(--brand); box-shadow: 0 0 0 4px rgba(124,58,237,.08); }
+  .method-card.selected { border-color: var(--brand); background: var(--brand-light); }
+  .method-card .method-icon { font-size: 2rem; }
+  .product-info-card {
+    background: linear-gradient(135deg, var(--brand-dark), var(--brand));
+    color: #fff;
+    border-radius: 16px;
+    padding: 24px;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="mb-3">
+  <a href="/" class="text-muted text-decoration-none small"><i class="bi bi-arrow-left me-1"></i>Kembali ke Katalog</a>
+</div>
+
+<div class="row g-4">
+  <!-- Produk Info -->
+  <div class="col-md-4">
+    <div class="product-info-card">
+      <p class="mb-1" style="opacity:.75;font-size:.8rem;font-weight:600;text-transform:uppercase">Produk</p>
+      <h5 class="fw-bold mb-2">{{ item.nama }}</h5>
+      {% if item.get('deskripsi') %}
+      <p style="opacity:.85;font-size:.9rem">{{ item.deskripsi }}</p>
+      {% endif %}
+      <hr style="border-color:rgba(255,255,255,.2)">
+      <div class="d-flex justify-content-between align-items-center">
+        <span style="opacity:.8;font-size:.9rem">Harga</span>
+        <span class="fw-bold" style="font-size:1.3rem">Rp{{ "{:,}".format(item.harga) }}</span>
+      </div>
+      <div class="d-flex justify-content-between align-items-center mt-2">
+        <span style="opacity:.8;font-size:.9rem">Stok</span>
+        <span class="badge {% if item.stok > 0 %}bg-success{% else %}bg-danger{% endif %}">
+          {{ item.stok }} tersedia
+        </span>
+      </div>
+    </div>
+
+    {% if remaining < rate_limit_max %}
+    <div class="alert alert-warning mt-3 small mb-0">
+      <i class="bi bi-exclamation-triangle me-1"></i>
+      Sisa kuota beli: <strong>{{ remaining }}/{{ rate_limit_max }}</strong> per jam
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Form Beli -->
+  <div class="col-md-8">
+    {% if item.stok < 1 %}
+    <div class="card">
+      <div class="card-body text-center py-5">
+        <i class="bi bi-box2 display-3 text-muted opacity-50"></i>
+        <h5 class="mt-3 text-muted">Stok Habis</h5>
+        <p class="text-muted small">Produk ini sedang tidak tersedia. Coba lagi nanti.</p>
+        <a href="/" class="btn btn-brand px-4">Lihat Produk Lain</a>
+      </div>
+    </div>
+    {% elif remaining < 1 %}
+    <div class="card">
+      <div class="card-body text-center py-5">
+        <i class="bi bi-clock-history display-3 text-muted opacity-50"></i>
+        <h5 class="mt-3">Rate Limit</h5>
+        <p class="text-muted small">Terlalu banyak pembelian. Coba lagi dalam 1 jam.</p>
+      </div>
+    </div>
+    {% else %}
+    <div class="card">
+      <div class="card-header"><h6><i class="bi bi-cart3 me-2"></i>Pilih Metode Pembayaran</h6></div>
+      <div class="card-body p-4">
+
+        <!-- Optional Telegram ID -->
+        <div class="mb-4">
+          <label class="form-label">
+            <i class="bi bi-telegram me-1 text-brand"></i>
+            Kirim ke Telegram <span class="text-muted fw-normal">(opsional)</span>
+          </label>
+          <input type="number" id="tg_input" class="form-control" placeholder="Telegram ID kamu (contoh: 1234567890)">
+          <div class="form-text">
+            Isi jika ingin akun dikirim juga ke Telegram — hanya jika kamu sudah <strong>pernah start bot</strong> dan tidak memblokir.
+            Cari ID kamu di <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a>.
+          </div>
+        </div>
+
+        <!-- Metode -->
+        <div class="row g-3 mb-4">
+          {% if current_user %}
+          <!-- Saldo -->
+          <div class="col-md-6">
+            <div class="method-card" onclick="selectMethod('saldo')">
+              <div class="method-icon mb-2">💳</div>
+              <h6 class="fw-bold mb-1">Saldo Akun</h6>
+              <p class="text-muted small mb-2">Bayar dengan saldo akun kamu</p>
+              <div class="d-flex justify-content-between align-items-center">
+                <small class="text-muted">Saldo kamu</small>
+                <span class="fw-bold {% if current_saldo >= item.harga %}text-success{% else %}text-danger{% endif %}">
+                  Rp{{ "{:,}".format(current_saldo) }}
+                </span>
+              </div>
+              {% if current_saldo < item.harga %}
+              <div class="mt-2"><small class="text-danger"><i class="bi bi-x-circle me-1"></i>Saldo tidak cukup</small></div>
+              {% endif %}
+            </div>
+          </div>
+          {% endif %}
+
+          <!-- QRIS -->
+          {% if qris_ok %}
+          <div class="col-{% if current_user %}md-6{% else %}12{% endif %}">
+            <div class="method-card" onclick="selectMethod('qris')">
+              <div class="method-icon mb-2">📱</div>
+              <h6 class="fw-bold mb-1">QRIS</h6>
+              <p class="text-muted small mb-2">Scan QR — bayar via GoPay, OVO, Dana, dll.</p>
+              <small class="text-muted"><i class="bi bi-clock me-1"></i>Konfirmasi otomatis ~1–2 menit</small>
+            </div>
+          </div>
+          {% endif %}
+
+          {% if not current_user and not qris_ok %}
+          <div class="col-12">
+            <div class="alert alert-info">
+              <i class="bi bi-info-circle me-1"></i>
+              <a href="/login" class="fw-bold">Login</a> untuk bayar dengan saldo, atau
+              <a href="/register" class="fw-bold">daftar</a> untuk membuat akun.
+            </div>
+          </div>
+          {% endif %}
+        </div>
+
+        <!-- Forms -->
+        <form id="form-saldo" action="/beli/{{ pid }}/saldo" method="post" class="d-none">
+          <input type="hidden" name="telegram_id" id="tg_saldo">
+          <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold"
+            {% if not current_user or current_saldo < item.harga %}disabled{% endif %}>
+            <i class="bi bi-check-circle me-1"></i>Bayar Rp{{ "{:,}".format(item.harga) }} dengan Saldo
+          </button>
+        </form>
+
+        <form id="form-qris" action="/beli/{{ pid }}/qris" method="post" class="d-none">
+          <input type="hidden" name="telegram_id" id="tg_qris">
+          <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold">
+            <i class="bi bi-qr-code me-1"></i>Lanjut Bayar QRIS
+          </button>
+        </form>
+
+        <div id="form-none" class="text-center text-muted py-3">
+          <i class="bi bi-hand-index me-1"></i>Pilih metode pembayaran di atas
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function selectMethod(m) {
+  document.querySelectorAll('.method-card').forEach(c => c.classList.remove('selected'));
+  event.currentTarget.classList.add('selected');
+  document.getElementById('form-saldo').classList.add('d-none');
+  document.getElementById('form-qris').classList.add('d-none');
+  document.getElementById('form-none').classList.add('d-none');
+  const tgVal = document.getElementById('tg_input').value;
+  if (m === 'saldo') {
+    document.getElementById('tg_saldo').value = tgVal;
+    document.getElementById('form-saldo').classList.remove('d-none');
+  } else {
+    document.getElementById('tg_qris').value = tgVal;
+    document.getElementById('form-qris').classList.remove('d-none');
+  }
+}
+// Sync TG input ke forms
+document.getElementById('tg_input').addEventListener('input', function() {
+  document.getElementById('tg_saldo').value = this.value;
+  document.getElementById('tg_qris').value = this.value;
+});
+</script>
+{% endblock %}

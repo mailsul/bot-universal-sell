@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}Pembelian Berhasil — {{ cfg.nama_toko }}{% endblock %}
+{% block head %}
+<style>
+  .sukses-card {
+    max-width: 520px;
+    margin: 0 auto;
+  }
+  .check-icon {
+    width: 72px; height: 72px;
+    background: linear-gradient(135deg, #22c55e, #16a34a);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 16px;
+    font-size: 2rem;
+    color: #fff;
+    box-shadow: 0 8px 24px rgba(34,197,94,.3);
+  }
+  .akun-box {
+    background: #f8f7ff;
+    border: 1.5px solid #ede9fe;
+    border-radius: 12px;
+    padding: 16px 20px;
+  }
+  .akun-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid #ede9fe;
+  }
+  .akun-row:last-child { border-bottom: none; }
+  .akun-key { font-size: .8rem; color: #6b7280; font-weight: 600; text-transform: uppercase; }
+  .akun-val { font-family: monospace; font-size: .95rem; font-weight: 700; color: #1e1b4b; }
+  .copy-btn { background: none; border: none; color: var(--brand); font-size: .85rem; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
+  .copy-btn:hover { background: var(--brand-light); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="sukses-card">
+  <div class="card">
+    <div class="card-body p-4 text-center">
+      <div class="check-icon"><i class="bi bi-check-lg"></i></div>
+      <h4 class="fw-bold mb-1">Pembelian Berhasil!</h4>
+      <p class="text-muted small mb-0">via {{ metode }}</p>
+    </div>
+
+    <div class="card-body pt-0 px-4 pb-4">
+      <!-- Produk -->
+      <div class="d-flex justify-content-between mb-1">
+        <span class="text-muted small">Produk</span>
+        <span class="fw-semibold small">{{ item.get('nama','') }}</span>
+      </div>
+      <div class="d-flex justify-content-between mb-3">
+        <span class="text-muted small">Harga</span>
+        <span class="fw-semibold small">Rp{{ "{:,}".format(item.get('harga',0)) }}</span>
+      </div>
+
+      <!-- Akun -->
+      <p class="fw-bold mb-2" style="font-size:.85rem;text-transform:uppercase;color:#6b7280">Detail Akun</p>
+      <div class="akun-box mb-3">
+        {% if akun.get('username') %}
+        <div class="akun-row">
+          <span class="akun-key">Username / Email</span>
+          <div class="d-flex align-items-center gap-1">
+            <span class="akun-val" id="val-user">{{ akun.username }}</span>
+            <button class="copy-btn" onclick="copyText('val-user', this)" title="Salin">
+              <i class="bi bi-clipboard"></i>
+            </button>
+          </div>
+        </div>
+        {% endif %}
+        {% if akun.get('password') %}
+        <div class="akun-row">
+          <span class="akun-key">Password</span>
+          <div class="d-flex align-items-center gap-1">
+            <span class="akun-val" id="val-pass">{{ akun.password }}</span>
+            <button class="copy-btn" onclick="copyText('val-pass', this)" title="Salin">
+              <i class="bi bi-clipboard"></i>
+            </button>
+          </div>
+        </div>
+        {% endif %}
+        {% if akun.get('tipe') %}
+        <div class="akun-row">
+          <span class="akun-key">Tipe</span>
+          <span class="akun-val">{{ akun.tipe }}</span>
+        </div>
+        {% endif %}
+      </div>
+
+      <!-- TRX ID -->
+      <div class="d-flex justify-content-between align-items-center p-3 bg-brand-light rounded-3 mb-3">
+        <div>
+          <p class="mb-0" style="font-size:.75rem;color:#6b7280;font-weight:600">ID TRANSAKSI</p>
+          <code id="val-trx">{{ trx_id }}</code>
+        </div>
+        <button class="copy-btn" onclick="copyText('val-trx', this)"><i class="bi bi-clipboard"></i></button>
+      </div>
+
+      <!-- Telegram status -->
+      {% if tg_kirim %}
+      <div class="alert {% if tg_sent %}alert-success{% else %}alert-warning{% endif %} small mb-3 py-2">
+        {% if tg_sent %}
+        <i class="bi bi-telegram me-1"></i> Akun juga dikirim ke Telegram ID {{ tg_kirim }}
+        {% else %}
+        <i class="bi bi-exclamation-triangle me-1"></i>
+        Gagal kirim ke Telegram. Simpan detail di atas — mungkin bot diblokir atau belum di-start.
+        {% endif %}
+      </div>
+      {% endif %}
+
+      <div class="alert alert-warning small py-2 mb-3">
+        <i class="bi bi-shield-exclamation me-1"></i>
+        <strong>Simpan detail akun sekarang!</strong> Halaman ini tidak bisa dibuka ulang.
+      </div>
+
+      <div class="d-flex gap-2">
+        <a href="/" class="btn btn-outline-secondary flex-fill">Kembali</a>
+        <button onclick="window.print()" class="btn btn-brand flex-fill">
+          <i class="bi bi-printer me-1"></i>Cetak
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function copyText(id, btn) {
+  const text = document.getElementById(id).textContent.trim();
+  navigator.clipboard.writeText(text).then(() => {
+    btn.innerHTML = '<i class="bi bi-check-lg text-success"></i>';
+    setTimeout(() => { btn.innerHTML = '<i class="bi bi-clipboard"></i>'; }, 1500);
+  });
+}
+</script>
+{% endblock %}

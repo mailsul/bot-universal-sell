@@ -1,43 +1,33 @@
 {% extends "base.html" %}
-{% block title %}Riwayat Transaksi — {{ cfg.nama_toko }}{% endblock %}
-
+{% block title %}Riwayat — {{ cfg.nama_toko }}{% endblock %}
 {% block content %}
-<div class="card">
-  <div class="card-header d-flex justify-content-between align-items-center">
-    <h6 class="mb-0"><i class="bi bi-clock-history"></i> Riwayat Transaksi (50 terbaru)</h6>
-    <a href="/dashboard" class="btn btn-sm btn-light"><i class="bi bi-arrow-left"></i> Dashboard</a>
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div>
+    <h4 class="page-header mb-0"><i class="bi bi-clock-history me-2"></i>Riwayat Transaksi</h4>
+    <p class="page-sub">50 transaksi terbaru</p>
   </div>
+  <a href="/dashboard" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left me-1"></i>Dashboard</a>
+</div>
+
+<div class="card">
   <div class="card-body p-0">
     {% if hist %}
     <div class="table-responsive">
-      <table class="table table-hover mb-0">
-        <thead class="table-light">
-          <tr>
-            <th>Waktu</th>
-            <th>Tipe</th>
-            <th>Keterangan</th>
-            <th class="text-end">Jumlah</th>
-            <th>ID Transaksi</th>
-          </tr>
-        </thead>
+      <table class="table mb-0">
+        <thead><tr>
+          <th>Waktu</th><th>Tipe</th><th>Keterangan</th>
+          <th class="text-end">Jumlah</th><th>ID TRX</th>
+        </tr></thead>
         <tbody>
           {% for h in hist %}
           <tr>
             <td class="small text-muted">{{ h.waktu }}</td>
-            <td>
-              {% if h.tipe == 'DEPOSIT' %}
-              <span class="badge bg-success">{{ h.tipe }}</span>
-              {% elif h.tipe == 'BELI' %}
-              <span class="badge bg-primary">{{ h.tipe }}</span>
-              {% else %}
-              <span class="badge bg-secondary">{{ h.tipe }}</span>
-              {% endif %}
-            </td>
-            <td class="small">{{ h.keterangan or '-' }}</td>
-            <td class="text-end fw-bold {% if h.tipe == 'DEPOSIT' %}text-success{% else %}text-primary{% endif %}">
+            <td><span class="badge {% if h.tipe=='DEPOSIT' %}bg-success{% elif h.tipe=='BELI' %}bg-primary{% else %}bg-secondary{% endif %}">{{ h.tipe }}</span></td>
+            <td class="small">{{ h.keterangan or '—' }}</td>
+            <td class="text-end fw-semibold {% if h.tipe=='DEPOSIT' %}text-success{% else %}text-primary{% endif %} small">
               Rp{{ "{:,}".format(h.jumlah) }}
             </td>
-            <td><code class="small">{{ h.trx_id or '-' }}</code></td>
+            <td><code>{{ h.trx_id or '—' }}</code></td>
           </tr>
           {% endfor %}
         </tbody>
@@ -45,9 +35,9 @@
     </div>
     {% else %}
     <div class="text-center py-5 text-muted">
-      <i class="bi bi-inbox display-4"></i>
-      <p class="mt-3">Belum ada riwayat transaksi.</p>
-      <a href="/" class="btn btn-brand">Lihat Produk</a>
+      <i class="bi bi-inbox display-3 opacity-25"></i>
+      <p class="mt-3 mb-0">Belum ada riwayat transaksi.</p>
+      <a href="/" class="btn btn-brand mt-3 px-4">Lihat Produk</a>
     </div>
     {% endif %}
   </div>

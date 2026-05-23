@@ -1,40 +1,43 @@
 {% extends "base.html" %}
 {% block title %}Daftar — {{ cfg.nama_toko }}{% endblock %}
-
 {% block content %}
 <div class="row justify-content-center">
   <div class="col-md-5 col-lg-4">
-    <div class="card">
-      <div class="card-header text-center py-3">
-        <h5 class="mb-0"><i class="bi bi-person-plus"></i> Buat Akun</h5>
+    <div class="text-center mb-4">
+      <div style="width:56px;height:56px;background:var(--brand-light);border-radius:16px;display:flex;align-items:center;justify-content:center;margin:0 auto 12px;font-size:1.6rem;">
+        <i class="bi bi-person-plus-fill text-brand"></i>
       </div>
+      <h4 class="fw-bold mb-0">Buat Akun</h4>
+      <p class="text-muted small">{{ cfg.nama_toko }}</p>
+    </div>
+    <div class="card">
       <div class="card-body p-4">
-
-        <div class="alert alert-info small mb-3">
+        <div class="alert alert-info small mb-4 py-2">
           <i class="bi bi-telegram me-1"></i>
-          <strong>Penting:</strong> Kamu harus sudah <a href="https://t.me/{{ cfg.kontak_admin | replace('@','') }}" target="_blank">/start bot kami</a> di Telegram sebelum mendaftar — OTP akan dikirim ke sana.
+          Pastikan kamu sudah pernah <strong>start bot</strong> kami di Telegram agar OTP bisa terkirim.
         </div>
-
         <form method="post" action="/register">
           <div class="mb-3">
-            <label class="form-label fw-semibold">Telegram ID</label>
-            <input type="number" name="telegram_id" class="form-control" placeholder="Contoh: 1234567890" required>
-            <div class="form-text">Cari Telegram ID kamu via <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a></div>
+            <label class="form-label">Telegram ID</label>
+            <input type="number" name="telegram_id" class="form-control" placeholder="1234567890" required autofocus>
+            <div class="form-text">Cek via <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a></div>
           </div>
           <div class="mb-3">
-            <label class="form-label fw-semibold">Password</label>
+            <label class="form-label">Password</label>
             <input type="password" name="password" class="form-control" placeholder="Minimal 6 karakter" required minlength="6">
           </div>
           <div class="mb-4">
-            <label class="form-label fw-semibold">Konfirmasi Password</label>
+            <label class="form-label">Konfirmasi Password</label>
             <input type="password" name="password2" class="form-control" placeholder="Ulangi password" required>
           </div>
           <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold">
-            <i class="bi bi-send"></i> Kirim OTP ke Telegram
+            <i class="bi bi-send me-1"></i>Kirim OTP ke Telegram
           </button>
         </form>
-        <hr>
-        <p class="text-center mb-0 small">Sudah punya akun? <a href="/login" class="fw-bold">Login</a></p>
+        <hr class="my-3">
+        <p class="text-center mb-0 small text-muted">
+          Sudah punya akun? <a href="/login" class="fw-semibold text-brand text-decoration-none">Login</a>
+        </p>
       </div>
     </div>
   </div>

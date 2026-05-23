@@ -1,68 +1,62 @@
 {% extends "base.html" %}
 {% block title %}Deposit — {{ cfg.nama_toko }}{% endblock %}
-
 {% block content %}
-<div class="row g-4">
-  <div class="col-12">
-    <h4 class="fw-bold"><i class="bi bi-wallet2"></i> Deposit Saldo</h4>
-  </div>
+<div class="mb-4">
+  <h4 class="page-header mb-0"><i class="bi bi-wallet2 me-2"></i>Deposit Saldo</h4>
+  <p class="page-sub">Top up saldo untuk pembelian lebih mudah</p>
+</div>
 
+<div class="row g-4">
   <!-- Rekening -->
   <div class="col-md-5">
     <div class="card h-100">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-bank"></i> Rekening Pembayaran</h6>
-      </div>
+      <div class="card-header"><h6><i class="bi bi-bank me-2"></i>Rekening Tujuan</h6></div>
       <div class="card-body">
         {% if cfg.rekening %}
           {% for rek in cfg.rekening %}
-          <div class="border rounded p-3 mb-2 bg-light">
-            <pre class="mb-0 small fw-bold">{{ rek }}</pre>
+          <div class="p-3 mb-2 bg-brand-light rounded-3">
+            <pre class="mb-0 small fw-bold text-dark" style="white-space:pre-wrap">{{ rek }}</pre>
           </div>
           {% endfor %}
         {% else %}
-        <p class="text-muted">Hubungi admin untuk info rekening.</p>
+        <p class="text-muted small">Hubungi admin untuk rekening.</p>
         {% endif %}
 
         {% if cfg.kontak_admin %}
         <a href="https://t.me/{{ cfg.kontak_admin | replace('@','') }}" target="_blank"
-           class="btn btn-outline-primary w-100 mt-2">
-          <i class="bi bi-telegram"></i> Konfirmasi via Telegram
+           class="btn btn-brand w-100 mt-3">
+          <i class="bi bi-telegram me-1"></i>Konfirmasi via Bot
         </a>
         {% endif %}
       </div>
     </div>
   </div>
 
-  <!-- Form upload -->
+  <!-- Upload -->
   <div class="col-md-7">
     <div class="card">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-upload"></i> Upload Bukti Transfer</h6>
-      </div>
-      <div class="card-body">
+      <div class="card-header"><h6><i class="bi bi-upload me-2"></i>Upload Bukti Transfer</h6></div>
+      <div class="card-body p-4">
         <form method="post" action="/deposit/upload" enctype="multipart/form-data">
           <div class="mb-3">
-            <label class="form-label fw-semibold">Nominal Transfer (Rp)</label>
+            <label class="form-label">Nominal Transfer</label>
             <div class="input-group">
               <span class="input-group-text">Rp</span>
-              <input type="number" name="nominal" class="form-control" placeholder="50000"
-                     min="10000" required>
+              <input type="number" name="nominal" class="form-control" placeholder="50000" min="10000" required>
             </div>
             <div class="form-text">Minimal Rp10.000</div>
           </div>
           <div class="mb-4">
-            <label class="form-label fw-semibold">Bukti Transfer (foto/screenshot)</label>
+            <label class="form-label">Bukti Transfer</label>
             <input type="file" name="bukti" class="form-control" accept="image/*" required>
           </div>
           <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold">
-            <i class="bi bi-send"></i> Kirim untuk Dikonfirmasi
+            <i class="bi bi-send me-1"></i>Kirim untuk Dikonfirmasi
           </button>
         </form>
-
-        <div class="alert alert-warning mt-3 small">
-          <i class="bi bi-exclamation-triangle"></i>
-          Konfirmasi biasanya dalam <strong>5–15 menit</strong>. Kamu akan mendapat notifikasi di Telegram saat deposit dikonfirmasi.
+        <div class="alert alert-warning small mt-3 mb-0 py-2">
+          <i class="bi bi-clock me-1"></i>
+          Konfirmasi dalam <strong>5–15 menit</strong>. Notifikasi akan dikirim ke Telegram kamu.
         </div>
       </div>
     </div>

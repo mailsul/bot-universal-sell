@@ -1,204 +1,153 @@
 {% extends "base.html" %}
 {% block title %}Admin Panel — {{ cfg.nama_toko }}{% endblock %}
-
 {% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div>
+    <h4 class="page-header mb-0"><i class="bi bi-shield-fill-check me-2"></i>Admin Panel</h4>
+    <p class="page-sub">{{ cfg.nama_toko }}</p>
+  </div>
+  <a href="/admin/password" class="btn btn-outline-secondary btn-sm">
+    <i class="bi bi-key me-1"></i>Ganti Password
+  </a>
+</div>
+
+<!-- Stats -->
+<div class="row g-3 mb-4">
+  {% for icon, val, label, color in [
+    ('bi-people-fill', users_web|length, 'Member', '#7c3aed'),
+    ('bi-piggy-bank-fill', 'Rp' + "{:,}".format(total_saldo), 'Total Saldo', '#22c55e'),
+    ('bi-hourglass-split', pending|length, 'Pending Deposit', '#f59e0b'),
+    ('bi-box-seam-fill', produk|length, 'Produk', '#3b82f6')
+  ] %}
+  <div class="col-6 col-md-3">
+    <div class="card text-center">
+      <div class="card-body py-3">
+        <i class="bi {{ icon }} fs-4 mb-2" style="color:{{ color }}"></i>
+        <div class="fw-bold" style="font-size:1.2rem;color:{{ color }}">{{ val }}</div>
+        <div class="text-muted small">{{ label }}</div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- Pending Deposits -->
+<div class="card mb-4">
+  <div class="card-header d-flex align-items-center gap-2">
+    <h6 class="mb-0"><i class="bi bi-hourglass-split me-1"></i>Pending Deposit</h6>
+    {% if pending %}<span class="badge bg-warning text-dark">{{ pending|length }}</span>{% endif %}
+  </div>
+  <div class="card-body p-0">
+    {% if pending %}
+    <div class="table-responsive">
+      <table class="table mb-0">
+        <thead><tr><th>User ID</th><th>Metode</th><th>Nominal</th><th>Waktu</th><th>Bukti</th><th>Aksi</th></tr></thead>
+        <tbody>
+          {% for p in pending %}
+          <tr>
+            <td><code>{{ p.user_id }}</code>{% if p.username %} <span class="text-muted small">@{{ p.username }}</span>{% endif %}</td>
+            <td><span class="badge bg-info text-dark">{{ p.metode }}</span></td>
+            <td class="fw-bold">Rp{{ "{:,}".format(p.nominal) }}</td>
+            <td class="small text-muted">{{ p.waktu }}</td>
+            <td>
+              {% if p.bukti_path %}
+              <a href="/{{ p.bukti_path }}" target="_blank" class="btn btn-outline-secondary btn-sm">
+                <i class="bi bi-image"></i>
+              </a>
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              <form method="post" action="/admin/confirm/{{ p.user_id }}" class="d-inline">
+                <button class="btn btn-success btn-sm" onclick="return confirm('Konfirmasi Rp{{ '{:,}'.format(p.nominal) }}?')">
+                  <i class="bi bi-check"></i>
+                </button>
+              </form>
+              <form method="post" action="/admin/reject/{{ p.user_id }}" class="d-inline ms-1">
+                <button class="btn btn-danger btn-sm" onclick="return confirm('Tolak deposit?')">
+                  <i class="bi bi-x"></i>
+                </button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="text-center py-4 text-muted">
+      <i class="bi bi-check-all fs-3 opacity-25"></i>
+      <p class="small mt-2 mb-0">Tidak ada pending deposit</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
 <div class="row g-4">
-  <div class="col-12 d-flex justify-content-between align-items-center">
-    <h4 class="fw-bold mb-0"><i class="bi bi-shield-check"></i> Admin Panel</h4>
-    <a href="/admin/password" class="btn btn-outline-secondary btn-sm"><i class="bi bi-key"></i> Ganti Password</a>
-  </div>
-
-  <!-- Stats -->
-  <div class="col-md-3">
-    <div class="card text-center">
-      <div class="card-body py-3">
-        <h3 class="fw-bold text-purple mb-0">{{ users_web | length }}</h3>
-        <small class="text-muted">Member Website</small>
-      </div>
-    </div>
-  </div>
-  <div class="col-md-3">
-    <div class="card text-center">
-      <div class="card-body py-3">
-        <h3 class="fw-bold text-success mb-0">Rp{{ "{:,}".format(total_saldo) }}</h3>
-        <small class="text-muted">Total Saldo User</small>
-      </div>
-    </div>
-  </div>
-  <div class="col-md-3">
-    <div class="card text-center">
-      <div class="card-body py-3">
-        <h3 class="fw-bold text-warning mb-0">{{ pending | length }}</h3>
-        <small class="text-muted">Pending Deposit</small>
-      </div>
-    </div>
-  </div>
-  <div class="col-md-3">
-    <div class="card text-center">
-      <div class="card-body py-3">
-        <h3 class="fw-bold text-primary mb-0">{{ produk | length }}</h3>
-        <small class="text-muted">Jenis Produk</small>
-      </div>
-    </div>
-  </div>
-
-  <!-- Pending Deposits -->
-  <div class="col-12">
-    <div class="card">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-hourglass-split"></i> Pending Deposit
-          <span class="badge bg-warning text-dark ms-2">{{ pending | length }}</span>
-        </h6>
-      </div>
-      <div class="card-body p-0">
-        {% if pending %}
-        <div class="table-responsive">
-          <table class="table table-hover mb-0">
-            <thead class="table-light">
-              <tr>
-                <th>User ID</th>
-                <th>Metode</th>
-                <th>Nominal</th>
-                <th>Waktu</th>
-                <th>Bukti</th>
-                <th>Aksi</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for p in pending %}
-              <tr>
-                <td><code>{{ p.user_id }}</code>{% if p.username %} <small class="text-muted">@{{ p.username }}</small>{% endif %}</td>
-                <td><span class="badge bg-info text-dark">{{ p.metode }}</span></td>
-                <td class="fw-bold">Rp{{ "{:,}".format(p.nominal) }}</td>
-                <td class="small text-muted">{{ p.waktu }}</td>
-                <td>
-                  {% if p.bukti_path %}
-                  <a href="/{{ p.bukti_path }}" target="_blank" class="btn btn-sm btn-outline-secondary">
-                    <i class="bi bi-image"></i> Lihat
-                  </a>
-                  {% else %}<span class="text-muted small">—</span>{% endif %}
-                </td>
-                <td>
-                  <form method="post" action="/admin/confirm/{{ p.user_id }}" class="d-inline">
-                    <button type="submit" class="btn btn-success btn-sm" onclick="return confirm('Konfirmasi deposit Rp{{ '{:,}'.format(p.nominal) }}?')">
-                      <i class="bi bi-check-circle"></i> OK
-                    </button>
-                  </form>
-                  <form method="post" action="/admin/reject/{{ p.user_id }}" class="d-inline ms-1">
-                    <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Tolak deposit ini?')">
-                      <i class="bi bi-x-circle"></i> Tolak
-                    </button>
-                  </form>
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        {% else %}
-        <div class="text-center py-4 text-muted">
-          <i class="bi bi-check-all fs-3"></i>
-          <p class="mt-2 mb-0 small">Tidak ada pending deposit.</p>
-        </div>
-        {% endif %}
-      </div>
-    </div>
-  </div>
-
   <!-- Produk & Stok -->
-  <div class="col-md-6">
+  <div class="col-md-5">
     <div class="card">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-box-seam"></i> Stok Produk</h6>
-      </div>
+      <div class="card-header"><h6><i class="bi bi-box-seam me-1"></i>Stok Produk</h6></div>
       <div class="card-body p-0">
-        <div class="table-responsive">
-          <table class="table table-sm mb-0">
-            <thead class="table-light">
-              <tr><th>Produk</th><th class="text-center">Stok</th><th class="text-end">Harga</th></tr>
-            </thead>
-            <tbody>
-              {% for p in produk %}
-              <tr>
-                <td>{{ p.nama }}</td>
-                <td class="text-center">
-                  {% if p.stok > 0 %}
-                  <span class="badge bg-success">{{ p.stok }}</span>
-                  {% else %}
-                  <span class="badge bg-danger">Habis</span>
-                  {% endif %}
-                </td>
-                <td class="text-end small">Rp{{ "{:,}".format(p.harga) }}</td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
+        <table class="table table-sm mb-0">
+          <thead><tr><th>Produk</th><th class="text-center">Stok</th><th class="text-end">Harga</th></tr></thead>
+          <tbody>
+            {% for p in produk %}
+            <tr>
+              <td class="small fw-semibold">{{ p.nama }}</td>
+              <td class="text-center">
+                <span class="badge {% if p.stok > 0 %}bg-success{% else %}bg-danger{% endif %}">{{ p.stok }}</span>
+              </td>
+              <td class="text-end small text-muted">Rp{{ "{:,}".format(p.harga) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
       </div>
     </div>
   </div>
 
-  <!-- User Saldo -->
-  <div class="col-md-6">
+  <!-- Saldo Users -->
+  <div class="col-md-7">
     <div class="card">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-people"></i> Saldo User (Bot)</h6>
-      </div>
+      <div class="card-header"><h6><i class="bi bi-people me-1"></i>Saldo User (Bot)</h6></div>
       <div class="card-body p-0">
-        <div class="table-responsive">
-          <table class="table table-sm mb-0">
-            <thead class="table-light">
-              <tr><th>User ID</th><th class="text-end">Saldo</th><th class="text-end">Pembelian</th></tr>
-            </thead>
-            <tbody>
-              {% for uid, amt in saldo_all.items() %}
-              <tr>
-                <td><code>{{ uid }}</code></td>
-                <td class="text-end fw-bold">Rp{{ "{:,}".format(amt) }}</td>
-                <td class="text-end small text-muted">
-                  {% if uid in stats %}{{ stats[uid].jumlah }}x{% else %}—{% endif %}
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
+        <table class="table table-sm mb-0">
+          <thead><tr><th>User ID</th><th class="text-end">Saldo</th><th class="text-end">Beli</th></tr></thead>
+          <tbody>
+            {% for uid, amt in saldo_all.items() %}
+            <tr>
+              <td><code>{{ uid }}</code></td>
+              <td class="text-end fw-bold small">Rp{{ "{:,}".format(amt) }}</td>
+              <td class="text-end small text-muted">
+                {% if uid in stats %}{{ stats[uid].jumlah }}x{% else %}—{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
       </div>
     </div>
   </div>
 
-  <!-- Web Users -->
+  <!-- Web Members -->
   <div class="col-12">
     <div class="card">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-person-check"></i> Member Website</h6>
-      </div>
+      <div class="card-header"><h6><i class="bi bi-person-badge me-1"></i>Member Website</h6></div>
       <div class="card-body p-0">
-        <div class="table-responsive">
-          <table class="table table-sm mb-0">
-            <thead class="table-light">
-              <tr><th>Telegram ID</th><th>Role</th><th>Terdaftar</th></tr>
-            </thead>
-            <tbody>
-              {% for u in users_web %}
-              <tr>
-                <td><code>{{ u.telegram_id }}</code></td>
-                <td>
-                  {% if u.role == 'admin' %}
-                  <span class="badge bg-danger">Admin</span>
-                  {% else %}
-                  <span class="badge bg-secondary">User</span>
-                  {% endif %}
-                </td>
-                <td class="small text-muted">{{ u.created_at }}</td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
+        <table class="table table-sm mb-0">
+          <thead><tr><th>Telegram ID</th><th>Role</th><th>Terdaftar</th></tr></thead>
+          <tbody>
+            {% for u in users_web %}
+            <tr>
+              <td><code>{{ u.telegram_id }}</code></td>
+              <td><span class="badge {% if u.role=='admin' %}bg-danger{% else %}bg-secondary{% endif %}">{{ u.role }}</span></td>
+              <td class="small text-muted">{{ u.created_at }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
       </div>
     </div>
   </div>
-
 </div>
 {% endblock %}
