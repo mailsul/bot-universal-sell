@@ -78,16 +78,70 @@ def _rl_remaining(ip: str) -> int:
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
 
+def _migrate_produk_format(raw: dict) -> tuple[dict, bool]:
+    """Convert format lama (flat harga/akun_list) → format baru (tipe dict). Idempotent."""
+    changed = False
+    for pid, item in list(raw.items()):
+        if "tipe" not in item:
+            akun_list = item.get("akun_list", [])
+            raw[pid] = {
+                "nama": item["nama"],
+                "tipe": {
+                    "t1": {
+                        "nama": item["nama"],
+                        "harga": item.get("harga", 0),
+                        "akun_list": akun_list,
+                        "stok": len(akun_list),
+                        "deskripsi": item.get("deskripsi", ""),
+                    }
+                },
+            }
+            if item.get("gambar"):
+                raw[pid]["gambar"] = item["gambar"]
+            changed = True
+    return raw, changed
+
 def load_produk_raw() -> dict:
+    """Load + auto-migrate produk.json ke format baru (tipe dict). Return dict."""
     try:
         with open("produk.json", encoding="utf-8") as f:
             d = json.load(f)
-        return d if isinstance(d, dict) else {}
+        if not isinstance(d, dict):
+            return {}
     except Exception:
         return {}
+    d, changed = _migrate_produk_format(d)
+    if changed:
+        tmp = "produk.json.tmp"
+        with open(tmp, "w", encoding="utf-8") as ff:
+            json.dump(d, ff, ensure_ascii=False, indent=2)
+        shutil.move(tmp, "produk.json")
+    return d
 
 def load_produk() -> list:
-    return [{"id": k, **v} for k, v in load_produk_raw().items()]
+    """Return list produk untuk template. Tiap item punya tipe (list), stok total, harga min."""
+    raw = load_produk_raw()
+    result = []
+    for pid, item in raw.items():
+        tipe_list = []
+        total_stok = 0
+        min_harga  = None
+        for tid, t in item.get("tipe", {}).items():
+            stok = len(t.get("akun_list", []))
+            tipe_list.append({"id": tid, **t, "stok": stok})
+            total_stok += stok
+            h = t.get("harga", 0)
+            if min_harga is None or h < min_harga:
+                min_harga = h
+        result.append({
+            "id":     pid,
+            "nama":   item["nama"],
+            "gambar": item.get("gambar"),
+            "stok":   total_stok,
+            "harga":  min_harga or 0,
+            "tipe":   tipe_list,
+        })
+    return result
 
 def save_produk_raw(data: dict):
     tmp = "produk.json.tmp"
@@ -361,14 +415,34 @@ def logout():
 @app.route("/beli/<pid>")
 def beli(pid):
     raw  = load_produk_raw()
-    item = raw.get(pid)
-    if not item:
+    prod = raw.get(pid)
+    if not prod:
         flash("Produk tidak ditemukan.", "danger")
         return redirect(url_for("index"))
-    saldo   = db_get_saldo(session["user_tid"]) if "user_tid" in session else 0
-    qris_ok = bool(QRIS_BASE64)
+    # Build item for template
+    tipe_list  = []
+    total_stok = 0
+    min_harga  = None
+    for tid, t in prod.get("tipe", {}).items():
+        stok = len(t.get("akun_list", []))
+        tipe_list.append({"id": tid, **t, "stok": stok})
+        total_stok += stok
+        h = t.get("harga", 0)
+        if min_harga is None or h < min_harga:
+            min_harga = h
+    item = {
+        "nama":   prod["nama"],
+        "gambar": prod.get("gambar"),
+        "stok":   total_stok,
+        "harga":  min_harga or 0,
+        "tipe":   tipe_list,
+    }
+    current_saldo   = db_get_saldo(session["user_tid"]) if "user_tid" in session else 0
+    selected_harga  = tipe_list[0]["harga"] if tipe_list else 0
+    qris_ok         = bool(QRIS_BASE64)
     return render_template(
-        "beli.html", item=item, pid=pid, saldo=saldo,
+        "beli.html", item=item, pid=pid,
+        current_saldo=current_saldo, selected_harga=selected_harga,
         qris_ok=qris_ok, remaining=_rl_remaining(_ip()),
         rate_limit_max=RATE_LIMIT_MAX,
     )
@@ -377,31 +451,46 @@ def beli(pid):
 @app.route("/beli/<pid>/saldo", methods=["POST"])
 @login_required
 def beli_saldo(pid):
-    tid = session["user_tid"]
+    user_tid = session["user_tid"]
     if not _rl_allowed(_ip()):
         flash("Terlalu banyak pembelian. Coba lagi dalam 1 jam.", "danger")
         return redirect(url_for("beli", pid=pid))
 
     tg_kirim = request.form.get("telegram_id","").strip()
+    form_tid = request.form.get("tid","").strip()
 
     with _purchase_lock, produk_lock():
         raw  = load_produk_raw()
-        item = raw.get(pid)
-        if not item or item.get("stok",0) < 1 or not item.get("akun_list"):
-            flash("Stok habis.", "danger")
+        prod = raw.get(pid)
+        if not prod:
+            flash("Produk tidak ditemukan.", "danger")
             return redirect(url_for("index"))
-        harga = item["harga"]
-        saldo = db_get_saldo(tid)
+        # Cari tipe
+        tipe_dict = prod.get("tipe", {})
+        tid        = form_tid if form_tid in tipe_dict else (next(iter(tipe_dict), None))
+        if not tid:
+            flash("Tidak ada tipe tersedia.", "danger")
+            return redirect(url_for("beli", pid=pid))
+        tipe = tipe_dict[tid]
+        akun_list = tipe.get("akun_list", [])
+        if not akun_list:
+            flash("Stok habis.", "danger")
+            return redirect(url_for("beli", pid=pid))
+        harga = tipe["harga"]
+        saldo = db_get_saldo(user_tid)
         if saldo < harga:
             flash(f"Saldo tidak cukup (Rp{saldo:,} < Rp{harga:,}). Top up dulu.", "danger")
             return redirect(url_for("beli", pid=pid))
-        akun = item["akun_list"].pop(0)
-        item["stok"] = len(item["akun_list"])
-        raw[pid] = item
+        akun = akun_list.pop(0)
+        tipe["akun_list"] = akun_list
+        tipe["stok"]      = len(akun_list)
+        prod["tipe"][tid] = tipe
+        raw[pid] = prod
         save_produk_raw(raw)
 
-    db_add_saldo(tid, -harga)
-    trx_id = db_add_riwayat(tid, "BELI", f"{item['nama']} x1 (Web/Saldo)", harga)
+    nama_tipe = tipe.get("nama", prod["nama"])
+    db_add_saldo(user_tid, -harga)
+    trx_id = db_add_riwayat(user_tid, "BELI", f"{prod['nama']} [{nama_tipe}] x1 (Web/Saldo)", harga)
 
     tg_sent = False
     if tg_kirim:
@@ -409,15 +498,16 @@ def beli_saldo(pid):
             tg_sent = send_telegram(
                 int(tg_kirim),
                 f"✅ *Pembelian Berhasil!*\n\n"
-                f"🛍 *{item['nama']}*\n"
+                f"🛍 *{prod['nama']}*\n"
+                f"📦 Tipe: {nama_tipe}\n"
                 f"👤 `{akun.get('username','')}`\n"
                 f"🔑 `{akun.get('password','')}`\n"
-                + (f"ℹ️ {akun.get('tipe','')}\n" if akun.get('tipe') else "")
-                + f"\n🔖 TRX: `{trx_id}`"
+                f"\n🔖 TRX: `{trx_id}`"
             )
         except Exception:
             pass
 
+    item = {"nama": prod["nama"], "harga": harga, "tipe": nama_tipe}
     return render_template(
         "beli_sukses.html", akun=akun, item=item,
         trx_id=trx_id, tg_sent=tg_sent, tg_kirim=tg_kirim, metode="Saldo",
@@ -434,19 +524,30 @@ def beli_qris(pid):
         return redirect(url_for("beli", pid=pid))
 
     tg_kirim = request.form.get("telegram_id","").strip()
+    form_tid = request.form.get("tid","").strip()
 
     with _purchase_lock, produk_lock():
         raw  = load_produk_raw()
-        item = raw.get(pid)
-        if not item or item.get("stok",0) < 1 or not item.get("akun_list"):
+        prod = raw.get(pid)
+        if not prod:
             flash("Stok habis.", "danger")
             return redirect(url_for("index"))
-        akun = item["akun_list"].pop(0)
-        item["stok"] = len(item["akun_list"])
-        raw[pid] = item
+        tipe_dict = prod.get("tipe", {})
+        tid        = form_tid if form_tid in tipe_dict else (next(iter(tipe_dict), None))
+        if not tid:
+            flash("Tidak ada tipe tersedia.", "danger")
+            return redirect(url_for("beli", pid=pid))
+        tipe = tipe_dict[tid]
+        if not tipe.get("akun_list"):
+            flash("Stok habis.", "danger")
+            return redirect(url_for("beli", pid=pid))
+        akun = tipe["akun_list"].pop(0)
+        tipe["stok"]      = len(tipe["akun_list"])
+        prod["tipe"][tid] = tipe
+        raw[pid] = prod
         save_produk_raw(raw)
 
-    harga     = item["harga"]
+    harga     = tipe["harga"]
     kode_unik = random.randint(1, 999)
     total     = harga + kode_unik
 
@@ -473,8 +574,9 @@ def beli_qris(pid):
 
     session["bq_uid"]   = buyer_uid
     session["bq_pid"]   = pid
+    session["bq_tid"]   = tid
     session["bq_total"] = total
-    session["bq_nama"]  = item["nama"]
+    session["bq_nama"]  = f"{prod['nama']} [{tipe.get('nama','')}]"
     session["bq_harga"] = harga
     session["bq_tg"]    = tg_kirim
     session["bq_start"] = int(time.time())
@@ -526,17 +628,19 @@ def api_beli_check():
             # Kembalikan stok
             reserved = pending.get("reserved_akun", [])
             pid      = session.get("bq_pid")
+            s_tid    = session.get("bq_tid")
             if reserved and pid:
                 with _purchase_lock, produk_lock():
                     raw  = load_produk_raw()
-                    item = raw.get(pid, {})
-                    if item:
-                        item["akun_list"] = reserved + item.get("akun_list", [])
-                        item["stok"]      = len(item["akun_list"])
-                        raw[pid] = item
+                    prod = raw.get(pid, {})
+                    if prod and s_tid and s_tid in prod.get("tipe", {}):
+                        t = prod["tipe"][s_tid]
+                        t["akun_list"] = reserved + t.get("akun_list", [])
+                        t["stok"]      = len(t["akun_list"])
+                        raw[pid] = prod
                         save_produk_raw(raw)
             db_remove_pending_any_by_user(uid)
-        for k in ["bq_uid","bq_pid","bq_total","bq_nama","bq_harga","bq_tg","bq_start"]:
+        for k in ["bq_uid","bq_pid","bq_tid","bq_total","bq_nama","bq_harga","bq_tg","bq_start"]:
             session.pop(k, None)
         return jsonify({"status": "expired"})
 
@@ -840,38 +944,85 @@ def api_deposit_check():
 @app.route("/admin/produk/tambah", methods=["POST"])
 @admin_required
 def admin_produk_tambah():
-    nama      = request.form.get("nama","").strip()
+    """Tambah produk baru (nama + gambar saja; tipe ditambah lewat route terpisah)."""
+    nama = request.form.get("nama","").strip()
+    if not nama:
+        flash("Nama produk wajib diisi.", "danger")
+        return redirect(url_for("admin") + "#tab-produk")
+    with _purchase_lock, produk_lock():
+        raw  = load_produk_raw()
+        nums = [int(k) for k in raw.keys() if k.isdigit()]
+        pid  = str(max(nums, default=0) + 1)
+        gambar = _save_produk_img(pid, request.files.get("gambar"))
+        entry  = {"nama": nama, "tipe": {}}
+        if gambar:
+            entry["gambar"] = gambar
+        raw[pid] = entry
+        save_produk_raw(raw)
+    flash(f"✅ Produk '{nama}' ditambah. Sekarang tambahkan Tipe.", "success")
+    return redirect(url_for("admin") + "#tab-produk")
+
+
+@app.route("/admin/produk/<pid>/tipe/tambah", methods=["POST"])
+@admin_required
+def admin_produk_tipe_tambah(pid):
+    """Tambah tipe baru ke produk."""
+    nama_tipe = request.form.get("nama_tipe","").strip()
     harga_raw = request.form.get("harga","0").replace(".","").strip()
     deskripsi = request.form.get("deskripsi","").strip()
     akun_raw  = request.form.get("akun_list","").strip()
-    if not nama:
-        flash("Nama produk wajib diisi.", "danger")
+    if not nama_tipe:
+        flash("Nama tipe wajib diisi.", "danger")
         return redirect(url_for("admin") + "#tab-produk")
     try:
         harga = int(harga_raw)
     except ValueError:
         flash("Harga tidak valid.", "danger")
         return redirect(url_for("admin") + "#tab-produk")
-
     akun_list = _parse_akun_lines(akun_raw)
     with _purchase_lock, produk_lock():
-        raw = load_produk_raw()
-        nums = [int(k) for k in raw.keys() if k.isdigit()]
-        pid  = str(max(nums, default=0) + 1)
-        gambar = _save_produk_img(pid, request.files.get("gambar"))
-        entry  = {"nama": nama, "harga": harga, "deskripsi": deskripsi,
-                  "stok": len(akun_list), "akun_list": akun_list}
-        if gambar:
-            entry["gambar"] = gambar
-        raw[pid] = entry
+        raw  = load_produk_raw()
+        prod = raw.get(pid)
+        if not prod:
+            flash("Produk tidak ditemukan.", "danger")
+            return redirect(url_for("admin") + "#tab-produk")
+        tipe_dict = prod.get("tipe", {})
+        # Generate tid baru
+        nums = [int(k[1:]) for k in tipe_dict.keys() if k.startswith("t") and k[1:].isdigit()]
+        tid  = f"t{max(nums, default=0) + 1}"
+        tipe_dict[tid] = {
+            "nama":      nama_tipe,
+            "harga":     harga,
+            "deskripsi": deskripsi,
+            "akun_list": akun_list,
+            "stok":      len(akun_list),
+        }
+        prod["tipe"] = tipe_dict
+        raw[pid] = prod
         save_produk_raw(raw)
-    flash(f"✅ Produk '{nama}' ditambah ({len(akun_list)} akun).", "success")
+    flash(f"✅ Tipe '{nama_tipe}' ditambah ({len(akun_list)} akun).", "success")
     return redirect(url_for("admin") + "#tab-produk")
 
 
-@app.route("/admin/produk/<pid>/restock", methods=["POST"])
+@app.route("/admin/produk/<pid>/tipe/<tid>/hapus", methods=["POST"])
 @admin_required
-def admin_produk_restock(pid):
+def admin_produk_tipe_hapus(pid, tid):
+    with _purchase_lock, produk_lock():
+        raw  = load_produk_raw()
+        prod = raw.get(pid)
+        if not prod or tid not in prod.get("tipe", {}):
+            flash("Tipe tidak ditemukan.", "danger")
+            return redirect(url_for("admin") + "#tab-produk")
+        nama_tipe = prod["tipe"].pop(tid, {}).get("nama","")
+        raw[pid] = prod
+        save_produk_raw(raw)
+    flash(f"✅ Tipe '{nama_tipe}' dihapus.", "success")
+    return redirect(url_for("admin") + "#tab-produk")
+
+
+@app.route("/admin/produk/<pid>/tipe/<tid>/restock", methods=["POST"])
+@admin_required
+def admin_produk_tipe_restock(pid, tid):
     akun_raw = request.form.get("akun_list","").strip()
     if not akun_raw:
         flash("Masukkan akun untuk restock.", "danger")
@@ -879,73 +1030,129 @@ def admin_produk_restock(pid):
     akun_baru = _parse_akun_lines(akun_raw)
     with _purchase_lock, produk_lock():
         raw  = load_produk_raw()
-        item = raw.get(pid)
-        if not item:
-            flash("Produk tidak ditemukan.", "danger")
+        prod = raw.get(pid)
+        if not prod or tid not in prod.get("tipe", {}):
+            flash("Tipe tidak ditemukan.", "danger")
             return redirect(url_for("admin") + "#tab-produk")
-        item["akun_list"] = item.get("akun_list",[]) + akun_baru
-        item["stok"]      = len(item["akun_list"])
-        raw[pid] = item
+        t = prod["tipe"][tid]
+        t["akun_list"] = t.get("akun_list",[]) + akun_baru
+        t["stok"]      = len(t["akun_list"])
+        raw[pid] = prod
         save_produk_raw(raw)
-    flash(f"✅ Restock {len(akun_baru)} akun untuk '{item['nama']}'.", "success")
+    flash(f"✅ Restock {len(akun_baru)} akun untuk tipe '{t.get('nama',tid)}'.", "success")
     return redirect(url_for("admin") + "#tab-produk")
 
 
-@app.route("/admin/produk/<pid>/akun")
+@app.route("/admin/produk/<pid>/tipe/<tid>/harga", methods=["POST"])
 @admin_required
-def admin_produk_akun(pid):
-    """JSON: daftar akun di stok untuk Lihat Stok modal."""
-    raw  = load_produk_raw()
-    item = raw.get(pid)
-    if not item:
-        return jsonify({"error": "Produk tidak ditemukan"}), 404
-    daftar = []
-    for i, a in enumerate(item.get("akun_list", [])):
-        daftar.append({
-            "idx":      i,
-            "username": a.get("username",""),
-            "password": a.get("password",""),
-            "tipe":     a.get("tipe",""),
-        })
-    return jsonify({"nama": item["nama"], "akun": daftar})
-
-
-@app.route("/admin/produk/<pid>/akun/<int:idx>/hapus", methods=["POST"])
-@admin_required
-def admin_produk_akun_hapus(pid, idx):
-    """Hapus satu akun dari stok berdasarkan index."""
-    with _purchase_lock, produk_lock():
-        raw  = load_produk_raw()
-        item = raw.get(pid)
-        if not item:
-            return jsonify({"error": "Produk tidak ditemukan"}), 404
-        lst = item.get("akun_list", [])
-        if idx < 0 or idx >= len(lst):
-            return jsonify({"error": "Index tidak valid"}), 400
-        lst.pop(idx)
-        item["akun_list"] = lst
-        item["stok"]      = len(lst)
-        raw[pid] = item
-        save_produk_raw(raw)
-    return jsonify({"ok": True, "sisa": len(lst)})
-
-
-@app.route("/admin/produk/<pid>/harga", methods=["POST"])
-@admin_required
-def admin_produk_harga(pid):
+def admin_produk_tipe_harga(pid, tid):
     try:
         harga = int(request.form.get("harga","0").replace(".","").strip())
     except ValueError:
         flash("Harga tidak valid.", "danger")
         return redirect(url_for("admin") + "#tab-produk")
     with _purchase_lock, produk_lock():
-        raw = load_produk_raw()
-        if pid not in raw:
+        raw  = load_produk_raw()
+        prod = raw.get(pid)
+        if not prod or tid not in prod.get("tipe", {}):
+            flash("Tipe tidak ditemukan.", "danger")
+            return redirect(url_for("admin") + "#tab-produk")
+        prod["tipe"][tid]["harga"] = harga
+        raw[pid] = prod
+        save_produk_raw(raw)
+    flash(f"✅ Harga tipe diperbarui ke Rp{harga:,}.", "success")
+    return redirect(url_for("admin") + "#tab-produk")
+
+
+@app.route("/admin/produk/<pid>/akun")
+@admin_required
+def admin_produk_akun(pid):
+    """JSON: semua akun di semua tipe untuk Lihat Stok modal."""
+    raw  = load_produk_raw()
+    prod = raw.get(pid)
+    if not prod:
+        return jsonify({"error": "Produk tidak ditemukan"}), 404
+    tipe_data = []
+    for tid, t in prod.get("tipe", {}).items():
+        akun_list = []
+        for i, a in enumerate(t.get("akun_list", [])):
+            akun_list.append({
+                "idx":      i,
+                "username": a.get("username",""),
+                "password": a.get("password",""),
+            })
+        tipe_data.append({"tid": tid, "nama": t.get("nama",""), "akun": akun_list})
+    return jsonify({"nama": prod["nama"], "tipe": tipe_data})
+
+
+@app.route("/admin/produk/<pid>/tipe/<tid>/akun/<int:idx>/hapus", methods=["POST"])
+@admin_required
+def admin_produk_akun_hapus(pid, tid, idx):
+    """Hapus satu akun dari stok berdasarkan tipe + index."""
+    with _purchase_lock, produk_lock():
+        raw  = load_produk_raw()
+        prod = raw.get(pid)
+        if not prod or tid not in prod.get("tipe", {}):
+            return jsonify({"error": "Tipe tidak ditemukan"}), 404
+        lst = prod["tipe"][tid].get("akun_list", [])
+        if idx < 0 or idx >= len(lst):
+            return jsonify({"error": "Index tidak valid"}), 400
+        lst.pop(idx)
+        prod["tipe"][tid]["akun_list"] = lst
+        prod["tipe"][tid]["stok"]      = len(lst)
+        raw[pid] = prod
+        save_produk_raw(raw)
+    return jsonify({"ok": True, "sisa": len(lst)})
+
+
+@app.route("/admin/produk/<pid>/gambar/hapus", methods=["POST"])
+@admin_required
+def admin_produk_gambar_hapus(pid):
+    """Hapus gambar produk."""
+    with _purchase_lock, produk_lock():
+        raw  = load_produk_raw()
+        prod = raw.get(pid)
+        if not prod:
             flash("Produk tidak ditemukan.", "danger")
             return redirect(url_for("admin") + "#tab-produk")
-        raw[pid]["harga"] = harga
+        gambar = prod.pop("gambar", None)
+        if gambar:
+            # Hapus file fisik
+            path = gambar.lstrip("/")
+            if os.path.exists(path):
+                os.remove(path)
+        raw[pid] = prod
         save_produk_raw(raw)
-    flash(f"✅ Harga diperbarui ke Rp{harga:,}.", "success")
+    flash("✅ Gambar produk dihapus.", "success")
+    return redirect(url_for("admin") + "#tab-produk")
+
+
+@app.route("/admin/produk/<pid>/restock", methods=["POST"])
+@admin_required
+def admin_produk_restock(pid):
+    """Backward compat: restock ke tipe pertama."""
+    akun_raw = request.form.get("akun_list","").strip()
+    if not akun_raw:
+        flash("Masukkan akun untuk restock.", "danger")
+        return redirect(url_for("admin") + "#tab-produk")
+    akun_baru = _parse_akun_lines(akun_raw)
+    with _purchase_lock, produk_lock():
+        raw  = load_produk_raw()
+        prod = raw.get(pid)
+        if not prod:
+            flash("Produk tidak ditemukan.", "danger")
+            return redirect(url_for("admin") + "#tab-produk")
+        tipe_dict = prod.get("tipe", {})
+        if not tipe_dict:
+            flash("Produk tidak memiliki tipe.", "danger")
+            return redirect(url_for("admin") + "#tab-produk")
+        tid = next(iter(tipe_dict))
+        t   = tipe_dict[tid]
+        t["akun_list"] = t.get("akun_list",[]) + akun_baru
+        t["stok"]      = len(t["akun_list"])
+        raw[pid] = prod
+        save_produk_raw(raw)
+    flash(f"✅ Restock {len(akun_baru)} akun.", "success")
     return redirect(url_for("admin") + "#tab-produk")
 
 
@@ -1028,6 +1235,8 @@ def admin_config_save():
     if rekening_raw:
         cfg["rekening"] = [r.strip() for r in rekening_raw.splitlines() if r.strip()]
     cfg["kontak_admin"] = kontak
+    # Toggle Transfer Manual
+    cfg["transfer_manual_aktif"] = request.form.get("transfer_manual_aktif") == "on"
     save_config(cfg)
     flash("✅ Pengaturan berhasil disimpan.", "success")
     return redirect(url_for("admin") + "#tab-config")

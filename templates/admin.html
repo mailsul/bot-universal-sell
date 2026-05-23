@@ -161,40 +161,24 @@
 
   <!-- ── PRODUK ── -->
   <div class="tab-pane fade" id="tab-produk">
-    <!-- Tambah Produk -->
+    <!-- Tambah Produk Baru (hanya nama + gambar; tipe ditambah setelah produk dibuat) -->
     <div class="card mb-4">
       <div class="card-header"><h6 class="mb-0"><i class="bi bi-plus-circle me-1"></i>Tambah Produk Baru</h6></div>
       <div class="card-body p-4">
+        <p class="text-muted small mb-3">Buat produk terlebih dahulu (nama + gambar), lalu tambahkan Tipe (dengan harga & stok masing-masing).</p>
         <form method="post" action="/admin/produk/tambah" enctype="multipart/form-data">
-          <div class="row g-3">
-            <div class="col-md-4">
-              <label class="form-label">Nama Produk</label>
-              <input type="text" name="nama" class="form-control" placeholder="Spotify Premium 1 Bulan" required>
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Harga (Rp)</label>
-              <input type="number" name="harga" class="form-control" placeholder="25000" min="0" required>
-            </div>
-            <div class="col-md-5">
-              <label class="form-label">Deskripsi <span class="text-muted fw-normal">(opsional)</span></label>
-              <input type="text" name="deskripsi" class="form-control" placeholder="Akun premium 1 bulan">
-            </div>
+          <div class="row g-3 align-items-end">
             <div class="col-md-6">
+              <label class="form-label">Nama Produk</label>
+              <input type="text" name="nama" class="form-control" placeholder="Spotify Premium" required>
+            </div>
+            <div class="col-md-4">
               <label class="form-label">Gambar Produk <span class="text-muted fw-normal">(opsional)</span></label>
               <input type="file" name="gambar" class="form-control" accept="image/*">
-              <div class="form-text">PNG, JPG, WEBP — tampil di katalog</div>
             </div>
-            <div class="col-md-6">
-              <label class="form-label">
-                Daftar Akun <span class="text-muted fw-normal">(opsional saat tambah)</span>
-              </label>
-              <textarea name="akun_list" class="form-control" rows="3"
-                placeholder="Format: username|password|tipe (per baris)&#10;contoh@gmail.com|password123|Individual&#10;Atau hanya username satu baris"></textarea>
-              <div class="form-text">Satu akun per baris. Pisah dengan | untuk username|password|tipe</div>
-            </div>
-            <div class="col-12">
-              <button type="submit" class="btn btn-brand px-4 fw-semibold">
-                <i class="bi bi-plus-circle me-1"></i>Tambah Produk
+            <div class="col-md-2">
+              <button type="submit" class="btn btn-brand w-100 fw-semibold">
+                <i class="bi bi-plus-circle me-1"></i>Buat
               </button>
             </div>
           </div>
@@ -202,61 +186,116 @@
       </div>
     </div>
 
-    <!-- Daftar Produk -->
+    <!-- Daftar Produk dengan Tipe -->
     <div class="card">
-      <div class="card-header"><h6 class="mb-0"><i class="bi bi-list-ul me-1"></i>Daftar Produk ({{ produk|length }})</h6></div>
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <h6 class="mb-0"><i class="bi bi-list-ul me-1"></i>Daftar Produk ({{ produk|length }})</h6>
+      </div>
       <div class="card-body p-0">
-        <div class="table-responsive">
-          <table class="table mb-0">
-            <thead><tr><th>ID</th><th>Nama</th><th class="text-center">Stok</th><th>Harga</th><th>Aksi</th></tr></thead>
-            <tbody>
-              {% for p in produk %}
-              <tr>
-                <td><code>{{ p.id }}</code></td>
-                <td class="fw-semibold small">
-                  {% if p.get('gambar') %}
-                  <img src="{{ p.gambar }}" style="width:28px;height:28px;object-fit:cover;border-radius:6px;margin-right:6px" alt="">
-                  {% endif %}
-                  {{ p.nama }}
-                </td>
-                <td class="text-center">
-                  <span class="badge {% if p.stok > 0 %}bg-success{% else %}bg-danger{% endif %}">{{ p.stok }}</span>
-                </td>
-                <td class="small">Rp{{ "{:,}".format(p.harga) }}</td>
-                <td class="table-action-btns">
-                  <!-- Lihat Stok -->
-                  <button class="btn btn-sm btn-outline-secondary" onclick="lihatStok('{{ p.id }}','{{ p.nama|replace("'","\\'")|e }}')">
-                    <i class="bi bi-eye"></i> Stok
-                  </button>
-                  <!-- Edit Gambar -->
-                  <button class="btn btn-sm btn-outline-warning ms-1" data-bs-toggle="modal"
-                    data-bs-target="#gambarModal" data-pid="{{ p.id }}" data-nama="{{ p.nama }}"
-                    data-gambar="{{ p.get('gambar','') }}">
-                    <i class="bi bi-camera"></i>
-                  </button>
-                  <!-- Restock Modal Trigger -->
-                  <button class="btn btn-sm btn-outline-success ms-1" data-bs-toggle="modal"
-                    data-bs-target="#restockModal" data-pid="{{ p.id }}" data-nama="{{ p.nama }}">
-                    <i class="bi bi-plus"></i> Restock
-                  </button>
-                  <!-- Edit Harga Modal Trigger -->
-                  <button class="btn btn-sm btn-outline-primary ms-1" data-bs-toggle="modal"
-                    data-bs-target="#hargaModal" data-pid="{{ p.id }}" data-nama="{{ p.nama }}" data-harga="{{ p.harga }}">
-                    <i class="bi bi-pencil"></i> Harga
-                  </button>
-                  <!-- Hapus -->
-                  <form method="post" action="/admin/produk/{{ p.id }}/hapus" class="d-inline ms-1">
-                    <button class="btn btn-sm btn-outline-danger"
-                      onclick="return confirm('Hapus produk {{ p.nama }}? Semua stok akan hilang!')">
-                      <i class="bi bi-trash"></i>
+        {% for p in produk %}
+        <div class="border-bottom p-3">
+          <!-- Header Produk -->
+          <div class="d-flex align-items-center gap-2 mb-2">
+            {% if p.get('gambar') %}
+            <img src="{{ p.gambar }}" style="width:36px;height:36px;object-fit:cover;border-radius:8px" alt="">
+            {% else %}
+            <div style="width:36px;height:36px;background:#f3f0ff;border-radius:8px;display:flex;align-items:center;justify-content:center">
+              <i class="bi bi-box-seam text-brand"></i>
+            </div>
+            {% endif %}
+            <div class="flex-grow-1">
+              <span class="fw-bold">{{ p.nama }}</span>
+              <code class="ms-2 text-muted small">ID: {{ p.id }}</code>
+              <span class="badge {% if p.stok > 0 %}bg-success{% else %}bg-danger{% endif %} ms-2">{{ p.stok }} unit</span>
+            </div>
+            <div class="d-flex gap-1 flex-wrap">
+              <!-- Lihat Stok -->
+              <button class="btn btn-sm btn-outline-secondary" onclick="lihatStok('{{ p.id }}','{{ p.nama|replace("'","\\'")|e }}')">
+                <i class="bi bi-eye"></i>
+              </button>
+              <!-- Edit Gambar -->
+              <button class="btn btn-sm btn-outline-warning" data-bs-toggle="modal"
+                data-bs-target="#gambarModal" data-pid="{{ p.id }}" data-nama="{{ p.nama }}"
+                data-gambar="{{ p.get('gambar','') }}">
+                <i class="bi bi-camera"></i>
+              </button>
+              {% if p.get('gambar') %}
+              <!-- Hapus Gambar -->
+              <form method="post" action="/admin/produk/{{ p.id }}/gambar/hapus" class="d-inline">
+                <button class="btn btn-sm btn-outline-secondary"
+                  onclick="return confirm('Hapus gambar produk {{ p.nama }}?')" title="Hapus Gambar">
+                  <i class="bi bi-image text-danger"></i>
+                </button>
+              </form>
+              {% endif %}
+              <!-- Tambah Tipe -->
+              <button class="btn btn-sm btn-outline-success" data-bs-toggle="modal"
+                data-bs-target="#tipeModal" data-pid="{{ p.id }}" data-nama="{{ p.nama }}">
+                <i class="bi bi-plus"></i> Tipe
+              </button>
+              <!-- Hapus Produk -->
+              <form method="post" action="/admin/produk/{{ p.id }}/hapus" class="d-inline">
+                <button class="btn btn-sm btn-outline-danger"
+                  onclick="return confirm('Hapus produk {{ p.nama }}? Semua tipe & stok akan hilang!')">
+                  <i class="bi bi-trash"></i>
+                </button>
+              </form>
+            </div>
+          </div>
+
+          <!-- Tipe List -->
+          {% if p.tipe %}
+          <div class="ps-4">
+            <table class="table table-sm table-borderless mb-0">
+              <thead class="text-muted" style="font-size:.8rem">
+                <tr><th>Tipe</th><th class="text-center">Stok</th><th>Harga</th><th>Aksi</th></tr>
+              </thead>
+              <tbody>
+                {% for t in p.tipe %}
+                <tr>
+                  <td class="fw-semibold small">{{ t.nama }}</td>
+                  <td class="text-center">
+                    <span class="badge {% if t.stok > 0 %}bg-success{% else %}bg-danger{% endif %}">{{ t.stok }}</span>
+                  </td>
+                  <td class="small">Rp{{ "{:,}".format(t.harga) }}</td>
+                  <td class="table-action-btns">
+                    <!-- Restock Tipe -->
+                    <button class="btn btn-xs btn-outline-success btn-sm py-0 px-2" data-bs-toggle="modal"
+                      data-bs-target="#restockTipeModal"
+                      data-pid="{{ p.id }}" data-tid="{{ t.id }}" data-nama="{{ t.nama }}">
+                      <i class="bi bi-plus"></i> Stok
                     </button>
-                  </form>
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
+                    <!-- Edit Harga Tipe -->
+                    <button class="btn btn-xs btn-outline-primary btn-sm py-0 px-2 ms-1" data-bs-toggle="modal"
+                      data-bs-target="#hargaTipeModal"
+                      data-pid="{{ p.id }}" data-tid="{{ t.id }}" data-nama="{{ t.nama }}" data-harga="{{ t.harga }}">
+                      <i class="bi bi-pencil"></i> Harga
+                    </button>
+                    <!-- Hapus Tipe -->
+                    <form method="post" action="/admin/produk/{{ p.id }}/tipe/{{ t.id }}/hapus" class="d-inline ms-1">
+                      <button class="btn btn-xs btn-outline-danger btn-sm py-0 px-2"
+                        onclick="return confirm('Hapus tipe {{ t.nama }}?')">
+                        <i class="bi bi-trash"></i>
+                      </button>
+                    </form>
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <div class="ps-4 text-muted small">
+            <i class="bi bi-info-circle me-1"></i>Belum ada tipe. Klik <strong>+ Tipe</strong> untuk menambah.
+          </div>
+          {% endif %}
         </div>
+        {% else %}
+        <div class="text-center py-5 text-muted">
+          <i class="bi bi-box-seam display-3 opacity-25"></i>
+          <p class="mt-3 small">Belum ada produk.</p>
+        </div>
+        {% endfor %}
       </div>
     </div>
   </div>
@@ -352,13 +391,27 @@
                   placeholder="Satu rekening per baris&#10;DANA : 0812-XXXX a.n Admin&#10;BNI : 1234567890 a.n Admin">{{ cfg.rekening | join('\n') if cfg.rekening else '' }}</textarea>
                 <div class="form-text">Satu rekening per baris</div>
               </div>
-              <div class="mb-4">
+              <div class="mb-3">
                 <label class="form-label">Kontak Admin Telegram</label>
                 <div class="input-group">
                   <span class="input-group-text"><i class="bi bi-at"></i></span>
                   <input type="text" name="kontak_admin" class="form-control"
                     value="{{ cfg.kontak_admin }}" placeholder="@username">
                 </div>
+              </div>
+              <div class="mb-4">
+                <label class="form-label d-block">Transfer Manual</label>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="transfer_manual_aktif" id="chkTransferManual"
+                    {% if cfg.get('transfer_manual_aktif', True) %}checked{% endif %}>
+                  <label class="form-check-label" for="chkTransferManual">
+                    Aktifkan metode deposit Transfer Manual
+                    <span class="badge {% if cfg.get('transfer_manual_aktif', True) %}bg-success{% else %}bg-secondary{% endif %} ms-1">
+                      {% if cfg.get('transfer_manual_aktif', True) %}Aktif{% else %}Nonaktif{% endif %}
+                    </span>
+                  </label>
+                </div>
+                <div class="form-text">Jika dinonaktifkan, opsi Transfer Manual tidak muncul di menu deposit bot.</div>
               </div>
               <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold">
                 <i class="bi bi-check-circle me-1"></i>Simpan Pengaturan
@@ -431,6 +484,97 @@
 
 </div><!-- end tab-content -->
 
+<!-- MODAL: Tambah Tipe -->
+<div class="modal fade" id="tipeModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content" style="border-radius:16px;border:none">
+      <div class="modal-header" style="background:linear-gradient(135deg,#5b21b6,#7c3aed);color:#fff;border-radius:16px 16px 0 0">
+        <h5 class="modal-title fw-bold" id="tipeModalTitle">Tambah Tipe</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="post" id="tipeForm">
+        <div class="modal-body p-4">
+          <div class="mb-3">
+            <label class="form-label">Nama Tipe</label>
+            <input type="text" name="nama_tipe" class="form-control" placeholder="1 Bulan Individual" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Harga (Rp)</label>
+            <input type="number" name="harga" class="form-control" placeholder="15000" min="0" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Deskripsi <span class="text-muted fw-normal">(opsional)</span></label>
+            <input type="text" name="deskripsi" class="form-control" placeholder="Garansi 1 bulan">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Daftar Akun <span class="text-muted fw-normal">(opsional)</span></label>
+            <textarea name="akun_list" class="form-control" rows="5"
+              placeholder="Format: username|password (per baris)&#10;user@mail.com|pass123&#10;user2@mail.com|pass456"></textarea>
+            <div class="form-text">Satu akun per baris — username|password</div>
+          </div>
+        </div>
+        <div class="modal-footer border-0">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Batal</button>
+          <button type="submit" class="btn btn-brand px-4 fw-semibold">
+            <i class="bi bi-plus-circle me-1"></i>Tambah Tipe
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Restock Tipe -->
+<div class="modal fade" id="restockTipeModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content" style="border-radius:16px;border:none">
+      <div class="modal-header" style="background:linear-gradient(135deg,#5b21b6,#7c3aed);color:#fff;border-radius:16px 16px 0 0">
+        <h5 class="modal-title fw-bold" id="restockTipeTitle">Restock Tipe</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="post" id="restockTipeForm">
+        <div class="modal-body p-4">
+          <div class="mb-3">
+            <label class="form-label">Daftar Akun Baru</label>
+            <textarea name="akun_list" class="form-control" rows="8"
+              placeholder="Format: username|password (per baris)&#10;user@mail.com|pass123"
+              required></textarea>
+            <div class="form-text">Satu akun per baris — username|password</div>
+          </div>
+        </div>
+        <div class="modal-footer border-0">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Batal</button>
+          <button type="submit" class="btn btn-brand px-4 fw-semibold">
+            <i class="bi bi-plus-circle me-1"></i>Tambah Stok
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Edit Harga Tipe -->
+<div class="modal fade" id="hargaTipeModal" tabindex="-1">
+  <div class="modal-dialog modal-sm">
+    <div class="modal-content" style="border-radius:16px;border:none">
+      <div class="modal-header" style="background:linear-gradient(135deg,#5b21b6,#7c3aed);color:#fff;border-radius:16px 16px 0 0">
+        <h5 class="modal-title fw-bold" id="hargaTipeTitle">Edit Harga Tipe</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="post" id="hargaTipeForm">
+        <div class="modal-body p-4">
+          <label class="form-label">Harga Baru (Rp)</label>
+          <input type="number" name="harga" id="hargaTipeInput" class="form-control form-control-lg" min="0" required>
+        </div>
+        <div class="modal-footer border-0">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Batal</button>
+          <button type="submit" class="btn btn-brand px-4 fw-semibold">Simpan</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL: Edit Gambar Produk -->
 <div class="modal fade" id="gambarModal" tabindex="-1">
   <div class="modal-dialog modal-sm">
@@ -475,7 +619,7 @@
         <div id="stokContent" class="d-none">
           <div class="table-responsive">
             <table class="table table-sm mb-0">
-              <thead><tr><th>#</th><th>Username / Email</th><th>Password</th><th>Tipe</th><th class="text-end">Aksi</th></tr></thead>
+              <thead><tr><th>#</th><th>Username / Email</th><th>Password</th><th class="text-end">Aksi</th></tr></thead>
               <tbody id="stokTbody"></tbody>
             </table>
           </div>
@@ -493,62 +637,11 @@
   </div>
 </div>
 
-<!-- MODAL: Restock -->
-<div class="modal fade" id="restockModal" tabindex="-1">
-  <div class="modal-dialog">
-    <div class="modal-content" style="border-radius:16px;border:none">
-      <div class="modal-header" style="background:linear-gradient(135deg,#5b21b6,#7c3aed);color:#fff;border-radius:16px 16px 0 0">
-        <h5 class="modal-title fw-bold" id="restockTitle">Restock Produk</h5>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-      </div>
-      <form method="post" id="restockForm">
-        <div class="modal-body p-4">
-          <div class="mb-3">
-            <label class="form-label">Daftar Akun Baru</label>
-            <textarea name="akun_list" class="form-control" rows="8"
-              placeholder="Format: username|password|tipe (per baris)&#10;contoh@gmail.com|password123|Individual"
-              required></textarea>
-            <div class="form-text">Satu akun per baris. Format: username|password|tipe</div>
-          </div>
-        </div>
-        <div class="modal-footer border-0">
-          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Batal</button>
-          <button type="submit" class="btn btn-brand px-4 fw-semibold">
-            <i class="bi bi-plus-circle me-1"></i>Tambah Stok
-          </button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-
-<!-- MODAL: Edit Harga -->
-<div class="modal fade" id="hargaModal" tabindex="-1">
-  <div class="modal-dialog modal-sm">
-    <div class="modal-content" style="border-radius:16px;border:none">
-      <div class="modal-header" style="background:linear-gradient(135deg,#5b21b6,#7c3aed);color:#fff;border-radius:16px 16px 0 0">
-        <h5 class="modal-title fw-bold" id="hargaTitle">Edit Harga</h5>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-      </div>
-      <form method="post" id="hargaForm">
-        <div class="modal-body p-4">
-          <label class="form-label">Harga Baru (Rp)</label>
-          <input type="number" name="harga" id="hargaInput" class="form-control form-control-lg" min="0" required>
-        </div>
-        <div class="modal-footer border-0">
-          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Batal</button>
-          <button type="submit" class="btn btn-brand px-4 fw-semibold">Simpan</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-// Setup modals
-// Edit Gambar Produk modal
+// Edit Gambar Modal
 document.getElementById('gambarModal').addEventListener('show.bs.modal', function(e) {
   const btn = e.relatedTarget;
   document.getElementById('gambarTitle').textContent = 'Edit Gambar: ' + btn.dataset.nama;
@@ -573,19 +666,31 @@ function previewGambar(input) {
   }
 }
 
-document.getElementById('restockModal').addEventListener('show.bs.modal', function(e) {
+// Tambah Tipe Modal
+document.getElementById('tipeModal').addEventListener('show.bs.modal', function(e) {
   const btn = e.relatedTarget;
-  document.getElementById('restockTitle').textContent = 'Restock: ' + btn.dataset.nama;
-  document.getElementById('restockForm').action = '/admin/produk/' + btn.dataset.pid + '/restock';
-});
-document.getElementById('hargaModal').addEventListener('show.bs.modal', function(e) {
-  const btn = e.relatedTarget;
-  document.getElementById('hargaTitle').textContent = 'Edit Harga: ' + btn.dataset.nama;
-  document.getElementById('hargaForm').action = '/admin/produk/' + btn.dataset.pid + '/harga';
-  document.getElementById('hargaInput').value = btn.dataset.harga;
+  document.getElementById('tipeModalTitle').textContent = 'Tambah Tipe: ' + btn.dataset.nama;
+  document.getElementById('tipeForm').action = '/admin/produk/' + btn.dataset.pid + '/tipe/tambah';
 });
 
-// Lihat Stok
+// Restock Tipe Modal
+document.getElementById('restockTipeModal').addEventListener('show.bs.modal', function(e) {
+  const btn = e.relatedTarget;
+  document.getElementById('restockTipeTitle').textContent = 'Restock: ' + btn.dataset.nama;
+  document.getElementById('restockTipeForm').action =
+    '/admin/produk/' + btn.dataset.pid + '/tipe/' + btn.dataset.tid + '/restock';
+});
+
+// Edit Harga Tipe Modal
+document.getElementById('hargaTipeModal').addEventListener('show.bs.modal', function(e) {
+  const btn = e.relatedTarget;
+  document.getElementById('hargaTipeTitle').textContent = 'Edit Harga: ' + btn.dataset.nama;
+  document.getElementById('hargaTipeForm').action =
+    '/admin/produk/' + btn.dataset.pid + '/tipe/' + btn.dataset.tid + '/harga';
+  document.getElementById('hargaTipeInput').value = btn.dataset.harga;
+});
+
+// Lihat Stok (per-produk semua tipe)
 let _stokPid = null;
 function lihatStok(pid, nama) {
   _stokPid = pid;
@@ -599,46 +704,56 @@ function lihatStok(pid, nama) {
     .then(data => {
       document.getElementById('stokLoading').classList.add('d-none');
       document.getElementById('stokContent').classList.remove('d-none');
-      renderStok(data.akun || []);
+      renderStokTipe(data.tipe || []);
     })
     .catch(() => {
       document.getElementById('stokLoading').textContent = 'Gagal memuat data.';
     });
 }
-function renderStok(daftar) {
-  const tbody = document.getElementById('stokTbody');
-  const empty = document.getElementById('stokEmpty');
-  const sisa  = document.getElementById('stokSisa');
+function renderStokTipe(tipeList) {
+  const tbody   = document.getElementById('stokTbody');
+  const empty   = document.getElementById('stokEmpty');
+  const sisaEl  = document.getElementById('stokSisa');
   tbody.innerHTML = '';
-  sisa.textContent = daftar.length + ' akun tersedia';
-  if (!daftar.length) { empty.classList.remove('d-none'); return; }
+  let total = 0;
+  tipeList.forEach(t => total += t.akun.length);
+  sisaEl.textContent = total + ' akun tersedia';
+  if (!total) { empty.classList.remove('d-none'); return; }
   empty.classList.add('d-none');
-  daftar.forEach(a => {
-    const tr = document.createElement('tr');
-    tr.id = 'stok-row-' + a.idx;
-    tr.innerHTML = `
-      <td class="text-muted small">${a.idx + 1}</td>
-      <td><code class="small">${a.username || '—'}</code></td>
-      <td><code class="small">${a.password || '—'}</code></td>
-      <td class="small text-muted">${a.tipe || '—'}</td>
-      <td class="text-end">
-        <button class="btn btn-sm btn-outline-danger py-0 px-2"
-          onclick="hapusAkun(${a.idx}, this)">
-          <i class="bi bi-trash"></i>
-        </button>
-      </td>`;
-    tbody.appendChild(tr);
+  tipeList.forEach(t => {
+    if (!t.akun.length) return;
+    const header = document.createElement('tr');
+    header.innerHTML = `<td colspan="4" class="fw-bold bg-light small py-1 px-3 text-brand">
+      📦 ${t.nama} (${t.akun.length} akun)</td>`;
+    tbody.appendChild(header);
+    t.akun.forEach(a => {
+      const tr = document.createElement('tr');
+      tr.id = 'stok-row-' + t.tid + '-' + a.idx;
+      tr.innerHTML = `
+        <td class="text-muted small ps-3">${a.idx + 1}</td>
+        <td><code class="small">${a.username || '—'}</code></td>
+        <td><code class="small">${a.password || '—'}</code></td>
+        <td class="text-end">
+          <button class="btn btn-sm btn-outline-danger py-0 px-2"
+            onclick="hapusAkunTipe('${t.tid}', ${a.idx}, this)">
+            <i class="bi bi-trash"></i>
+          </button>
+        </td>`;
+      tbody.appendChild(tr);
+    });
   });
 }
-function hapusAkun(idx, btn) {
-  if (!confirm('Hapus akun #' + (idx + 1) + '? Akun ini akan hilang permanen.')) return;
+function hapusAkunTipe(tid, idx, btn) {
+  if (!confirm('Hapus akun #' + (idx + 1) + '?')) return;
   btn.disabled = true;
-  fetch('/admin/produk/' + _stokPid + '/akun/' + idx + '/hapus', {method:'POST'})
+  fetch('/admin/produk/' + _stokPid + '/tipe/' + tid + '/akun/' + idx + '/hapus', {method:'POST'})
     .then(r => r.json())
     .then(d => {
       if (d.ok) {
-        document.getElementById('stok-row-' + idx).remove();
-        document.getElementById('stokSisa').textContent = d.sisa + ' akun tersedia';
+        document.getElementById('stok-row-' + tid + '-' + idx).remove();
+        const sisaEl = document.getElementById('stokSisa');
+        const cur = parseInt(sisaEl.textContent) || 0;
+        sisaEl.textContent = Math.max(0, cur - 1) + ' akun tersedia';
         if (d.sisa === 0) document.getElementById('stokEmpty').classList.remove('d-none');
       } else {
         alert('Gagal hapus: ' + (d.error || 'unknown'));

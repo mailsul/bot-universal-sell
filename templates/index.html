@@ -91,21 +91,39 @@
           </div>
           {% endif %}
           {% if p.stok > 0 %}
-          <span class="badge bg-success stok-badge"><i class="bi bi-check-circle me-1"></i>Stok {{ p.stok }}</span>
+          <span class="badge bg-success stok-badge"><i class="bi bi-check-circle me-1"></i>{{ p.stok }} unit</span>
           {% else %}
-          <span class="badge bg-secondary stok-badge">Stok Habis</span>
+          <span class="badge bg-secondary stok-badge">Habis</span>
           {% endif %}
         </div>
 
         <h6 class="fw-bold mb-1" style="font-size:.95rem">{{ p.nama }}</h6>
-        {% if p.get('deskripsi') %}
-        <p class="text-muted small mb-3">{{ p.deskripsi }}</p>
+
+        {% if p.tipe|length == 1 %}
+          {% set t0 = p.tipe[0] %}
+          {% if t0.get('deskripsi') %}
+          <p class="text-muted small mb-2">{{ t0.deskripsi }}</p>
+          {% else %}
+          <p class="text-muted small mb-2">Akun premium siap pakai</p>
+          {% endif %}
+        {% elif p.tipe|length > 1 %}
+          <p class="text-muted small mb-2">{{ p.tipe|length }} pilihan tipe tersedia</p>
         {% else %}
-        <p class="text-muted small mb-3">Akun premium siap pakai</p>
+          <p class="text-muted small mb-2">Akun premium siap pakai</p>
         {% endif %}
 
         <div class="d-flex justify-content-between align-items-center mt-auto">
-          <span class="harga-tag">Rp{{ "{:,}".format(p.harga) }}</span>
+          {% if p.tipe %}
+            {% set harga_min = p.tipe | map(attribute='harga') | min %}
+            {% set harga_max = p.tipe | map(attribute='harga') | max %}
+            {% if harga_min == harga_max %}
+            <span class="harga-tag">Rp{{ "{:,}".format(harga_min) }}</span>
+            {% else %}
+            <span class="harga-tag" style="font-size:1.05rem">Rp{{ "{:,}".format(harga_min) }}<span class="text-muted fw-normal" style="font-size:.8rem"> – {{ "{:,}".format(harga_max) }}</span></span>
+            {% endif %}
+          {% else %}
+            <span class="harga-tag text-muted">—</span>
+          {% endif %}
           {% if p.stok > 0 %}
           <a href="/beli/{{ p.id }}" class="btn btn-brand btn-sm px-3" onclick="event.stopPropagation()">
             <i class="bi bi-cart-plus me-1"></i>Beli

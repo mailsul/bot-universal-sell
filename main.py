@@ -130,20 +130,51 @@ def save_json(file: str, data, backup: bool = False):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def sync_stok(produk: dict) -> dict:
-    """Pastikan field stok selalu sinkron dengan panjang akun_list."""
-    for item in produk.values():
-        item["stok"] = len(item.get("akun_list", []))
-    return produk
+def _migrate_produk_format(raw: dict) -> tuple[dict, bool]:
+    """Convert format lama → format baru (tipe dict). Idempotent."""
+    changed = False
+    for pid, item in list(raw.items()):
+        if "tipe" not in item:
+            akun_list = item.get("akun_list", [])
+            raw[pid] = {
+                "nama": item["nama"],
+                "tipe": {
+                    "t1": {
+                        "nama": item["nama"],
+                        "harga": item.get("harga", 0),
+                        "akun_list": akun_list,
+                        "stok": len(akun_list),
+                        "deskripsi": item.get("deskripsi", ""),
+                    }
+                },
+            }
+            if item.get("gambar"):
+                raw[pid]["gambar"] = item["gambar"]
+            changed = True
+    return raw, changed
 
 
 def load_produk() -> dict:
-    """Load produk dan otomatis sinkronkan stok."""
-    return sync_stok(load_json(produk_file))
+    """Load + migrate produk.json. Return {pid: {nama, gambar, tipe:{tid:{nama,harga,akun_list,stok}}}}"""
+    raw = load_json(produk_file)
+    if not isinstance(raw, dict):
+        raw = {}
+    raw, changed = _migrate_produk_format(raw)
+    if changed:
+        save_json(produk_file, raw, backup=False)
+    # Sync stok semua tipe
+    for item in raw.values():
+        for t in item.get("tipe", {}).values():
+            t["stok"] = len(t.get("akun_list", []))
+    return raw
 
 
 def save_produk(produk: dict):
-    save_json(produk_file, sync_stok(produk), backup=True)
+    """Save produk dict (format tipe). Sync stok dulu."""
+    for item in produk.values():
+        for t in item.get("tipe", {}).values():
+            t["stok"] = len(t.get("akun_list", []))
+    save_json(produk_file, produk, backup=True)
 
 
 def _generate_kode_unik(expected_nominal: int) -> int:
@@ -321,12 +352,15 @@ async def proses_mutasi(app: Application):
                 if reserved_akun:
                     async with purchase_lock:
                         with produk_lock():
-                            produk_r = load_produk()
-                            item_r   = produk_r.get(p.get("produk_id"))
-                            if item_r:
-                                item_r["akun_list"] = reserved_akun + item_r["akun_list"]
+                            produk_r  = load_produk()
+                            item_r    = produk_r.get(p.get("produk_id"))
+                            s_tipe_id = p.get("tipe_id")
+                            if item_r and s_tipe_id and s_tipe_id in item_r.get("tipe", {}):
+                                t_r = item_r["tipe"][s_tipe_id]
+                                t_r["akun_list"] = reserved_akun + t_r.get("akun_list", [])
+                                t_r["stok"]      = len(t_r["akun_list"])
                                 save_produk(produk_r)
-                            log.info(f"↩️ Stok dikembalikan: {len(reserved_akun)} akun → {p.get('produk_id')}")
+                            log.info(f"↩️ Stok dikembalikan: {len(reserved_akun)} akun → {p.get('produk_id')}/{s_tipe_id}")
                 try:
                     await app.bot.send_message(
                         chat_id=p["user_id"],
@@ -389,16 +423,20 @@ async def proses_mutasi(app: Application):
             item          = None
 
             async with purchase_lock:
+                tipe_id_p = p.get("tipe_id")
                 if reserved_akun and len(reserved_akun) >= jumlah:
                     # Akun sudah direservasi saat QRIS diinisiasi — stok sudah terkurangi
                     akun_terpakai = reserved_akun[:jumlah]
                     produk = load_produk()
-                    item   = produk.get(produk_id) or {"nama": produk_id or "Produk", "stok": 0, "akun_list": []}
+                    item   = produk.get(produk_id) or {"nama": produk_id or "Produk", "tipe": {}}
+                    nama_tipe = ""
+                    if tipe_id_p and tipe_id_p in item.get("tipe", {}):
+                        nama_tipe = item["tipe"][tipe_id_p].get("nama", "")
                 else:
                     # Fallback: pop dari produk (tidak ada reservasi)
                     produk = load_produk()
                     item   = produk.get(produk_id)
-                    if not item or item["stok"] < jumlah or len(item.get("akun_list", [])) < jumlah:
+                    if not item:
                         try:
                             await app.bot.send_message(
                                 chat_id=p["user_id"],
@@ -408,10 +446,35 @@ async def proses_mutasi(app: Application):
                         except Exception:
                             pass
                         continue
-                    akun_terpakai = [item["akun_list"].pop(0) for _ in range(jumlah)]
+                    tipe_id_p = tipe_id_p or next(iter(item.get("tipe", {})), None)
+                    if not tipe_id_p or tipe_id_p not in item.get("tipe", {}):
+                        try:
+                            await app.bot.send_message(
+                                chat_id=p["user_id"],
+                                text="❌ *Stok habis setelah pembayaran.*\nHubungi admin untuk refund.",
+                                parse_mode="Markdown"
+                            )
+                        except Exception:
+                            pass
+                        continue
+                    tipe_p    = item["tipe"][tipe_id_p]
+                    nama_tipe = tipe_p.get("nama", "")
+                    if len(tipe_p.get("akun_list", [])) < jumlah:
+                        try:
+                            await app.bot.send_message(
+                                chat_id=p["user_id"],
+                                text="❌ *Stok habis setelah pembayaran.*\nHubungi admin untuk refund.",
+                                parse_mode="Markdown"
+                            )
+                        except Exception:
+                            pass
+                        continue
+                    akun_terpakai = [tipe_p["akun_list"].pop(0) for _ in range(jumlah)]
+                    tipe_p["stok"] = len(tipe_p["akun_list"])
                     save_produk(produk)
 
-                trx_id = db_add_riwayat(uid, "BELI", f"{item['nama']} x{jumlah} (QRIS)", nominal)
+                nama_tipe_str = f" [{nama_tipe}]" if nama_tipe else ""
+                trx_id = db_add_riwayat(uid, "BELI", f"{item['nama']}{nama_tipe_str} x{jumlah} (QRIS)", nominal)
                 log.info(f"🛒 BELI QRIS dikonfirmasi: user={uid} produk={item['nama']} x{jumlah} Rp{nominal:,} trx={trx_id}")
 
                 os.makedirs("akun_dikirim", exist_ok=True)
@@ -442,7 +505,6 @@ async def proses_mutasi(app: Application):
                     f"Akun #{i}\n"
                     f"Username : `{akun['username']}`\n"
                     f"Password : `{akun['password']}`\n"
-                    f"Tipe     : {akun['tipe']}\n"
                     f"─────────────────────\n"
                 )
 
@@ -465,12 +527,15 @@ async def proses_mutasi(app: Application):
                 pass
 
             # Notif stok rendah
-            if item and item.get("stok", 0) <= LOW_STOCK_THRESHOLD:
+            sisa_tipe_stok = 0
+            if item and tipe_id_p and tipe_id_p in item.get("tipe", {}):
+                sisa_tipe_stok = len(item["tipe"][tipe_id_p].get("akun_list", []))
+            if item and sisa_tipe_stok <= LOW_STOCK_THRESHOLD:
                 for admin_id in ADMIN_IDS:
                     try:
                         await app.bot.send_message(
                             chat_id=admin_id,
-                            text=f"⚠️ *Stok Rendah*\n{item['nama']} sisa {item.get('stok', 0)}x",
+                            text=f"⚠️ *Stok Rendah*\n{item['nama']}{nama_tipe_str} sisa {sisa_tipe_stok}x",
                             parse_mode="Markdown"
                         )
                     except Exception:
@@ -595,13 +660,27 @@ async def send_main_menu_safe(update: Update, context: CallbackContext):
 async def handle_list_produk(update: Update, context: CallbackContext):
     query  = update.callback_query
     produk = load_produk()
-    msg    = "*📋 LIST PRODUK*\n\n"
+    msg    = "🛍 *LIST PRODUK*\n\n"
     keyboard, row = [], []
 
-    for i, (pid, item) in enumerate(produk.items(), start=1):
-        stok_label = f"{item['stok']}x" if item["stok"] > 0 else "HABIS"
-        msg += f"`{pid}` {item['nama']} — Rp{item.get('harga', 0):,} [{stok_label}]\n"
-        if item["stok"] > 0:
+    for pid, item in produk.items():
+        tipe_dict  = item.get("tipe", {})
+        total_stok = sum(len(t.get("akun_list",[])) for t in tipe_dict.values())
+        min_harga  = min((t.get("harga",0) for t in tipe_dict.values()), default=0)
+        tipe_count = len(tipe_dict)
+
+        if tipe_count > 1:
+            harga_str = f"Rp{min_harga:,}+"
+        else:
+            harga_str = f"Rp{min_harga:,}"
+
+        msg += f"📦 *{item['nama']}* — {harga_str}\n"
+        if tipe_count > 1:
+            for tid, t in tipe_dict.items():
+                stok_t = len(t.get("akun_list",[]))
+                msg += f"  └ {t['nama']}: Rp{t.get('harga',0):,} {'✅' if stok_t>0 else '❌'}\n"
+
+        if total_stok > 0:
             row.append(KeyboardButton(pid))
         else:
             row.append(KeyboardButton(f"{pid} SOLDOUT ❌"))
@@ -616,7 +695,7 @@ async def handle_list_produk(update: Update, context: CallbackContext):
     await query.message.delete()
     await context.bot.send_message(
         chat_id=query.from_user.id,
-        text=msg + "\nPilih nomor produk yang ingin dibeli:",
+        text=msg + "\n📌 Pilih nomor produk:",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True),
         parse_mode="Markdown"
     )
@@ -626,14 +705,21 @@ async def handle_cek_stok(update: Update, context: CallbackContext):
     query  = update.callback_query
     produk = load_produk()
     now    = datetime.now().strftime("%d/%m/%Y, %H:%M:%S")
-    msg    = f"*📦 Informasi Stok*\n_{now}_\n\n"
+    msg    = f"📦 *Informasi Stok*\n_{now}_\n\n"
     keyboard, row = [], []
 
     for pid, item in produk.items():
-        stok = item["stok"]
-        icon = "✅" if stok > LOW_STOCK_THRESHOLD else ("⚠️" if stok > 0 else "❌")
-        msg += f"{icon} `{pid}`. {item['nama']} → {stok}x\n"
-        if stok > 0:
+        tipe_dict  = item.get("tipe", {})
+        total_stok = sum(len(t.get("akun_list",[])) for t in tipe_dict.values())
+        icon = "✅" if total_stok > LOW_STOCK_THRESHOLD else ("⚠️" if total_stok > 0 else "❌")
+        msg += f"{icon} *{item['nama']}*\n"
+        for tid, t in tipe_dict.items():
+            stok_t = len(t.get("akun_list",[]))
+            ic = "✅" if stok_t > 0 else "❌"
+            msg += f"  {ic} {t['nama']}: *{stok_t}* unit\n"
+        msg += "\n"
+
+        if total_stok > 0:
             row.append(KeyboardButton(pid))
         else:
             row.append(KeyboardButton(f"{pid} SOLDOUT ❌"))
@@ -656,16 +742,30 @@ async def handle_cek_stok(update: Update, context: CallbackContext):
 
 # ─── PRODUK DETAIL & ORDER ───────────────────────────────────────────────────
 
-def _order_text(item: dict, jumlah: int) -> str:
-    tipe  = item["akun_list"][0]["tipe"] if item["akun_list"] else "-"
-    total = jumlah * item["harga"]
+def _order_text(item: dict, jumlah: int, tipe_item: dict | None = None) -> str:
+    """item = produk dict (format tipe). tipe_item = tipe yang dipilih."""
+    if tipe_item:
+        harga     = tipe_item.get("harga", 0)
+        nama_tipe = tipe_item.get("nama", "-")
+        stok      = len(tipe_item.get("akun_list", []))
+    else:
+        # Fallback: gunakan tipe pertama
+        tipe_dict = item.get("tipe", {})
+        if tipe_dict:
+            first = next(iter(tipe_dict.values()))
+            harga     = first.get("harga", 0)
+            nama_tipe = first.get("nama", "-")
+            stok      = len(first.get("akun_list", []))
+        else:
+            harga, nama_tipe, stok = 0, "-", 0
+    total = jumlah * harga
     return (
         "🛒 *KONFIRMASI PESANAN*\n"
         "╭─────────────────────────╮\n"
         f"┊ Produk     : {item['nama']}\n"
-        f"┊ Variasi    : {tipe}\n"
-        f"┊ Harga/pcs  : Rp{item['harga']:,}\n"
-        f"┊ Stok       : {item['stok']}x\n"
+        f"┊ Tipe       : {nama_tipe}\n"
+        f"┊ Harga/pcs  : Rp{harga:,}\n"
+        f"┊ Stok       : {stok}x\n"
         "┊─────────────────────────\n"
         f"┊ Jumlah     : x{jumlah}\n"
         f"┊ Total      : Rp{total:,}\n"
@@ -685,23 +785,128 @@ def _order_keyboard(jumlah: int) -> InlineKeyboardMarkup:
     ])
 
 
+async def _send_produk_with_tipe(bot, chat_id: int, pid: str, item: dict, context):
+    """Kirim detail produk: gambar (jika ada) + tipe selector atau langsung order."""
+    tipe_dict  = item.get("tipe", {})
+    available  = {tid: t for tid, t in tipe_dict.items() if len(t.get("akun_list",[])) > 0}
+    gambar     = item.get("gambar")
+
+    if not available:
+        await bot.send_message(chat_id=chat_id, text="❌ Semua tipe habis saat ini.")
+        return
+
+    # Kalau hanya 1 tipe tersedia, langsung ke order
+    if len(tipe_dict) == 1 or len(available) >= 1 and len(tipe_dict) == 1:
+        tid      = next(iter(available))
+        tipe_obj = available[tid]
+        context.user_data["konfirmasi"] = {"produk_id": pid, "tipe_id": tid, "jumlah": 1}
+        order_txt = _order_text(item, 1, tipe_obj)
+        kb        = _order_keyboard(1)
+        if gambar:
+            try:
+                base = gambar.lstrip("/")
+                with open(base, "rb") as f:
+                    await bot.send_photo(chat_id=chat_id, photo=InputFile(f),
+                                         caption=order_txt, reply_markup=kb, parse_mode="Markdown")
+                return
+            except Exception:
+                pass
+        await bot.send_message(chat_id=chat_id, text=order_txt, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    # Multiple tipe → tampilkan selector
+    lines = [f"🛍 *{item['nama']}*\n\nPilih tipe:"]
+    kb_rows = []
+    row = []
+    for tid, t in tipe_dict.items():
+        stok = len(t.get("akun_list", []))
+        icon = "✅" if stok > 0 else "❌"
+        lines.append(f"{icon} *{t['nama']}* — Rp{t.get('harga',0):,} ({stok} stok)")
+        if stok > 0:
+            btn = InlineKeyboardButton(f"{t['nama']} Rp{t.get('harga',0):,}", callback_data=f"tipe_{pid}_{tid}")
+        else:
+            btn = InlineKeyboardButton(f"❌ {t['nama']} (habis)", callback_data="ignore")
+        row.append(btn)
+        if len(row) == 2:
+            kb_rows.append(row)
+            row = []
+    if row:
+        kb_rows.append(row)
+    kb_rows.append([InlineKeyboardButton("🔙 Kembali ke Menu", callback_data="back_to_produk")])
+
+    text = "\n".join(lines)
+    kb   = InlineKeyboardMarkup(kb_rows)
+
+    if gambar:
+        try:
+            base = gambar.lstrip("/")
+            with open(base, "rb") as f:
+                await bot.send_photo(chat_id=chat_id, photo=InputFile(f),
+                                     caption=text, reply_markup=kb, parse_mode="Markdown")
+            return
+        except Exception:
+            pass
+    await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb, parse_mode="Markdown")
+
+
 async def handle_produk_detail(update: Update, context: CallbackContext):
     query  = update.callback_query
     produk = load_produk()
-    item   = produk.get(query.data)
+    pid    = query.data
+    item   = produk.get(pid)
 
-    if not item or item["stok"] <= 0:
+    tipe_dict  = item.get("tipe", {}) if item else {}
+    total_stok = sum(len(t.get("akun_list",[])) for t in tipe_dict.values())
+
+    if not item or total_stok <= 0:
         await query.answer("❌ Produk habis atau tidak tersedia", show_alert=True)
         return
 
-    context.user_data["konfirmasi"] = {"produk_id": query.data, "jumlah": 1}
     await query.message.delete()
-    await context.bot.send_message(
-        chat_id=query.from_user.id,
-        text=_order_text(item, 1),
-        reply_markup=_order_keyboard(1),
-        parse_mode="Markdown"
-    )
+    await _send_produk_with_tipe(context.bot, query.from_user.id, pid, item, context)
+
+
+async def handle_tipe_select(update: Update, context: CallbackContext):
+    """Callback tipe_{pid}_{tid} — user pilih tipe dari selector."""
+    query  = update.callback_query
+    parts  = query.data.split("_", 2)  # ["tipe", pid, tid]
+    if len(parts) != 3:
+        await query.answer("Data tidak valid")
+        return
+    _, pid, tid = parts
+
+    produk = load_produk()
+    item   = produk.get(pid)
+    if not item or tid not in item.get("tipe", {}):
+        await query.answer("❌ Tipe tidak ditemukan", show_alert=True)
+        return
+
+    tipe_obj = item["tipe"][tid]
+    stok     = len(tipe_obj.get("akun_list", []))
+    if stok <= 0:
+        await query.answer("❌ Tipe ini habis", show_alert=True)
+        return
+
+    context.user_data["konfirmasi"] = {"produk_id": pid, "tipe_id": tid, "jumlah": 1}
+    order_txt = _order_text(item, 1, tipe_obj)
+    kb        = _order_keyboard(1)
+    try:
+        await query.edit_message_text(order_txt, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        try:
+            await query.edit_message_caption(order_txt, reply_markup=kb, parse_mode="Markdown")
+        except Exception:
+            pass
+
+
+def _get_tipe_from_info(produk: dict, info: dict):
+    """Ambil tipe_obj dari produk berdasarkan info konfirmasi."""
+    item = produk.get(info.get("produk_id", ""))
+    if not item:
+        return None, None
+    tipe_id  = info.get("tipe_id") or next(iter(item.get("tipe", {})), None)
+    tipe_obj = item.get("tipe", {}).get(tipe_id) if tipe_id else None
+    return item, tipe_obj
 
 
 async def handle_qty_plus(update: Update, context: CallbackContext):
@@ -712,16 +917,24 @@ async def handle_qty_plus(update: Update, context: CallbackContext):
         await query.answer("Data tidak tersedia")
         return
 
-    item   = produk.get(info["produk_id"])
-    if not item:
+    item, tipe_obj = _get_tipe_from_info(produk, info)
+    if not item or not tipe_obj:
         await query.answer("Produk tidak ditemukan")
         return
 
+    stok   = len(tipe_obj.get("akun_list", []))
     jumlah = info["jumlah"]
-    if jumlah < item["stok"]:
+    if jumlah < stok:
         jumlah += 1
     context.user_data["konfirmasi"]["jumlah"] = jumlah
-    await query.edit_message_text(_order_text(item, jumlah), reply_markup=_order_keyboard(jumlah), parse_mode="Markdown")
+    txt = _order_text(item, jumlah, tipe_obj)
+    try:
+        await query.edit_message_text(txt, reply_markup=_order_keyboard(jumlah), parse_mode="Markdown")
+    except Exception:
+        try:
+            await query.edit_message_caption(txt, reply_markup=_order_keyboard(jumlah), parse_mode="Markdown")
+        except Exception:
+            pass
 
 
 async def handle_qty_minus(update: Update, context: CallbackContext):
@@ -732,8 +945,8 @@ async def handle_qty_minus(update: Update, context: CallbackContext):
         await query.answer("Data tidak tersedia")
         return
 
-    item   = produk.get(info["produk_id"])
-    if not item:
+    item, tipe_obj = _get_tipe_from_info(produk, info)
+    if not item or not tipe_obj:
         await query.answer("Produk tidak ditemukan")
         return
 
@@ -741,7 +954,14 @@ async def handle_qty_minus(update: Update, context: CallbackContext):
     if jumlah > 1:
         jumlah -= 1
     context.user_data["konfirmasi"]["jumlah"] = jumlah
-    await query.edit_message_text(_order_text(item, jumlah), reply_markup=_order_keyboard(jumlah), parse_mode="Markdown")
+    txt = _order_text(item, jumlah, tipe_obj)
+    try:
+        await query.edit_message_text(txt, reply_markup=_order_keyboard(jumlah), parse_mode="Markdown")
+    except Exception:
+        try:
+            await query.edit_message_caption(txt, reply_markup=_order_keyboard(jumlah), parse_mode="Markdown")
+        except Exception:
+            pass
 
 
 async def handle_confirm_order(update: Update, context: CallbackContext):
@@ -754,19 +974,40 @@ async def handle_confirm_order(update: Update, context: CallbackContext):
         return
 
     produk = load_produk()
-    item   = produk.get(info["produk_id"])
-    if not item:
-        await query.edit_message_text("❌ Produk tidak ditemukan.")
+    item, tipe_obj = _get_tipe_from_info(produk, info)
+    if not item or not tipe_obj:
+        try:
+            await query.edit_message_text("❌ Produk/tipe tidak ditemukan.")
+        except Exception:
+            try:
+                await query.edit_message_caption("❌ Produk/tipe tidak ditemukan.")
+            except Exception:
+                pass
         return
 
     jumlah = info["jumlah"]
-    total  = jumlah * item["harga"]
+    harga  = tipe_obj.get("harga", 0)
+    total  = jumlah * harga
+    stok   = len(tipe_obj.get("akun_list", []))
 
-    if item["stok"] < jumlah or len(item.get("akun_list", [])) < jumlah:
-        await query.edit_message_text("❌ Stok tidak mencukupi. Silakan pilih jumlah lebih sedikit.")
+    if stok < jumlah:
+        try:
+            await query.edit_message_text("❌ Stok tidak mencukupi. Silakan pilih jumlah lebih sedikit.")
+        except Exception:
+            try:
+                await query.edit_message_caption("❌ Stok tidak mencukupi.")
+            except Exception:
+                pass
         return
 
     saldo_user = db_get_saldo(query.from_user.id)
+    nama_tipe  = tipe_obj.get("nama", "")
+    msg_text   = (
+        f"💳 *Pilih metode pembayaran*\n\n"
+        f"📦 {item['nama']} [{nama_tipe}] x{jumlah}\n"
+        f"💸 Total: *Rp{total:,}*\n"
+        f"💰 Saldo kamu: Rp{saldo_user:,}"
+    )
 
     # Pilih metode pembayaran
     if _qris_available():
@@ -780,17 +1021,16 @@ async def handle_confirm_order(update: Update, context: CallbackContext):
         if saldo_user < total:
             kb.append([InlineKeyboardButton("💰 Top Up Saldo dulu", callback_data="deposit")])
         kb.append([InlineKeyboardButton("🔙 Kembali", callback_data="back_to_produk")])
-        await query.edit_message_text(
-            f"💳 *Pilih metode pembayaran*\n\n"
-            f"📦 {item['nama']} x{jumlah}\n"
-            f"💸 Total: *Rp{total:,}*\n"
-            f"💰 Saldo kamu: Rp{saldo_user:,}",
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode="Markdown"
-        )
+        try:
+            await query.edit_message_text(msg_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+        except Exception:
+            try:
+                await query.edit_message_caption(msg_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+            except Exception:
+                pass
     else:
         # QRIS tidak tersedia — langsung proses dengan saldo
-        await _proses_beli_saldo(query, context, info, item, jumlah, total, saldo_user)
+        await _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total, saldo_user)
 
 
 async def handle_confirm_saldo(update: Update, context: CallbackContext):
@@ -803,18 +1043,25 @@ async def handle_confirm_saldo(update: Update, context: CallbackContext):
         return
 
     produk     = load_produk()
-    item       = produk.get(info["produk_id"])
+    item, tipe_obj = _get_tipe_from_info(produk, info)
+    if not item or not tipe_obj:
+        try:
+            await query.edit_message_text("❌ Produk/tipe tidak ditemukan.")
+        except Exception:
+            pass
+        return
     jumlah     = info["jumlah"]
-    total      = jumlah * item["harga"]
+    total      = jumlah * tipe_obj.get("harga", 0)
     saldo_user = db_get_saldo(query.from_user.id)
 
-    await _proses_beli_saldo(query, context, info, item, jumlah, total, saldo_user)
+    await _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total, saldo_user)
 
 
-async def _proses_beli_saldo(query, context, info, item, jumlah, total, saldo_user):
+async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total, saldo_user):
     """Logika inti pembelian menggunakan saldo — dipanggil setelah metode dipilih."""
     uid       = str(query.from_user.id)
     produk_id = info["produk_id"]
+    tipe_id   = info.get("tipe_id") or next(iter(item.get("tipe", {})), None)
 
     if saldo_user < total:
         kb_rows = [
@@ -823,26 +1070,48 @@ async def _proses_beli_saldo(query, context, info, item, jumlah, total, saldo_us
         if _qris_available():
             kb_rows.append([InlineKeyboardButton("💳 Bayar via QRIS (Otomatis)", callback_data="beli_qris")])
         kb_rows.append([InlineKeyboardButton("🔙 Kembali ke Menu", callback_data="back_to_produk")])
-        await query.edit_message_text(
-            "❌ *Saldo tidak cukup.*\nSilakan deposit atau bayar langsung via QRIS.",
-            reply_markup=InlineKeyboardMarkup(kb_rows),
-            parse_mode="Markdown"
-        )
+        try:
+            await query.edit_message_text(
+                "❌ *Saldo tidak cukup.*\nSilakan deposit atau bayar langsung via QRIS.",
+                reply_markup=InlineKeyboardMarkup(kb_rows),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            try:
+                await query.edit_message_caption(
+                    "❌ *Saldo tidak cukup.*",
+                    reply_markup=InlineKeyboardMarkup(kb_rows),
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
         return
 
     async with purchase_lock:
         with produk_lock():
             produk = load_produk()
             item   = produk.get(produk_id)
-
-            if not item or item["stok"] < jumlah or len(item.get("akun_list", [])) < jumlah:
-                await query.edit_message_text("❌ Stok tidak mencukupi saat diproses. Coba lagi.")
+            if not item or tipe_id not in item.get("tipe", {}):
+                try:
+                    await query.edit_message_text("❌ Produk tidak ditemukan.")
+                except Exception:
+                    pass
+                return
+            tipe_now  = item["tipe"][tipe_id]
+            akun_list = tipe_now.get("akun_list", [])
+            if len(akun_list) < jumlah:
+                try:
+                    await query.edit_message_text("❌ Stok tidak mencukupi saat diproses. Coba lagi.")
+                except Exception:
+                    pass
                 return
 
             new_saldo     = db_add_saldo(uid, -total)
-            akun_terpakai = [item["akun_list"].pop(0) for _ in range(jumlah)]
+            akun_terpakai = [tipe_now["akun_list"].pop(0) for _ in range(jumlah)]
+            tipe_now["stok"] = len(tipe_now["akun_list"])
             save_produk(produk)
-        trx_id = db_add_riwayat(uid, "BELI", f"{item['nama']} x{jumlah}", total)
+        nama_tipe = tipe_obj.get("nama", "")
+        trx_id = db_add_riwayat(uid, "BELI", f"{item['nama']} [{nama_tipe}] x{jumlah}", total)
 
         os.makedirs("akun_dikirim", exist_ok=True)
         stamp     = int(time.time())
@@ -853,7 +1122,6 @@ async def _proses_beli_saldo(query, context, info, item, jumlah, total, saldo_us
                     f"Akun #{i}\n"
                     f"Username : {akun['username']}\n"
                     f"Password : {akun['password']}\n"
-                    f"Tipe     : {akun['tipe']}\n"
                     "---------------------------\n"
                 )
 
@@ -861,7 +1129,7 @@ async def _proses_beli_saldo(query, context, info, item, jumlah, total, saldo_us
     waktu_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     text_akun = (
         f"✅ *Pembelian Berhasil!*\n\n"
-        f"📦 {item['nama']} x{jumlah}\n"
+        f"📦 {item['nama']} [{nama_tipe}] x{jumlah}\n"
         f"💸 Dipotong: Rp{total:,}\n"
         f"💰 Sisa saldo: Rp{new_saldo:,}\n"
         f"🔖 ID Transaksi: `{trx_id}`\n"
@@ -873,7 +1141,6 @@ async def _proses_beli_saldo(query, context, info, item, jumlah, total, saldo_us
             f"Akun #{i}\n"
             f"Username : `{akun['username']}`\n"
             f"Password : `{akun['password']}`\n"
-            f"Tipe     : {akun['tipe']}\n"
             f"─────────────────────\n"
         )
 
@@ -893,15 +1160,16 @@ async def _proses_beli_saldo(query, context, info, item, jumlah, total, saldo_us
     except OSError:
         pass
 
-    if item["stok"] <= LOW_STOCK_THRESHOLD:
+    sisa_stok = len(tipe_now.get("akun_list", []))
+    if sisa_stok <= LOW_STOCK_THRESHOLD:
         for admin_id in ADMIN_IDS:
             try:
                 await context.bot.send_message(
                     chat_id=admin_id,
                     text=(
                         f"⚠️ *PERINGATAN STOK RENDAH*\n"
-                        f"Produk: {item['nama']}\n"
-                        f"Sisa stok: {item['stok']}x\n"
+                        f"Produk: {item['nama']} [{nama_tipe}]\n"
+                        f"Sisa stok: {sisa_stok}x\n"
                         f"Segera lakukan restock!"
                     ),
                     parse_mode="Markdown"
@@ -968,21 +1236,28 @@ async def handle_deposit_nominal(update: Update, context: CallbackContext):
 
 
 async def _show_metode_deposit(query_or_message, context, nominal: int):
-    """Tampilkan pilihan metode: Manual Transfer atau QRIS."""
-    qris_tersedia = _qris_available()
+    """Tampilkan pilihan metode: Manual Transfer atau QRIS (toggle dari config)."""
+    qris_tersedia   = _qris_available()
+    cfg             = load_config()
+    manual_aktif    = cfg.get("transfer_manual_aktif", True)
     kb = []
     if qris_tersedia:
         kb.append([InlineKeyboardButton("💳 QRIS (Otomatis / Lebih Cepat)", callback_data=f"dep_qris_{nominal}")])
-    kb.append([InlineKeyboardButton("🏦 Transfer Manual (Konfirmasi Admin)", callback_data=f"dep_manual_{nominal}")])
+    if manual_aktif:
+        kb.append([InlineKeyboardButton("🏦 Transfer Manual (Konfirmasi Admin)", callback_data=f"dep_manual_{nominal}")])
+    if not kb:
+        kb.append([InlineKeyboardButton("❌ Metode deposit sedang tidak tersedia", callback_data="ignore")])
     kb.append([InlineKeyboardButton("🔙 Kembali", callback_data="deposit")])
 
+    hints = []
+    if qris_tersedia:
+        hints.append("✅ *QRIS* — dikonfirmasi otomatis setelah bayar")
+    if manual_aktif:
+        hints.append("🏦 *Transfer Manual* — perlu foto bukti & konfirmasi admin")
     text = (
         f"💰 *Pilih metode pembayaran*\n\n"
         f"Nominal: *Rp{nominal:,}*\n\n"
-        + ("✅ *QRIS* — dikonfirmasi otomatis setelah bayar\n"
-           "🏦 *Transfer Manual* — perlu foto bukti & konfirmasi admin"
-           if qris_tersedia else
-           "🏦 *Transfer Manual* — perlu foto bukti & konfirmasi admin")
+        + ("\n".join(hints) if hints else "_Tidak ada metode aktif saat ini._")
     )
 
     try:
@@ -1123,22 +1398,35 @@ async def handle_beli_qris(update: Update, context: CallbackContext):
         await query.answer("❌ QRIS belum diatur admin.", show_alert=True)
         return
 
-    jumlah = info["jumlah"]
-    async with purchase_lock:
-        produk = load_produk()
-        item   = produk.get(info["produk_id"])
-        if not item or item["stok"] < jumlah or len(item.get("akun_list", [])) < jumlah:
-            await query.answer("❌ Stok tidak mencukupi", show_alert=True)
-            return
-        # Reservasi stok: pop akun sekarang, simpan di pending
-        reserved_akun = [item["akun_list"].pop(0) for _ in range(jumlah)]
-        save_produk(produk)
-        log.info(f"🔒 Stok direservasi: {len(reserved_akun)} akun {item['nama']} untuk user {query.from_user.id}")
+    jumlah  = info["jumlah"]
+    tipe_id = info.get("tipe_id")
 
-    nominal  = jumlah * item["harga"]
-    kode     = _generate_kode_unik(nominal)
-    expected = nominal + kode
-    log.info(f"🛒 QRIS Beli: user={query.from_user.id} produk={item['nama']} x{jumlah} nominal=Rp{nominal:,} expected=Rp{expected:,}")
+    async with purchase_lock:
+        with produk_lock():
+            produk = load_produk()
+            item   = produk.get(info["produk_id"])
+            if not item:
+                await query.answer("❌ Produk tidak ditemukan", show_alert=True)
+                return
+            tipe_id = tipe_id or next(iter(item.get("tipe", {})), None)
+            if not tipe_id or tipe_id not in item.get("tipe", {}):
+                await query.answer("❌ Tipe tidak ditemukan", show_alert=True)
+                return
+            tipe_obj = item["tipe"][tipe_id]
+            if len(tipe_obj.get("akun_list", [])) < jumlah:
+                await query.answer("❌ Stok tidak mencukupi", show_alert=True)
+                return
+            # Reservasi stok
+            reserved_akun = [tipe_obj["akun_list"].pop(0) for _ in range(jumlah)]
+            tipe_obj["stok"] = len(tipe_obj["akun_list"])
+            save_produk(produk)
+            log.info(f"🔒 Stok direservasi: {len(reserved_akun)} akun {item['nama']} untuk user {query.from_user.id}")
+
+    nama_tipe = tipe_obj.get("nama", "")
+    nominal   = jumlah * tipe_obj.get("harga", 0)
+    kode      = _generate_kode_unik(nominal)
+    expected  = nominal + kode
+    log.info(f"🛒 QRIS Beli: user={query.from_user.id} produk={item['nama']} [{nama_tipe}] x{jumlah} nominal=Rp{nominal:,} expected=Rp{expected:,}")
 
     db_remove_pending_by_user(query.from_user.id)
     db_add_pending({
@@ -1146,6 +1434,7 @@ async def handle_beli_qris(update: Update, context: CallbackContext):
         "username":        query.from_user.username,
         "metode":          "qris_beli",
         "produk_id":       info["produk_id"],
+        "tipe_id":         tipe_id,
         "jumlah":          jumlah,
         "nominal":         nominal,
         "expected_amount": expected,
@@ -1158,7 +1447,7 @@ async def handle_beli_qris(update: Update, context: CallbackContext):
 
     caption = (
         f"💳 *Bayar via QRIS*\n\n"
-        f"📦 {item['nama']} x{jumlah}\n"
+        f"📦 {item['nama']} [{nama_tipe}] x{jumlah}\n"
         f"💰 Total: Rp{nominal:,}\n"
         f"🔢 Transfer tepat *Rp{expected:,}*\n"
         f"_(nominal + kode unik Rp{kode})_\n\n"
@@ -1633,6 +1922,8 @@ async def button_callback(update: Update, context: CallbackContext):
     produk = load_produk()
     if data in produk:
         await handle_produk_detail(update, context)
+    elif data.startswith("tipe_"):
+        await handle_tipe_select(update, context)
     elif data.startswith("deposit_"):
         await handle_deposit_nominal(update, context)
     elif data.startswith("dep_manual_") or data.startswith("dep_qris_"):
@@ -1917,18 +2208,16 @@ async def handle_text(update: Update, context: CallbackContext):
 
     produk = load_produk()
     if text in produk:
-        item = produk[text]
-        if item["stok"] <= 0:
+        item       = produk[text]
+        tipe_dict  = item.get("tipe", {})
+        total_stok = sum(len(t.get("akun_list",[])) for t in tipe_dict.values())
+        if total_stok <= 0:
             await update.message.reply_text("❌ Stok habis.", reply_markup=ReplyKeyboardRemove())
             await send_main_menu_safe(update, context)
             return
 
-        context.user_data["konfirmasi"] = {"produk_id": text, "jumlah": 1}
-        await update.message.reply_text(
-            _order_text(item, 1),
-            reply_markup=_order_keyboard(1),
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("✅", reply_markup=ReplyKeyboardRemove())
+        await _send_produk_with_tipe(context.bot, update.effective_user.id, text, item, context)
         return
 
     # ── Tombol kembali ────────────────────────────────────────────────

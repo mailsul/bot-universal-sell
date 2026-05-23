@@ -1,66 +1,97 @@
 {
   "1": {
     "nama": "YOUTUBE 1 BULAN FAMHEAD",
-    "stok": 1,
-    "harga": 5000,
-    "akun_list": [
-      {
-        "username": "ytuser3@mail.com",
-        "password": "pass789",
-        "tipe": "1 Bulan Famhead"
+    "tipe": {
+      "t1": {
+        "nama": "YOUTUBE 1 BULAN FAMHEAD",
+        "harga": 5000,
+        "akun_list": [
+          {
+            "username": "ytuser3@mail.com",
+            "password": "pass789",
+            "tipe": "1 Bulan Famhead"
+          }
+        ],
+        "stok": 1,
+        "deskripsi": ""
       }
-    ]
+    },
+    "gambar": "/static/produk_img/1.png"
   },
   "2": {
     "nama": "CANVA PRO 12 BULAN",
-    "stok": 0,
-    "harga": 55000,
-    "akun_list": []
+    "tipe": {
+      "t1": {
+        "nama": "CANVA PRO 12 BULAN",
+        "harga": 55000,
+        "akun_list": [],
+        "stok": 0,
+        "deskripsi": ""
+      }
+    }
   },
   "3": {
     "nama": "CANVA PRO LIFETIME",
-    "stok": 2,
-    "harga": 100000,
-    "akun_list": [
-      {
-        "username": "canvalife1@mail.com",
-        "password": "life123",
-        "tipe": "Lifetime"
-      },
-      {
-        "username": "canvalife2@mail.com",
-        "password": "life456",
-        "tipe": "Lifetime"
+    "tipe": {
+      "t1": {
+        "nama": "CANVA PRO LIFETIME",
+        "harga": 100000,
+        "akun_list": [
+          {
+            "username": "canvalife1@mail.com",
+            "password": "life123",
+            "tipe": "Lifetime"
+          },
+          {
+            "username": "canvalife2@mail.com",
+            "password": "life456",
+            "tipe": "Lifetime"
+          }
+        ],
+        "stok": 2,
+        "deskripsi": ""
       }
-    ]
+    }
   },
   "4": {
     "nama": "EXPRESS VPN 30 HARI",
-    "stok": 1,
-    "harga": 30000,
-    "akun_list": [
-      {
-        "username": "vpnuser1@mail.com",
-        "password": "vpnpass",
-        "tipe": "30 Hari"
+    "tipe": {
+      "t1": {
+        "nama": "EXPRESS VPN 30 HARI",
+        "harga": 30000,
+        "akun_list": [
+          {
+            "username": "vpnuser1@mail.com",
+            "password": "vpnpass",
+            "tipe": "30 Hari"
+          }
+        ],
+        "stok": 1,
+        "deskripsi": ""
       }
-    ]
+    }
   },
   "5": {
     "nama": "SPOTIFY PREMIUM 1B STUDENT GP",
-    "stok": 2,
-    "harga": 25000,
-    "akun_list": [
-      {
-        "username": "spotify1@mail.com",
-        "password": "spo123",
-        "tipe": "1 Bulan Student"
-      },
-      {
-        "username": "spotify2@mail.com",
-        "password": "spo456",
-        "tipe": "1 Bulan Student"
+    "tipe": {
+      "t1": {
+        "nama": "SPOTIFY PREMIUM 1B STUDENT GP",
+        "harga": 25000,
+        "akun_list": [
+          {
+            "username": "spotify1@mail.com",
+            "password": "spo123",
+            "tipe": "1 Bulan Student"
+          },
+          {
+            "username": "spotify2@mail.com",
+            "password": "spo456",
+            "tipe": "1 Bulan Student"
+          }
+        ],
+        "stok": 2,
+        "deskripsi": ""
       }
-    ]
+    }
   }
 }

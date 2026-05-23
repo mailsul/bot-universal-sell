@@ -19,6 +19,16 @@
     border-radius: 16px;
     padding: 24px;
   }
+  .tipe-card {
+    border: 2px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 14px 16px;
+    cursor: pointer;
+    transition: all .2s;
+    background: #fff;
+  }
+  .tipe-card:hover { border-color: var(--brand); }
+  .tipe-card.selected { border-color: var(--brand); background: var(--brand-light); }
 </style>
 {% endblock %}
 
@@ -31,22 +41,21 @@
   <!-- Produk Info -->
   <div class="col-md-4">
     <div class="product-info-card">
+      {% if item.get('gambar') %}
+      <div class="text-center mb-3">
+        <img src="{{ item.gambar }}" style="max-height:100px;max-width:100%;object-fit:contain;border-radius:10px" alt="{{ item.nama }}">
+      </div>
+      {% endif %}
       <p class="mb-1" style="opacity:.75;font-size:.8rem;font-weight:600;text-transform:uppercase">Produk</p>
       <h5 class="fw-bold mb-2">{{ item.nama }}</h5>
-      {% if item.get('deskripsi') %}
-      <p style="opacity:.85;font-size:.9rem">{{ item.deskripsi }}</p>
-      {% endif %}
       <hr style="border-color:rgba(255,255,255,.2)">
       <div class="d-flex justify-content-between align-items-center">
-        <span style="opacity:.8;font-size:.9rem">Harga</span>
-        <span class="fw-bold" style="font-size:1.3rem">Rp{{ "{:,}".format(item.harga) }}</span>
+        <span style="opacity:.8;font-size:.9rem">Stok Total</span>
+        <span class="badge {% if item.stok > 0 %}bg-success{% else %}bg-danger{% endif %}">{{ item.stok }} unit</span>
       </div>
-      <div class="d-flex justify-content-between align-items-center mt-2">
-        <span style="opacity:.8;font-size:.9rem">Stok</span>
-        <span class="badge {% if item.stok > 0 %}bg-success{% else %}bg-danger{% endif %}">
-          {{ item.stok }} tersedia
-        </span>
-      </div>
+      {% if item.tipe|length > 1 %}
+      <div class="mt-2 small" style="opacity:.85">{{ item.tipe|length }} pilihan tipe tersedia</div>
+      {% endif %}
     </div>
 
     {% if remaining < rate_limit_max %}
@@ -77,11 +86,41 @@
       </div>
     </div>
     {% else %}
+
+    <!-- Pilih Tipe -->
+    {% if item.tipe|length > 1 %}
+    <div class="card mb-3">
+      <div class="card-header"><h6 class="mb-0"><i class="bi bi-tags me-2"></i>Pilih Tipe</h6></div>
+      <div class="card-body p-3">
+        <div class="row g-2" id="tipeRow">
+          {% for t in item.tipe %}
+          <div class="col-md-6">
+            <div class="tipe-card {% if loop.first %}selected{% endif %}"
+              onclick="selectTipe('{{ t.id }}', {{ t.harga }}, {{ t.stok }}, this)"
+              id="tipe-card-{{ t.id }}">
+              <div class="d-flex justify-content-between align-items-start">
+                <div>
+                  <div class="fw-bold small">{{ t.nama }}</div>
+                  {% if t.get('deskripsi') %}
+                  <div class="text-muted" style="font-size:.8rem">{{ t.deskripsi }}</div>
+                  {% endif %}
+                </div>
+                <span class="badge {% if t.stok > 0 %}bg-success{% else %}bg-danger{% endif %} ms-2">{{ t.stok }}</span>
+              </div>
+              <div class="fw-bold mt-1" style="color:var(--brand-dark)">Rp{{ "{:,}".format(t.harga) }}</div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
     <div class="card">
       <div class="card-header"><h6><i class="bi bi-cart3 me-2"></i>Pilih Metode Pembayaran</h6></div>
       <div class="card-body p-4">
 
-        <!-- Optional Telegram ID -->
+        <!-- Telegram ID -->
         {% if current_user %}
         <div class="mb-4">
           <div class="alert alert-info py-2 mb-0 d-flex align-items-center gap-2">
@@ -102,8 +141,8 @@
           </label>
           <input type="number" id="tg_input" class="form-control" placeholder="Telegram ID kamu (contoh: 1234567890)">
           <div class="form-text">
-            Isi jika ingin akun dikirim juga ke Telegram — hanya jika kamu sudah <strong>pernah start bot</strong> dan tidak memblokir.
-            Cari ID kamu di <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a>.
+            Isi jika ingin akun dikirim juga ke Telegram — hanya jika kamu sudah <strong>pernah start bot</strong>.
+            Cari ID di <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a>.
           </div>
         </div>
         {% endif %}
@@ -111,7 +150,6 @@
         <!-- Metode -->
         <div class="row g-3 mb-4">
           {% if current_user %}
-          <!-- Saldo -->
           <div class="col-md-6">
             <div class="method-card" onclick="selectMethod('saldo')">
               <div class="method-icon mb-2">💳</div>
@@ -119,18 +157,18 @@
               <p class="text-muted small mb-2">Bayar dengan saldo akun kamu</p>
               <div class="d-flex justify-content-between align-items-center">
                 <small class="text-muted">Saldo kamu</small>
-                <span class="fw-bold {% if current_saldo >= item.harga %}text-success{% else %}text-danger{% endif %}">
+                <span class="fw-bold" id="saldo-label"
+                  class="{% if current_saldo >= selected_harga %}text-success{% else %}text-danger{% endif %}">
                   Rp{{ "{:,}".format(current_saldo) }}
                 </span>
               </div>
-              {% if current_saldo < item.harga %}
-              <div class="mt-2"><small class="text-danger"><i class="bi bi-x-circle me-1"></i>Saldo tidak cukup</small></div>
-              {% endif %}
+              <div id="saldo-warning" class="mt-2 {% if current_saldo >= selected_harga %}d-none{% endif %}">
+                <small class="text-danger"><i class="bi bi-x-circle me-1"></i>Saldo tidak cukup</small>
+              </div>
             </div>
           </div>
           {% endif %}
 
-          <!-- QRIS -->
           {% if qris_ok %}
           <div class="col-{% if current_user %}md-6{% else %}12{% endif %}">
             <div class="method-card" onclick="selectMethod('qris')">
@@ -156,16 +194,19 @@
         <!-- Forms -->
         <form id="form-saldo" action="/beli/{{ pid }}/saldo" method="post" class="d-none">
           <input type="hidden" name="telegram_id" id="tg_saldo">
+          <input type="hidden" name="tid" id="tid_saldo" value="{{ item.tipe[0].id if item.tipe else '' }}">
           <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold"
-            {% if not current_user or current_saldo < item.harga %}disabled{% endif %}>
-            <i class="bi bi-check-circle me-1"></i>Bayar Rp{{ "{:,}".format(item.harga) }} dengan Saldo
+            {% if not current_user %}disabled{% endif %}
+            id="btn-saldo">
+            <i class="bi bi-check-circle me-1"></i>Bayar <span id="harga-saldo">Rp{{ "{:,}".format(selected_harga) }}</span> dengan Saldo
           </button>
         </form>
 
         <form id="form-qris" action="/beli/{{ pid }}/qris" method="post" class="d-none">
           <input type="hidden" name="telegram_id" id="tg_qris">
+          <input type="hidden" name="tid" id="tid_qris" value="{{ item.tipe[0].id if item.tipe else '' }}">
           <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold">
-            <i class="bi bi-qr-code me-1"></i>Lanjut Bayar QRIS
+            <i class="bi bi-qr-code me-1"></i>Lanjut Bayar QRIS — <span id="harga-qris">Rp{{ "{:,}".format(selected_harga) }}</span>
           </button>
         </form>
 
@@ -181,13 +222,47 @@
 
 {% block scripts %}
 <script>
+// Data tipe dari Jinja2
+const tipeData = {
+{% for t in item.tipe %}
+  '{{ t.id }}': { harga: {{ t.harga }}, stok: {{ t.stok }}, nama: '{{ t.nama|e }}' },
+{% endfor %}
+};
+let selectedTipeId   = '{{ item.tipe[0].id if item.tipe else "" }}';
+let selectedHarga    = {{ selected_harga }};
+const currentSaldo   = {{ current_saldo or 0 }};
+
+function selectTipe(tid, harga, stok, el) {
+  document.querySelectorAll('.tipe-card').forEach(c => c.classList.remove('selected'));
+  el.classList.add('selected');
+  selectedTipeId = tid;
+  selectedHarga  = harga;
+  // Update hidden tid fields
+  document.getElementById('tid_saldo').value = tid;
+  document.getElementById('tid_qris').value  = tid;
+  // Update harga display in buttons
+  const fmt = 'Rp' + harga.toLocaleString('id-ID');
+  const hs = document.getElementById('harga-saldo');
+  const hq = document.getElementById('harga-qris');
+  if (hs) hs.textContent = fmt;
+  if (hq) hq.textContent = fmt;
+  // Update saldo warning
+  const warn = document.getElementById('saldo-warning');
+  const lbl  = document.getElementById('saldo-label');
+  if (warn) warn.classList.toggle('d-none', currentSaldo >= harga);
+  if (lbl)  lbl.className = 'fw-bold ' + (currentSaldo >= harga ? 'text-success' : 'text-danger');
+  // Disable saldo button jika stok habis
+  const btnSaldo = document.getElementById('btn-saldo');
+  if (btnSaldo) btnSaldo.disabled = (stok <= 0 || !{{ 'true' if current_user else 'false' }});
+}
+
 function selectMethod(m) {
   document.querySelectorAll('.method-card').forEach(c => c.classList.remove('selected'));
   event.currentTarget.classList.add('selected');
   document.getElementById('form-saldo').classList.add('d-none');
   document.getElementById('form-qris').classList.add('d-none');
   document.getElementById('form-none').classList.add('d-none');
-  const tgVal = document.getElementById('tg_input').value;
+  const tgVal = document.getElementById('tg_input')?.value || '';
   if (m === 'saldo') {
     document.getElementById('tg_saldo').value = tgVal;
     document.getElementById('form-saldo').classList.remove('d-none');
@@ -196,10 +271,13 @@ function selectMethod(m) {
     document.getElementById('form-qris').classList.remove('d-none');
   }
 }
-// Sync TG input ke forms
-document.getElementById('tg_input').addEventListener('input', function() {
-  document.getElementById('tg_saldo').value = this.value;
-  document.getElementById('tg_qris').value = this.value;
-});
+
+const tgInput = document.getElementById('tg_input');
+if (tgInput) {
+  tgInput.addEventListener('input', function() {
+    document.getElementById('tg_saldo').value = this.value;
+    document.getElementById('tg_qris').value  = this.value;
+  });
+}
 </script>
 {% endblock %}
