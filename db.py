@@ -478,6 +478,15 @@ def web_update_password(telegram_id: int, password_hash: str):
         conn.close()
 
 
+def web_update_role(telegram_id: int, role: str):
+    with _lock:
+        conn = _get_conn()
+        conn.execute("UPDATE web_users SET role=? WHERE telegram_id=?",
+                     (role, int(telegram_id)))
+        conn.commit()
+        conn.close()
+
+
 def web_get_all_users() -> list:
     with _lock:
         conn = _get_conn()

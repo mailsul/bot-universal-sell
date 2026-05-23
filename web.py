@@ -20,7 +20,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 from db import (
     init_db, init_web_tables,
-    web_get_user_by_tid, web_create_user, web_update_password,
+    web_get_user_by_tid, web_create_user, web_update_password, web_update_role,
     web_get_all_users, web_save_otp, web_verify_otp,
     db_get_saldo, db_add_saldo, db_get_riwayat, db_add_riwayat,
     db_get_all_pending, db_get_pending_any_by_user,
@@ -295,10 +295,15 @@ def login():
         if not user or not check_password_hash(user["password_hash"], pw):
             flash("Telegram ID atau password salah.", "danger")
             return redirect(url_for("login"))
+        # Auto-promote OWNER_ID ke admin jika role belum benar
+        role = user["role"]
+        if tid == OWNER_ID and role != "admin":
+            web_update_role(tid, "admin")
+            role = "admin"
         session["user_tid"]  = tid
-        session["user_role"] = user["role"]
+        session["user_role"] = role
         flash("Selamat datang kembali!", "success")
-        return redirect(url_for("admin") if user["role"] == "admin" else url_for("dashboard"))
+        return redirect(url_for("admin") if role == "admin" else url_for("dashboard"))
     return render_template("login.html")
 
 

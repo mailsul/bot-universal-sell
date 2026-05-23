@@ -1,14 +1,9 @@
 {
   "1": {
     "nama": "YOUTUBE 1 BULAN FAMHEAD",
-    "stok": 2,
+    "stok": 1,
     "harga": 5000,
     "akun_list": [
-      {
-        "username": "ytuser2@mail.com",
-        "password": "pass456",
-        "tipe": "1 Bulan Famhead"
-      },
       {
         "username": "ytuser3@mail.com",
         "password": "pass789",
