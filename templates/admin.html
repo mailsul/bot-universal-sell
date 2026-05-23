@@ -298,7 +298,7 @@
                       Rp{{ "{:,}".format(amt) }}
                     </td>
                     <td class="text-end small text-muted">
-                      {% if uid in stats %}Rp{{ "{:,}".format(stats[uid].total_pengeluaran) }}{% else %}—{% endif %}
+                      {% if uid in stats %}Rp{{ "{:,}".format(stats[uid]['nominal'] or 0) }}{% else %}—{% endif %}
                     </td>
                   </tr>
                   {% endfor %}
