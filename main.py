@@ -3,6 +3,8 @@ import os    # DON'T CHANGE AUTHOR NAME!
 import asyncio
 import shutil
 import time
+import random
+import httpx
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
     InputFile, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
@@ -25,14 +27,18 @@ LOW_STOCK_THRESHOLD = 2
 DEPOSIT_NOMINALS    = [10000, 15000, 20000, 25000, 50000]
 DEPOSIT_MIN         = 5000
 DEPOSIT_MAX         = 1_000_000
-RIWAYAT_LIMIT       = 10   # jumlah transaksi yang ditampilkan di /riwayat
+RIWAYAT_LIMIT       = 10
+QRIS_POLL_INTERVAL  = 30   # cek mutasi setiap 30 detik
+QRIS_EXPIRY_MINUTES = 30   # pending QRIS kedaluwarsa setelah 30 menit
 
+URL_MUTASI     = os.getenv("URL_MUTASI")
 produk_file    = "produk.json"
 saldo_file     = "saldo.json"
 deposit_file   = "pending_deposit.json"
 riwayat_file   = "riwayat.json"
 statistik_file = "statistik.json"
 config_file    = "config.json"
+qris_file      = "qris.jpg"
 
 # Lock global untuk mencegah race condition saat beli produk
 purchase_lock = asyncio.Lock()
@@ -111,6 +117,46 @@ def save_produk(produk: dict):
     save_json(produk_file, sync_stok(produk), backup=True)
 
 
+def _generate_kode_unik(expected_nominal: int) -> int:
+    """Generate kode unik (1-99) untuk membedakan pembayaran QRIS antar user."""
+    pending = load_json(deposit_file)
+    used = {p.get("expected_amount", 0) for p in pending if p.get("metode", "").startswith("qris")}
+    for _ in range(200):
+        code = random.randint(1, 99)
+        if (expected_nominal + code) not in used:
+            return code
+    return random.randint(1, 99)
+
+
+def _extract_amounts_from_mutasi(data) -> set:
+    """Ekstrak semua nominal kredit dari berbagai format respons API mutasi."""
+    amounts = set()
+    items = []
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        for key in ("data", "mutasi", "records", "transactions", "result"):
+            if isinstance(data.get(key), list):
+                items = data[key]
+                break
+        if not items:
+            items = [data]
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for field in ("amount", "nominal", "jumlah", "credit", "nilai", "total", "debit"):
+            val = item.get(field)
+            if val is not None:
+                try:
+                    v = int(float(str(val).replace(",", "").replace(".", "")))
+                    if v > 0:
+                        amounts.add(v)
+                        break
+                except (ValueError, TypeError):
+                    pass
+    return amounts
+
+
 # ─── HELPER: STATISTIK & RIWAYAT ────────────────────────────────────────────
 
 def update_statistik(uid, nominal: int):
@@ -143,9 +189,181 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
+# ─── QRIS: CEK MUTASI OTOMATIS ───────────────────────────────────────────────
+
+async def proses_mutasi(app: Application):
+    """Ambil data mutasi dari API, cocokkan dengan pending QRIS, konfirmasi otomatis."""
+    if not URL_MUTASI:
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(URL_MUTASI)
+            resp.raise_for_status()
+            raw = resp.json()
+    except Exception:
+        return
+
+    mutation_amounts = _extract_amounts_from_mutasi(raw)
+    if not mutation_amounts:
+        return
+
+    pending = load_json(deposit_file)
+    now     = datetime.now()
+
+    to_confirm, to_keep = [], []
+    for p in pending:
+        metode = p.get("metode", "manual")
+        if not metode.startswith("qris"):
+            to_keep.append(p)
+            continue
+
+        # Cek kedaluwarsa
+        try:
+            waktu = datetime.strptime(p["waktu"], "%d/%m/%Y %H:%M:%S")
+            if (now - waktu).total_seconds() > QRIS_EXPIRY_MINUTES * 60:
+                # Expired — beritahu user dan buang
+                try:
+                    await app.bot.send_message(
+                        chat_id=p["user_id"],
+                        text="⏰ *Pembayaran QRIS kedaluwarsa.*\nSilakan buat permintaan baru.",
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    pass
+                continue
+        except Exception:
+            pass
+
+        expected = p.get("expected_amount", 0)
+        if expected in mutation_amounts:
+            to_confirm.append(p)
+        else:
+            to_keep.append(p)
+
+    if not to_confirm:
+        return
+
+    save_json(deposit_file, to_keep)
+    saldo = load_json(saldo_file)
+
+    for p in to_confirm:
+        uid    = str(p["user_id"])
+        metode = p.get("metode")
+
+        if metode == "qris":
+            # ── Deposit via QRIS ──────────────────────────────────────
+            nominal = p["nominal"]
+            saldo[uid] = saldo.get(uid, 0) + nominal
+            save_json(saldo_file, saldo, backup=True)
+            add_riwayat(uid, "DEPOSIT", "QRIS Otomatis", nominal)
+            try:
+                await app.bot.send_message(
+                    chat_id=p["user_id"],
+                    text=(
+                        f"✅ *Deposit QRIS berhasil!*\n"
+                        f"💰 Rp{nominal:,} telah masuk ke saldo kamu.\n"
+                        f"💳 Saldo sekarang: Rp{saldo[uid]:,}\n\n"
+                        "Ketik /start untuk kembali ke menu."
+                    ),
+                    parse_mode="Markdown",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+            except Exception:
+                pass
+
+        elif metode == "qris_beli":
+            # ── Beli langsung via QRIS ────────────────────────────────
+            async with purchase_lock:
+                produk    = load_produk()
+                produk_id = p.get("produk_id")
+                jumlah    = p.get("jumlah", 1)
+                item      = produk.get(produk_id)
+                nominal   = p["nominal"]
+
+                if not item or item["stok"] < jumlah:
+                    try:
+                        await app.bot.send_message(
+                            chat_id=p["user_id"],
+                            text=(
+                                "❌ *Stok habis setelah pembayaran.*\n"
+                                "Hubungi admin untuk refund."
+                            ),
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        pass
+                    continue
+
+                akun_terpakai = [item["akun_list"].pop(0) for _ in range(jumlah)]
+                save_produk(produk)
+                add_riwayat(uid, "BELI", f"{item['nama']} x{jumlah} (QRIS)", nominal)
+
+                os.makedirs("akun_dikirim", exist_ok=True)
+                stamp     = int(time.time())
+                file_path = f"akun_dikirim/{uid}_{produk_id}_x{jumlah}_{stamp}.txt"
+                with open(file_path, "w", encoding="utf-8") as f:
+                    for i, akun in enumerate(akun_terpakai, start=1):
+                        f.write(
+                            f"Akun #{i}\n"
+                            f"Username : {akun['username']}\n"
+                            f"Password : {akun['password']}\n"
+                            f"Tipe     : {akun['tipe']}\n"
+                            "---------------------------\n"
+                        )
+
+            try:
+                with open(file_path, "rb") as f:
+                    await app.bot.send_document(
+                        chat_id=p["user_id"],
+                        document=InputFile(f, filename=f"akun_{item['nama'].replace(' ', '_')}.txt"),
+                        caption=(
+                            f"✅ *Pembelian QRIS berhasil!*\n"
+                            f"📦 {item['nama']} x{jumlah}\n"
+                            f"💸 Dibayar: Rp{nominal:,}\n\n"
+                            "Ketik /start untuk kembali ke menu."
+                        ),
+                        parse_mode="Markdown"
+                    )
+                os.remove(file_path)
+            except Exception:
+                pass
+
+            # Notif stok rendah
+            if item["stok"] <= LOW_STOCK_THRESHOLD:
+                for admin_id in ADMIN_IDS:
+                    try:
+                        await app.bot.send_message(
+                            chat_id=admin_id,
+                            text=f"⚠️ *Stok Rendah*\n{item['nama']} sisa {item['stok']}x",
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        pass
+
+
+async def mutasi_loop(app: Application):
+    """Background task — polling mutasi QRIS setiap QRIS_POLL_INTERVAL detik."""
+    await asyncio.sleep(10)  # delay awal supaya bot siap
+    while True:
+        try:
+            await proses_mutasi(app)
+        except Exception:
+            pass
+        await asyncio.sleep(QRIS_POLL_INTERVAL)
+
+
+async def post_init(app: Application):
+    if URL_MUTASI:
+        asyncio.create_task(mutasi_loop(app))
+
+
 # ─── MENU UTAMA ─────────────────────────────────────────────────────────────
 
-async def send_main_menu(context, chat_id: int, user):
+async def send_main_menu(bot_or_context, chat_id: int, user):
+    # Menerima context (handler) atau bot langsung (background task)
+    bot = getattr(bot_or_context, 'bot', bot_or_context)
+
     saldo     = load_json(saldo_file)
     statistik = load_json(statistik_file)
     s      = saldo.get(str(user.id), 0)
@@ -172,7 +390,7 @@ async def send_main_menu(context, chat_id: int, user):
     if is_admin(user.id):
         keyboard.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")])
 
-    await context.bot.send_message(
+    await bot.send_message(
         chat_id=chat_id,
         text=text,
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -370,12 +588,16 @@ async def handle_confirm_order(update: Update, context: CallbackContext):
         total = jumlah * item["harga"]
 
         if saldo.get(uid, 0) < total:
+            qris_ready = os.path.exists(qris_file) and bool(URL_MUTASI)
+            kb_rows = [
+                [InlineKeyboardButton("💰 Deposit Saldo", callback_data="deposit")],
+            ]
+            if qris_ready:
+                kb_rows.append([InlineKeyboardButton("💳 Bayar via QRIS (Otomatis)", callback_data="beli_qris")])
+            kb_rows.append([InlineKeyboardButton("🔙 Kembali ke Menu", callback_data="back_to_produk")])
             await query.edit_message_text(
-                "❌ *Saldo tidak cukup.*\nSilakan deposit terlebih dahulu.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💰 Deposit Saldo",    callback_data="deposit")],
-                    [InlineKeyboardButton("🔙 Kembali ke Menu",  callback_data="back_to_produk")],
-                ]),
+                "❌ *Saldo tidak cukup.*\nSilakan deposit atau bayar langsung via QRIS.",
+                reply_markup=InlineKeyboardMarkup(kb_rows),
                 parse_mode="Markdown"
             )
             return
@@ -447,12 +669,16 @@ async def handle_confirm_order(update: Update, context: CallbackContext):
 # ─── DEPOSIT ─────────────────────────────────────────────────────────────────
 
 async def handle_deposit(update: Update, context: CallbackContext):
-    query    = update.callback_query
-    keyboard = [[InlineKeyboardButton(f"Rp{n:,}", callback_data=f"deposit_{n}") for n in DEPOSIT_NOMINALS]]
+    query       = update.callback_query
+    qris_ready  = os.path.exists(qris_file) and bool(URL_MUTASI)
+    keyboard    = [[InlineKeyboardButton(f"Rp{n:,}", callback_data=f"deposit_{n}") for n in DEPOSIT_NOMINALS]]
     keyboard.append([InlineKeyboardButton("🔧 Custom Nominal", callback_data="deposit_custom")])
-    keyboard.append([InlineKeyboardButton("🔙 Kembali",        callback_data="back_to_produk")])
+    if qris_ready:
+        keyboard.append([InlineKeyboardButton("💳 Bayar via QRIS (Otomatis)", callback_data="deposit_qris")])
+    keyboard.append([InlineKeyboardButton("🔙 Kembali", callback_data="back_to_produk")])
+    metode_text = "\n\n✅ _QRIS tersedia — konfirmasi otomatis!_" if qris_ready else ""
     await query.edit_message_text(
-        f"💰 *Pilih nominal deposit:*\n_(Min: Rp{DEPOSIT_MIN:,} | Max: Rp{DEPOSIT_MAX:,})_",
+        f"💰 *Pilih nominal deposit:*\n_(Min: Rp{DEPOSIT_MIN:,} | Max: Rp{DEPOSIT_MAX:,})_{metode_text}",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
@@ -507,6 +733,150 @@ async def handle_cancel_deposit(update: Update, context: CallbackContext):
     context.user_data.pop("awaiting_custom", None)
     await query.edit_message_text("✅ Deposit dibatalkan.")
     await send_main_menu(context, query.from_user.id, query.from_user)
+
+
+async def handle_deposit_qris(update: Update, context: CallbackContext):
+    """User memilih QRIS untuk deposit — tampilkan pilihan nominal dulu."""
+    query = update.callback_query
+    if not os.path.exists(qris_file):
+        await query.answer("❌ QRIS belum diatur admin.", show_alert=True)
+        return
+    keyboard = [[InlineKeyboardButton(f"Rp{n:,}", callback_data=f"qris_dep_{n}") for n in DEPOSIT_NOMINALS]]
+    keyboard.append([InlineKeyboardButton("🔧 Custom Nominal", callback_data="qris_dep_custom")])
+    keyboard.append([InlineKeyboardButton("🔙 Kembali",        callback_data="deposit")])
+    await query.edit_message_text(
+        f"💳 *Deposit via QRIS*\n_(Min: Rp{DEPOSIT_MIN:,} | Max: Rp{DEPOSIT_MAX:,})_\n\n"
+        "Pilih nominal deposit:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+
+async def handle_qris_dep_nominal(update: Update, context: CallbackContext):
+    """User memilih nominal QRIS deposit — tampilkan QR code dengan kode unik."""
+    query = update.callback_query
+    data  = query.data
+
+    if data == "qris_dep_custom":
+        context.user_data["awaiting_qris_custom"] = True
+        await query.message.delete()
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text=f"💬 Ketik jumlah deposit QRIS (angka saja):\n_Min: Rp{DEPOSIT_MIN:,} | Max: Rp{DEPOSIT_MAX:,}_",
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batalkan Deposit")]], resize_keyboard=True, one_time_keyboard=True)
+        )
+        return
+
+    nominal = int(data.split("_")[2])
+    await _show_qris_deposit(query.from_user, nominal, context, delete_msg=query.message)
+
+
+async def _show_qris_deposit(user, nominal: int, context, delete_msg=None):
+    """Tampilkan QRIS dengan kode unik dan simpan ke pending."""
+    if not os.path.exists(qris_file):
+        return
+
+    kode     = _generate_kode_unik(nominal)
+    expected = nominal + kode
+
+    pending = load_json(deposit_file)
+    pending = [p for p in pending if not (p["user_id"] == user.id and p.get("metode", "").startswith("qris"))]
+    pending.append({
+        "user_id":        user.id,
+        "username":       user.username,
+        "metode":         "qris",
+        "nominal":        nominal,
+        "expected_amount": expected,
+        "kode_unik":      kode,
+        "waktu":          datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    })
+    save_json(deposit_file, pending)
+
+    caption = (
+        f"💳 *Bayar via QRIS*\n\n"
+        f"💰 Nominal deposit: Rp{nominal:,}\n"
+        f"🔢 Transfer tepat *Rp{expected:,}*\n"
+        f"_(nominal + kode unik Rp{kode} untuk identifikasi)_\n\n"
+        f"⏰ Batas waktu: {QRIS_EXPIRY_MINUTES} menit\n"
+        f"✅ Akan dikonfirmasi *otomatis* setelah pembayaran terdeteksi."
+    )
+
+    if delete_msg:
+        try:
+            await delete_msg.delete()
+        except Exception:
+            pass
+
+    with open(qris_file, "rb") as f:
+        await context.bot.send_photo(
+            chat_id=user.id,
+            photo=InputFile(f),
+            caption=caption,
+            parse_mode="Markdown"
+        )
+
+
+async def handle_beli_qris(update: Update, context: CallbackContext):
+    """User memilih bayar via QRIS langsung untuk pembelian (saldo tidak cukup)."""
+    query = update.callback_query
+    info  = context.user_data.get("konfirmasi")
+    if not info:
+        await query.answer("❌ Data pesanan tidak ditemukan", show_alert=True)
+        return
+    if not os.path.exists(qris_file):
+        await query.answer("❌ QRIS belum diatur admin.", show_alert=True)
+        return
+
+    produk = load_produk()
+    item   = produk.get(info["produk_id"])
+    if not item or item["stok"] < info["jumlah"]:
+        await query.answer("❌ Stok tidak mencukupi", show_alert=True)
+        return
+
+    jumlah   = info["jumlah"]
+    nominal  = jumlah * item["harga"]
+    kode     = _generate_kode_unik(nominal)
+    expected = nominal + kode
+
+    pending = load_json(deposit_file)
+    pending = [p for p in pending if not (p["user_id"] == query.from_user.id and p.get("metode", "").startswith("qris"))]
+    pending.append({
+        "user_id":         query.from_user.id,
+        "username":        query.from_user.username,
+        "metode":          "qris_beli",
+        "produk_id":       info["produk_id"],
+        "jumlah":          jumlah,
+        "nominal":         nominal,
+        "expected_amount": expected,
+        "kode_unik":       kode,
+        "waktu":           datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    })
+    save_json(deposit_file, pending)
+    context.user_data.pop("konfirmasi", None)
+
+    caption = (
+        f"💳 *Bayar via QRIS*\n\n"
+        f"📦 {item['nama']} x{jumlah}\n"
+        f"💰 Total: Rp{nominal:,}\n"
+        f"🔢 Transfer tepat *Rp{expected:,}*\n"
+        f"_(nominal + kode unik Rp{kode})_\n\n"
+        f"⏰ Batas waktu: {QRIS_EXPIRY_MINUTES} menit\n"
+        f"✅ Akun akan dikirim *otomatis* setelah pembayaran terdeteksi."
+    )
+
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+    with open(qris_file, "rb") as f:
+        await context.bot.send_photo(
+            chat_id=query.from_user.id,
+            photo=InputFile(f),
+            caption=caption,
+            parse_mode="Markdown"
+        )
 
 
 # ─── RIWAYAT USER ─────────────────────────────────────────────────────────────
@@ -664,10 +1034,13 @@ async def handle_admin_settings(update: Update, context: CallbackContext):
         f"🏦 *Rekening*:\n{rek}\n\n"
         f"📞 *Kontak Admin*: `{cfg['kontak_admin']}`"
     )
+    qris_status = "✅ Sudah ada" if os.path.exists(qris_file) else "❌ Belum diatur"
+    text += f"\n\n📷 *Gambar QRIS*: {qris_status}"
     keyboard = [
         [InlineKeyboardButton("✏️ Ubah Nama Toko",    callback_data="admin_ubah_nama")],
         [InlineKeyboardButton("🏦 Ubah Rekening",      callback_data="admin_ubah_rekening")],
         [InlineKeyboardButton("📞 Ubah Kontak Admin",  callback_data="admin_ubah_kontak")],
+        [InlineKeyboardButton("📷 Upload Gambar QRIS", callback_data="admin_upload_qris")],
         [InlineKeyboardButton("🔙 Kembali",            callback_data="admin_panel")],
     ]
     await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -720,6 +1093,25 @@ async def handle_admin_ubah_kontak(update: Update, context: CallbackContext):
     await context.bot.send_message(
         chat_id=query.from_user.id,
         text=f"📞 Kontak admin saat ini: `{load_config()['kontak_admin']}`\n\nKetik kontak admin baru (contoh: @username):",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
+    )
+
+
+async def handle_admin_upload_qris(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    context.user_data["admin_state"] = "upload_qris"
+    await query.message.delete()
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text=(
+            "📷 *Upload Gambar QRIS*\n\n"
+            "Kirim foto/gambar QRIS kamu sekarang.\n"
+            "Gambar ini akan ditampilkan ke user saat memilih bayar via QRIS."
+        ),
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
     )
@@ -878,6 +1270,10 @@ CALLBACK_MAP = {
     "admin_ubah_nama":        handle_admin_ubah_nama,
     "admin_ubah_rekening":    handle_admin_ubah_rekening,
     "admin_ubah_kontak":      handle_admin_ubah_kontak,
+    "admin_upload_qris":      handle_admin_upload_qris,
+    "deposit_qris":           handle_deposit_qris,
+    "qris_dep_custom":        handle_qris_dep_nominal,
+    "beli_qris":              handle_beli_qris,
     "qty_plus":               handle_qty_plus,
     "qty_minus":              handle_qty_minus,
     "confirm_order":          handle_confirm_order,
@@ -898,6 +1294,8 @@ async def button_callback(update: Update, context: CallbackContext):
         await handle_produk_detail(update, context)
     elif data.startswith("deposit_"):
         await handle_deposit_nominal(update, context)
+    elif data.startswith("qris_dep_"):
+        await handle_qris_dep_nominal(update, context)
     elif data.startswith("confirm:"):
         await handle_admin_confirm(update, context)
     elif data.startswith("final:"):
@@ -926,12 +1324,28 @@ async def handle_text(update: Update, context: CallbackContext):
         pending = [p for p in pending if str(p["user_id"]) != uid]
         save_json(deposit_file, pending)
         # Bersihkan semua state
-        for key in ["awaiting_custom", "nominal_asli", "total_transfer",
+        for key in ["awaiting_custom", "awaiting_qris_custom", "nominal_asli", "total_transfer",
                     "admin_state", "new_produk", "restock_pid",
                     "konfirmasi"]:
             context.user_data.pop(key, None)
         await update.message.reply_text("✅ Dibatalkan.", reply_markup=ReplyKeyboardRemove())
         await send_main_menu_safe(update, context)
+        return
+
+    # ── QRIS custom nominal ──────────────────────────────────────────
+    if context.user_data.get("awaiting_qris_custom"):
+        context.user_data.pop("awaiting_qris_custom", None)
+        try:
+            nominal = int(text.replace(".", "").replace(",", "").replace(" ", ""))
+            if nominal < DEPOSIT_MIN or nominal > DEPOSIT_MAX:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text(
+                f"❌ Nominal tidak valid.\nMinimum Rp{DEPOSIT_MIN:,}, maksimum Rp{DEPOSIT_MAX:,}.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return
+        await _show_qris_deposit(update.effective_user, nominal, context)
         return
 
     # ── Alur admin multi-step ────────────────────────────────────────
@@ -1168,7 +1582,21 @@ async def handle_text(update: Update, context: CallbackContext):
 # ─── HANDLER FOTO (bukti deposit) ─────────────────────────────────────────────
 
 async def handle_photo(update: Update, context: CallbackContext):
-    user    = update.effective_user
+    user = update.effective_user
+
+    # ── Admin upload QRIS ───────────────────────────────────────────
+    if is_admin(user.id) and context.user_data.get("admin_state") == "upload_qris":
+        photo = update.message.photo[-1]
+        file  = await context.bot.get_file(photo.file_id)
+        await file.download_to_drive(qris_file)
+        context.user_data.pop("admin_state", None)
+        await update.message.reply_text(
+            "✅ *Gambar QRIS berhasil disimpan!*\nUser sekarang bisa bayar via QRIS.",
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return
+
     nominal = context.user_data.get("nominal_asli", 0)
 
     if nominal == 0:
@@ -1243,7 +1671,7 @@ def main():  # Made With love by @govtrashit A.K.A RzkyO
     if not BOT_TOKEN:
         raise RuntimeError("❌ BOT_TOKEN tidak ditemukan di environment variable!")
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start",    start))
     app.add_handler(CommandHandler("riwayat",  cmd_riwayat))
     app.add_handler(CallbackQueryHandler(button_callback))
