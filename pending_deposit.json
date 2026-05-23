@@ -2,12 +2,11 @@
   {
     "user_id": 1135111465,
     "username": "nopal005",
-    "metode": "qris_beli",
-    "produk_id": "1",
-    "jumlah": 1,
+    "metode": "qris",
     "nominal": 5000,
-    "expected_amount": 5086,
-    "kode_unik": 86,
-    "waktu": "23/05/2026 11:01:03"
+    "expected_amount": 5040,
+    "kode_unik": 40,
+    "waktu": "23/05/2026 11:17:59",
+    "cek_count": 0
   }
 ]

@@ -403,6 +403,8 @@ async def mutasi_loop(app: Application):
             await asyncio.wait_for(_manual_check_event.wait(), timeout=QRIS_POLL_INTERVAL)
         except asyncio.TimeoutError:
             pass
+        except asyncio.CancelledError:
+            break
 
 
 async def post_init(app: Application):
@@ -1072,13 +1074,12 @@ async def handle_cek_mutasi(update: Update, context: CallbackContext):
 
     new_count = cek_count - 1
     if new_count > 0:
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton(f"🔄 Cek Sekarang ({new_count}x tersisa)", callback_data="cek_mutasi")
-        ]])
+        label = f"🔄 Cek Sekarang ({new_count}x tersisa)"
     else:
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("⏳ Tunggu konfirmasi otomatis...", callback_data="ignore")
-        ]])
+        label = "⏳ Menunggu... (ketuk untuk info)"
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton(label, callback_data="cek_mutasi")
+    ]])
     try:
         await query.edit_message_reply_markup(reply_markup=kb)
     except Exception:
@@ -1907,7 +1908,7 @@ def main():  # Made With love by @govtrashit A.K.A RzkyO
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.PHOTO,              handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    print("✅ Bot Store Ekha berjalan...")
+    print(f"✅ Bot {load_config()['nama_toko']} berjalan...")
     app.run_polling()
 
 
