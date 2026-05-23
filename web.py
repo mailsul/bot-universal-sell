@@ -729,7 +729,12 @@ def riwayat():
 @app.route("/deposit")
 @login_required
 def deposit():
-    return render_template("deposit.html", qris_ok=bool(QRIS_BASE64))
+    cfg = load_config()
+    return render_template(
+        "deposit.html",
+        qris_ok=bool(QRIS_BASE64),
+        manual_aktif=cfg.get("transfer_manual_aktif", True)
+    )
 
 
 @app.route("/deposit/upload", methods=["POST"])

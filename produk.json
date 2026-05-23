@@ -93,5 +93,24 @@
         "deskripsi": ""
       }
     }
+  },
+  "6": {
+    "nama": "Netflix",
+    "tipe": {
+      "t1": {
+        "nama": "Private 1 bulan",
+        "harga": 30000,
+        "deskripsi": "Garansi 1 Bulan",
+        "akun_list": [],
+        "stok": 0
+      },
+      "t2": {
+        "nama": "Sharing",
+        "harga": 10000,
+        "deskripsi": "Garansi 1 Bulan",
+        "akun_list": [],
+        "stok": 0
+      }
+    }
   }
 }

@@ -14,7 +14,7 @@ from db import (
     db_add_pending, db_remove_pending_by_user, db_remove_pending_any_by_user,
     db_update_pending_cek_count, db_remove_pending_by_id,
     db_add_riwayat, db_get_riwayat,
-    db_update_statistik, db_get_statistik_user,
+    db_update_statistik, db_get_statistik_user, db_get_all_statistik,
 )
 
 import sys
@@ -590,30 +590,41 @@ def _get_logo_path() -> str | None:
 
 
 async def send_main_menu(bot_or_context, chat_id: int, user):
-    # Menerima context (handler) atau bot langsung (background task)
     bot = getattr(bot_or_context, 'bot', bot_or_context)
 
     s      = db_get_saldo(user.id)
     stat   = db_get_statistik_user(user.id)
     jumlah = stat.get("jumlah", 0)
-    total  = stat.get("nominal", 0)
+
+    # Stats toko
+    all_stats   = db_get_all_statistik()
+    all_saldo   = db_get_all_saldo()
+    produk_dict = load_produk()
+    total_produk    = len(produk_dict)
+    total_penjualan = sum((v.get("jumlah", 0) if isinstance(v, dict) else 0) for v in all_stats.values())
+    total_pengguna  = len(all_saldo)
 
     nama_toko = load_config()["nama_toko"]
+    uname = f"@{user.username}" if user.username else user.full_name
     text = (
-        f"👋 Selamat datang di *{nama_toko}*!\n\n"
-        f"🧑 Nama: {user.full_name}\n"
-        f"🆔 ID: `{user.id}`\n"
-        f"💰 Saldo: Rp{s:,}\n"
-        f"📦 Total Transaksi: {jumlah}\n"
-        f"💸 Total Nominal: Rp{total:,}"
+        f"🎯 *Selamat Datang di {nama_toko}!*\n\n"
+        f"🔵 *Sekilas Info Toko*\n"
+        f"✅ Total Produk: *{total_produk}* jenis\n"
+        f"✅ Total Penjualan: *{total_penjualan}* transaksi\n"
+        f"✅ Total Pengguna: *{total_pengguna}* user\n\n"
+        f"👑 *Profil Anda*\n"
+        f"✅ Username: {uname}\n"
+        f"✅ User ID: `{user.id}`\n"
+        f"✅ Saldo: *Rp{s:,}*\n"
+        f"✅ Total Beli: *{jumlah}* transaksi\n\n"
+        f"🔴 _Pilih menu di bawah untuk melanjutkan._"
     )
 
     keyboard = [
-        [InlineKeyboardButton("📋 List Produk",   callback_data="list_produk"),
-         InlineKeyboardButton("🛒 Cek Stok",       callback_data="cek_stok")],
-        [InlineKeyboardButton("💰 Deposit Saldo",  callback_data="deposit")],
-        [InlineKeyboardButton("📖 Info Bot",        callback_data="info_bot"),
-         InlineKeyboardButton("📜 Riwayat",         callback_data="riwayat_user")],
+        [InlineKeyboardButton("🛍 List Produk",    callback_data="list_produk"),
+         InlineKeyboardButton("🆘 Bantuan",         callback_data="info_bot")],
+        [InlineKeyboardButton("💰 Deposit Saldo",   callback_data="deposit")],
+        [InlineKeyboardButton("📜 Riwayat",          callback_data="riwayat_user")],
     ]
     if is_admin(user.id):
         keyboard.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")])
@@ -657,87 +668,87 @@ async def send_main_menu_safe(update: Update, context: CallbackContext):
 
 # ─── LIST PRODUK & CEK STOK ─────────────────────────────────────────────────
 
+_PRODUK_EMOJI = {
+    "youtube": "🎬", "canva": "🎨", "spotify": "🎵", "netflix": "🎭",
+    "disney": "🏰", "prime": "📦", "vpn": "🔐", "vps": "🌐",
+    "digitalocean": "💧", "heroku": "⬡", "aws": "☁️", "adobe": "🖌",
+    "tiktok": "📱", "capcut": "✂️", "grammarly": "📝", "duolingo": "🦉",
+    "chatgpt": "🤖", "openai": "🤖", "midjourney": "🖼", "figma": "🎯",
+}
+
+def _produk_emoji(nama: str) -> str:
+    n = nama.lower()
+    for kw, em in _PRODUK_EMOJI.items():
+        if kw in n:
+            return em
+    return "🛒"
+
+
 async def handle_list_produk(update: Update, context: CallbackContext):
     query  = update.callback_query
     produk = load_produk()
-    msg    = "🛍 *LIST PRODUK*\n\n"
+
+    SEP = "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg = "🛒 *DAFTAR PRODUK*\n⚡ _Pilihan Produk Terbaik_ ⚡\n\n"
     keyboard, row = [], []
 
-    for pid, item in produk.items():
+    for nomor, (pid, item) in enumerate(produk.items(), start=1):
         tipe_dict  = item.get("tipe", {})
         total_stok = sum(len(t.get("akun_list",[])) for t in tipe_dict.values())
         min_harga  = min((t.get("harga",0) for t in tipe_dict.values()), default=0)
         tipe_count = len(tipe_dict)
+        em = _produk_emoji(item["nama"])
+
+        stok_icon = "🟢" if total_stok > LOW_STOCK_THRESHOLD else ("🟡" if total_stok > 0 else "🔴")
+        stok_str  = f"{stok_icon} {total_stok} Stok" if total_stok > 0 else "🔴 Habis"
 
         if tipe_count > 1:
-            harga_str = f"Rp{min_harga:,}+"
+            harga_str = f"Rp {min_harga:,}+"
         else:
-            harga_str = f"Rp{min_harga:,}"
+            harga_str = f"Rp {min_harga:,}"
 
-        msg += f"📦 *{item['nama']}* — {harga_str}\n"
+        msg += SEP
+        msg += f"{em} *[{nomor}] {item['nama']}*\n"
+        msg += f"💰 Harga: {harga_str}\n"
+        msg += f"📦 Status: {stok_str}\n"
+
         if tipe_count > 1:
-            for tid, t in tipe_dict.items():
+            for t in tipe_dict.values():
                 stok_t = len(t.get("akun_list",[]))
-                msg += f"  └ {t['nama']}: Rp{t.get('harga',0):,} {'✅' if stok_t>0 else '❌'}\n"
+                ic = "🟢" if stok_t > 0 else "🔴"
+                msg += f"  {ic} {t['nama']}: Rp {t.get('harga',0):,} ({stok_t} unit)\n"
 
+        btn_label = f"{em}{nomor}"
         if total_stok > 0:
             row.append(KeyboardButton(pid))
         else:
             row.append(KeyboardButton(f"{pid} SOLDOUT ❌"))
-        if len(row) == 3:
+        if len(row) == 5:
             keyboard.append(row)
             row = []
 
-    if row:
-        keyboard.append(row)
-    keyboard.append([KeyboardButton("🔙 Kembali")])
-
-    await query.message.delete()
-    await context.bot.send_message(
-        chat_id=query.from_user.id,
-        text=msg + "\n📌 Pilih nomor produk:",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True),
-        parse_mode="Markdown"
-    )
-
-
-async def handle_cek_stok(update: Update, context: CallbackContext):
-    query  = update.callback_query
-    produk = load_produk()
-    now    = datetime.now().strftime("%d/%m/%Y, %H:%M:%S")
-    msg    = f"📦 *Informasi Stok*\n_{now}_\n\n"
-    keyboard, row = [], []
-
-    for pid, item in produk.items():
-        tipe_dict  = item.get("tipe", {})
-        total_stok = sum(len(t.get("akun_list",[])) for t in tipe_dict.values())
-        icon = "✅" if total_stok > LOW_STOCK_THRESHOLD else ("⚠️" if total_stok > 0 else "❌")
-        msg += f"{icon} *{item['nama']}*\n"
-        for tid, t in tipe_dict.items():
-            stok_t = len(t.get("akun_list",[]))
-            ic = "✅" if stok_t > 0 else "❌"
-            msg += f"  {ic} {t['nama']}: *{stok_t}* unit\n"
-        msg += "\n"
-
-        if total_stok > 0:
-            row.append(KeyboardButton(pid))
-        else:
-            row.append(KeyboardButton(f"{pid} SOLDOUT ❌"))
-        if len(row) == 3:
-            keyboard.append(row)
-            row = []
+    msg += SEP
+    msg += "\n📌 *Silakan pilih produk di bawah:*"
 
     if row:
         keyboard.append(row)
-    keyboard.append([KeyboardButton("🔙 Kembali")])
+    keyboard.append([KeyboardButton("🔥 Kembali ke Menu Utama")])
 
-    await query.message.delete()
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
     await context.bot.send_message(
         chat_id=query.from_user.id,
         text=msg,
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True),
         parse_mode="Markdown"
     )
+
+
+async def handle_cek_stok(update: Update, context: CallbackContext):
+    """Alias ke handle_list_produk — tombol cek stok sudah digabung ke list produk."""
+    await handle_list_produk(update, context)
 
 
 # ─── PRODUK DETAIL & ORDER ───────────────────────────────────────────────────
@@ -1190,11 +1201,25 @@ async def handle_deposit(update: Update, context: CallbackContext):
     keyboard.append([InlineKeyboardButton("🔧 Custom Nominal", callback_data="deposit_custom")])
     keyboard.append([InlineKeyboardButton("🔙 Kembali", callback_data="back_to_produk")])
     qris_note = "\n✅ _QRIS tersedia — pilih nominal lalu pilih metode!_" if qris_tersedia else ""
-    await query.edit_message_text(
-        f"💰 *Pilih nominal deposit:*\n_(Min: Rp{DEPOSIT_MIN:,} | Max: Rp{DEPOSIT_MAX:,})_{qris_note}",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
+    text = (
+        f"💰 *Pilih nominal deposit:*\n"
+        f"_(Min: Rp{DEPOSIT_MIN:,} | Max: Rp{DEPOSIT_MAX:,})_{qris_note}"
     )
+    markup = InlineKeyboardMarkup(keyboard)
+    try:
+        await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+    except Exception:
+        try:
+            await query.edit_message_caption(text, reply_markup=markup, parse_mode="Markdown")
+        except Exception:
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            await context.bot.send_message(
+                chat_id=query.from_user.id, text=text,
+                reply_markup=markup, parse_mode="Markdown"
+            )
 
 
 async def _send_deposit_instructions(target, context, nominal: int, is_message=True):
@@ -1846,33 +1871,42 @@ async def handle_back_to_produk(update: Update, context: CallbackContext):
 async def handle_info_bot(update: Update, context: CallbackContext):
     query  = update.callback_query
     cfg    = load_config()
-    nama   = cfg["nama_toko"]
-    kontak = cfg["kontak_admin"]
+    kontak = cfg.get("kontak_admin", "")
     text   = (
-        f"📖 *{nama}*\n"
-        "╭─────────────────────────────╮\n"
-        "├ 🛒 *Layanan*\n"
-        "│   Jual akun digital & subscription\n"
-        "│   premium secara otomatis.\n"
-        "├─────────────────────────────\n"
-        "├ 💰 *Cara Deposit*\n"
-        "│   1. Pilih menu Deposit Saldo\n"
-        "│   2. Pilih atau ketik nominal\n"
-        "│   3. Transfer ke rekening kami\n"
-        "│   4. Kirim foto bukti transfer\n"
-        "│   5. Tunggu konfirmasi admin\n"
-        "├─────────────────────────────\n"
-        "├ 🛍️ *Cara Beli*\n"
-        "│   1. Pilih List Produk\n"
-        "│   2. Pilih produk & atur jumlah\n"
-        "│   3. Konfirmasi — akun langsung\n"
-        "│      dikirim otomatis via bot\n"
-        "├─────────────────────────────\n"
-        f"├ 📞 *Hubungi Admin*: {kontak}\n"
-        "╰─────────────────────────────╯"
+        "🆘 *PUSAT BANTUAN*\n\n"
+        "Selamat datang\\! Berikut panduan lengkap penggunaan bot kami:\n\n"
+        "💡 *Panduan Pembelian:*\n"
+        "◉ Lihat Katalog — Tekan tombol \"List Produk\"\n"
+        "◉ Pilih Produk — Pilih produk yang diinginkan\n"
+        "◉ Tentukan Jumlah — Atur jumlah pembelian\n"
+        "◉ Bayar & Terima — Lakukan pembayaran & terima akun\n\n"
+        "📋 *FAQ:*\n"
+        "◉ Pembayaran otomatis dikonfirmasi sistem\n"
+        "◉ Akun dikirim instan setelah pembayaran\n"
+        "◉ Pesan berisi akun akan disematkan\n"
+        "◉ Butuh bantuan? Hubungi Admin"
     )
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Kembali ke Menu", callback_data="back_to_produk")]])
-    await query.edit_message_text(text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=keyboard)
+    kb_rows = []
+    if kontak:
+        tg = kontak.lstrip("@")
+        kb_rows.append([InlineKeyboardButton("👤 Hubungi Admin ↗", url=f"https://t.me/{tg}")])
+    kb_rows.append([InlineKeyboardButton("🔥 Kembali ke Menu", callback_data="back_to_produk")])
+    markup = InlineKeyboardMarkup(kb_rows)
+    try:
+        await query.edit_message_text(text, parse_mode="MarkdownV2",
+                                      disable_web_page_preview=True, reply_markup=markup)
+    except Exception:
+        try:
+            await query.edit_message_caption(text, parse_mode="MarkdownV2", reply_markup=markup)
+        except Exception:
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            await context.bot.send_message(
+                chat_id=query.from_user.id, text=text,
+                parse_mode="MarkdownV2", disable_web_page_preview=True, reply_markup=markup
+            )
 
 
 async def handle_ignore(update: Update, context: CallbackContext):
@@ -2221,7 +2255,7 @@ async def handle_text(update: Update, context: CallbackContext):
         return
 
     # ── Tombol kembali ────────────────────────────────────────────────
-    if text == "🔙 Kembali":
+    if text in ("🔙 Kembali", "🔥 Kembali ke Menu Utama"):
         await send_main_menu_safe(update, context)
         return
 

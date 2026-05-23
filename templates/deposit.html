@@ -30,21 +30,30 @@
 
 <!-- Method Selector -->
 <div class="d-flex gap-3 mb-4">
-  <div class="method-tab active" id="tab-manual-btn" onclick="switchTab('manual')">
+  {% if manual_aktif %}
+  <div class="method-tab {% if not qris_ok %}active{% endif %}" id="tab-manual-btn" onclick="switchTab('manual')">
     <i class="bi bi-receipt"></i>
     <div class="fw-semibold" style="font-size:.9rem">Transfer Manual</div>
     <div class="text-muted" style="font-size:.78rem">Upload bukti, konfirmasi admin</div>
   </div>
+  {% endif %}
   {% if qris_ok %}
-  <div class="method-tab" id="tab-qris-btn" onclick="switchTab('qris')">
+  <div class="method-tab {% if not manual_aktif %}active{% endif %}" id="tab-qris-btn" onclick="switchTab('qris')">
     <i class="bi bi-qr-code"></i>
     <div class="fw-semibold" style="font-size:.9rem">QRIS Otomatis</div>
     <div class="text-muted" style="font-size:.78rem">Konfirmasi instan ~1-2 menit</div>
   </div>
   {% endif %}
+  {% if not manual_aktif and not qris_ok %}
+  <div class="alert alert-warning w-100 mb-0">
+    <i class="bi bi-exclamation-triangle me-2"></i>
+    Deposit sementara tidak tersedia. Hubungi admin.
+  </div>
+  {% endif %}
 </div>
 
 <!-- MANUAL TAB -->
+{% if manual_aktif %}
 <div id="tab-manual">
   <div class="row g-4">
     <div class="col-md-5">
@@ -104,9 +113,11 @@
   </div>
 </div>
 
+{% endif %}
+
 <!-- QRIS TAB -->
 {% if qris_ok %}
-<div id="tab-qris" class="d-none">
+<div id="tab-qris" {% if manual_aktif %}class="d-none"{% endif %}>
   <div class="row justify-content-center">
     <div class="col-md-6">
       <div class="card">
@@ -144,12 +155,12 @@
 {% block scripts %}
 <script>
 function switchTab(t) {
+  {% if manual_aktif %}
   document.getElementById('tab-manual').classList.toggle('d-none', t !== 'manual');
+  document.getElementById('tab-manual-btn').classList.toggle('active', t === 'manual');
+  {% endif %}
   {% if qris_ok %}
   document.getElementById('tab-qris').classList.toggle('d-none', t !== 'qris');
-  {% endif %}
-  document.getElementById('tab-manual-btn').classList.toggle('active', t === 'manual');
-  {% if qris_ok %}
   document.getElementById('tab-qris-btn').classList.toggle('active', t === 'qris');
   {% endif %}
 }
