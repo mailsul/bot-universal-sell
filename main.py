@@ -6,6 +6,15 @@ import time
 import random
 import logging
 import httpx
+from db import (
+    init_db,
+    db_get_saldo, db_add_saldo, db_set_saldo, db_get_all_saldo,
+    db_get_all_pending, db_get_pending_by_user, db_get_pending_any_by_user,
+    db_add_pending, db_remove_pending_by_user, db_remove_pending_any_by_user,
+    db_update_pending_cek_count, db_remove_pending_by_id,
+    db_add_riwayat, db_get_riwayat,
+    db_update_statistik, db_get_statistik_user,
+)
 
 import sys
 logging.basicConfig(
@@ -138,7 +147,7 @@ def save_produk(produk: dict):
 
 def _generate_kode_unik(expected_nominal: int) -> int:
     """Generate kode unik (1-99) untuk membedakan pembayaran QRIS antar user."""
-    pending = load_json(deposit_file)
+    pending = db_get_all_pending()
     used = {p.get("expected_amount", 0) for p in pending if p.get("metode", "").startswith("qris")}
     for _ in range(200):
         code = random.randint(1, 99)
@@ -223,31 +232,7 @@ def _extract_amounts_from_mutasi(data) -> set:
 
 
 # ─── HELPER: STATISTIK & RIWAYAT ────────────────────────────────────────────
-
-def update_statistik(uid, nominal: int):
-    statistik = load_json(statistik_file)
-    uid = str(uid)
-    if uid not in statistik:
-        statistik[uid] = {"jumlah": 0, "nominal": 0}
-    statistik[uid]["jumlah"] += 1
-    statistik[uid]["nominal"] += nominal
-    save_json(statistik_file, statistik)
-
-
-def add_riwayat(uid, tipe: str, keterangan: str, jumlah: int):
-    riwayat = load_json(riwayat_file)
-    uid = str(uid)
-    if uid not in riwayat:
-        riwayat[uid] = []
-    riwayat[uid].append({
-        "tipe": tipe,
-        "keterangan": keterangan,
-        "jumlah": jumlah,
-        "waktu": datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    })
-    save_json(riwayat_file, riwayat, backup=False)
-    if tipe == "BELI":
-        update_statistik(uid, jumlah)
+# Fungsi ini kini di-handle oleh db.py (db_add_riwayat, db_update_statistik)
 
 
 def is_admin(user_id: int) -> bool:
@@ -314,14 +299,14 @@ async def proses_mutasi(app: Application):
     if not mutation_amounts:
         return
 
-    pending = load_json(deposit_file)
-    now     = datetime.now()
+    pending    = db_get_all_pending()
+    now        = datetime.now()
+    to_confirm = []
+    to_delete  = []
 
-    to_confirm, to_keep = [], []
     for p in pending:
         metode = p.get("metode", "manual")
         if not metode.startswith("qris"):
-            to_keep.append(p)
             continue
 
         # Cek kedaluwarsa
@@ -329,6 +314,17 @@ async def proses_mutasi(app: Application):
             waktu = datetime.strptime(p["waktu"], "%d/%m/%Y %H:%M:%S")
             if (now - waktu).total_seconds() > QRIS_EXPIRY_MINUTES * 60:
                 log.info(f"⏰ Pending QRIS user {p['user_id']} kedaluwarsa, dihapus.")
+                to_delete.append(p["id"])
+                # Kembalikan stok yang direservasi
+                reserved_akun = p.get("reserved_akun", [])
+                if reserved_akun:
+                    async with purchase_lock:
+                        produk_r = load_produk()
+                        item_r   = produk_r.get(p.get("produk_id"))
+                        if item_r:
+                            item_r["akun_list"] = reserved_akun + item_r["akun_list"]
+                            save_produk(produk_r)
+                            log.info(f"↩️ Stok dikembalikan: {len(reserved_akun)} akun → {p.get('produk_id')}")
                 try:
                     await app.bot.send_message(
                         chat_id=p["user_id"],
@@ -345,15 +341,15 @@ async def proses_mutasi(app: Application):
         if expected in mutation_amounts:
             log.info(f"✅ COCOK! user={p['user_id']} expected=Rp{expected:,} metode={metode}")
             to_confirm.append(p)
+            to_delete.append(p["id"])
         else:
             log.info(f"⏳ Belum cocok: user={p['user_id']} expected=Rp{expected:,}")
-            to_keep.append(p)
+
+    for pid in to_delete:
+        db_remove_pending_by_id(pid)
 
     if not to_confirm:
         return
-
-    save_json(deposit_file, to_keep)
-    saldo = load_json(saldo_file)
 
     for p in to_confirm:
         uid    = str(p["user_id"])
@@ -361,18 +357,18 @@ async def proses_mutasi(app: Application):
 
         if metode == "qris":
             # ── Deposit via QRIS ──────────────────────────────────────
-            nominal = p["nominal"]
-            saldo[uid] = saldo.get(uid, 0) + nominal
-            save_json(saldo_file, saldo, backup=True)
-            add_riwayat(uid, "DEPOSIT", "QRIS Otomatis", nominal)
-            log.info(f"💰 DEPOSIT QRIS dikonfirmasi: user={uid} nominal=Rp{nominal:,} saldo_baru=Rp{saldo[uid]:,}")
+            nominal   = p["nominal"]
+            new_saldo = db_add_saldo(uid, nominal)
+            trx_id    = db_add_riwayat(uid, "DEPOSIT", "QRIS Otomatis", nominal)
+            log.info(f"💰 DEPOSIT QRIS dikonfirmasi: user={uid} nominal=Rp{nominal:,} saldo_baru=Rp{new_saldo:,} trx={trx_id}")
             try:
                 await app.bot.send_message(
                     chat_id=p["user_id"],
                     text=(
                         f"✅ *Deposit QRIS berhasil!*\n"
                         f"💰 Rp{nominal:,} telah masuk ke saldo kamu.\n"
-                        f"💳 Saldo sekarang: Rp{saldo[uid]:,}\n\n"
+                        f"💳 Saldo sekarang: Rp{new_saldo:,}\n"
+                        f"🔖 ID Transaksi: `{trx_id}`\n\n"
                         "Ketik /start untuk kembali ke menu."
                     ),
                     parse_mode="Markdown",
@@ -383,31 +379,38 @@ async def proses_mutasi(app: Application):
 
         elif metode == "qris_beli":
             # ── Beli langsung via QRIS ────────────────────────────────
+            produk_id     = p.get("produk_id")
+            jumlah        = p.get("jumlah", 1)
+            nominal       = p["nominal"]
+            reserved_akun = p.get("reserved_akun", [])
+            file_path     = None
+            item          = None
+
             async with purchase_lock:
-                produk    = load_produk()
-                produk_id = p.get("produk_id")
-                jumlah    = p.get("jumlah", 1)
-                item      = produk.get(produk_id)
-                nominal   = p["nominal"]
+                if reserved_akun and len(reserved_akun) >= jumlah:
+                    # Akun sudah direservasi saat QRIS diinisiasi — stok sudah terkurangi
+                    akun_terpakai = reserved_akun[:jumlah]
+                    produk = load_produk()
+                    item   = produk.get(produk_id) or {"nama": produk_id or "Produk", "stok": 0, "akun_list": []}
+                else:
+                    # Fallback: pop dari produk (tidak ada reservasi)
+                    produk = load_produk()
+                    item   = produk.get(produk_id)
+                    if not item or item["stok"] < jumlah or len(item.get("akun_list", [])) < jumlah:
+                        try:
+                            await app.bot.send_message(
+                                chat_id=p["user_id"],
+                                text="❌ *Stok habis setelah pembayaran.*\nHubungi admin untuk refund.",
+                                parse_mode="Markdown"
+                            )
+                        except Exception:
+                            pass
+                        continue
+                    akun_terpakai = [item["akun_list"].pop(0) for _ in range(jumlah)]
+                    save_produk(produk)
 
-                if not item or item["stok"] < jumlah:
-                    try:
-                        await app.bot.send_message(
-                            chat_id=p["user_id"],
-                            text=(
-                                "❌ *Stok habis setelah pembayaran.*\n"
-                                "Hubungi admin untuk refund."
-                            ),
-                            parse_mode="Markdown"
-                        )
-                    except Exception:
-                        pass
-                    continue
-
-                akun_terpakai = [item["akun_list"].pop(0) for _ in range(jumlah)]
-                save_produk(produk)
-                add_riwayat(uid, "BELI", f"{item['nama']} x{jumlah} (QRIS)", nominal)
-                log.info(f"🛒 BELI QRIS dikonfirmasi: user={uid} produk={item['nama']} x{jumlah} Rp{nominal:,}")
+                trx_id = db_add_riwayat(uid, "BELI", f"{item['nama']} x{jumlah} (QRIS)", nominal)
+                log.info(f"🛒 BELI QRIS dikonfirmasi: user={uid} produk={item['nama']} x{jumlah} Rp{nominal:,} trx={trx_id}")
 
                 os.makedirs("akun_dikirim", exist_ok=True)
                 stamp     = int(time.time())
@@ -422,30 +425,50 @@ async def proses_mutasi(app: Application):
                             "---------------------------\n"
                         )
 
+            # Teks detail akun — dikirim sebagai pesan teks PLUS file backup
+            waktu_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+            text_akun = (
+                f"✅ *Pembelian QRIS Berhasil!*\n\n"
+                f"📦 {item['nama']} x{jumlah}\n"
+                f"💸 Dibayar: Rp{nominal:,}\n"
+                f"🔖 ID Transaksi: `{trx_id}`\n"
+                f"📅 {waktu_str}\n"
+                f"─────────────────────\n"
+            )
+            for i, akun in enumerate(akun_terpakai, start=1):
+                text_akun += (
+                    f"Akun #{i}\n"
+                    f"Username : `{akun['username']}`\n"
+                    f"Password : `{akun['password']}`\n"
+                    f"Tipe     : {akun['tipe']}\n"
+                    f"─────────────────────\n"
+                )
+
             try:
-                with open(file_path, "rb") as f:
-                    await app.bot.send_document(
-                        chat_id=p["user_id"],
-                        document=InputFile(f, filename=f"akun_{item['nama'].replace(' ', '_')}.txt"),
-                        caption=(
-                            f"✅ *Pembelian QRIS berhasil!*\n"
-                            f"📦 {item['nama']} x{jumlah}\n"
-                            f"💸 Dibayar: Rp{nominal:,}\n\n"
-                            "Ketik /start untuk kembali ke menu."
-                        ),
-                        parse_mode="Markdown"
-                    )
-                os.remove(file_path)
+                await app.bot.send_message(
+                    chat_id=p["user_id"],
+                    text=text_akun,
+                    parse_mode="Markdown",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                if file_path and os.path.exists(file_path):
+                    with open(file_path, "rb") as f:
+                        await app.bot.send_document(
+                            chat_id=p["user_id"],
+                            document=InputFile(f, filename=f"akun_{item['nama'].replace(' ','_')}.txt"),
+                            caption="📎 File backup akun kamu.",
+                        )
+                    os.remove(file_path)
             except Exception:
                 pass
 
             # Notif stok rendah
-            if item["stok"] <= LOW_STOCK_THRESHOLD:
+            if item and item.get("stok", 0) <= LOW_STOCK_THRESHOLD:
                 for admin_id in ADMIN_IDS:
                     try:
                         await app.bot.send_message(
                             chat_id=admin_id,
-                            text=f"⚠️ *Stok Rendah*\n{item['nama']} sisa {item['stok']}x",
+                            text=f"⚠️ *Stok Rendah*\n{item['nama']} sisa {item.get('stok', 0)}x",
                             parse_mode="Markdown"
                         )
                     except Exception:
@@ -458,7 +481,7 @@ async def mutasi_loop(app: Application):
     while True:
         # Cek apakah ada pending QRIS yang masih aktif (< 5 menit)
         try:
-            pending = load_json(deposit_file)
+            pending = db_get_all_pending()
             now = datetime.now()
             has_active = any(
                 p.get("metode", "").startswith("qris") and
@@ -482,6 +505,7 @@ async def mutasi_loop(app: Application):
 
 
 async def post_init(app: Application):
+    init_db()
     if URL_MUTASI:
         asyncio.create_task(mutasi_loop(app))
 
@@ -492,11 +516,10 @@ async def send_main_menu(bot_or_context, chat_id: int, user):
     # Menerima context (handler) atau bot langsung (background task)
     bot = getattr(bot_or_context, 'bot', bot_or_context)
 
-    saldo     = load_json(saldo_file)
-    statistik = load_json(statistik_file)
-    s      = saldo.get(str(user.id), 0)
-    jumlah = statistik.get(str(user.id), {}).get("jumlah", 0)
-    total  = statistik.get(str(user.id), {}).get("nominal", 0)
+    s      = db_get_saldo(user.id)
+    stat   = db_get_statistik_user(user.id)
+    jumlah = stat.get("jumlah", 0)
+    total  = stat.get("nominal", 0)
 
     nama_toko = load_config()["nama_toko"]
     text = (
@@ -713,7 +736,7 @@ async def handle_confirm_order(update: Update, context: CallbackContext):
         await query.edit_message_text("❌ Stok tidak mencukupi. Silakan pilih jumlah lebih sedikit.")
         return
 
-    saldo_user = load_json(saldo_file).get(str(query.from_user.id), 0)
+    saldo_user = db_get_saldo(query.from_user.id)
 
     # Pilih metode pembayaran
     if _qris_available():
@@ -753,7 +776,7 @@ async def handle_confirm_saldo(update: Update, context: CallbackContext):
     item       = produk.get(info["produk_id"])
     jumlah     = info["jumlah"]
     total      = jumlah * item["harga"]
-    saldo_user = load_json(saldo_file).get(str(query.from_user.id), 0)
+    saldo_user = db_get_saldo(query.from_user.id)
 
     await _proses_beli_saldo(query, context, info, item, jumlah, total, saldo_user)
 
@@ -779,18 +802,16 @@ async def _proses_beli_saldo(query, context, info, item, jumlah, total, saldo_us
 
     async with purchase_lock:
         produk = load_produk()
-        saldo  = load_json(saldo_file)
         item   = produk.get(produk_id)
 
         if not item or item["stok"] < jumlah or len(item.get("akun_list", [])) < jumlah:
             await query.edit_message_text("❌ Stok tidak mencukupi saat diproses. Coba lagi.")
             return
 
-        saldo[uid] = saldo.get(uid, 0) - total
+        new_saldo     = db_add_saldo(uid, -total)
         akun_terpakai = [item["akun_list"].pop(0) for _ in range(jumlah)]
-        save_json(saldo_file, saldo, backup=True)
         save_produk(produk)
-        add_riwayat(uid, "BELI", f"{item['nama']} x{jumlah}", total)
+        trx_id = db_add_riwayat(uid, "BELI", f"{item['nama']} x{jumlah}", total)
 
         os.makedirs("akun_dikirim", exist_ok=True)
         stamp     = int(time.time())
@@ -805,17 +826,36 @@ async def _proses_beli_saldo(query, context, info, item, jumlah, total, saldo_us
                     "---------------------------\n"
                 )
 
+    # Teks detail akun — dikirim sebagai pesan teks PLUS file backup
+    waktu_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    text_akun = (
+        f"✅ *Pembelian Berhasil!*\n\n"
+        f"📦 {item['nama']} x{jumlah}\n"
+        f"💸 Dipotong: Rp{total:,}\n"
+        f"💰 Sisa saldo: Rp{new_saldo:,}\n"
+        f"🔖 ID Transaksi: `{trx_id}`\n"
+        f"📅 {waktu_str}\n"
+        f"─────────────────────\n"
+    )
+    for i, akun in enumerate(akun_terpakai, start=1):
+        text_akun += (
+            f"Akun #{i}\n"
+            f"Username : `{akun['username']}`\n"
+            f"Password : `{akun['password']}`\n"
+            f"Tipe     : {akun['tipe']}\n"
+            f"─────────────────────\n"
+        )
+
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text=text_akun,
+        parse_mode="Markdown"
+    )
     with open(file_path, "rb") as f:
         await context.bot.send_document(
             chat_id=query.from_user.id,
             document=InputFile(f, filename=f"akun_{item['nama'].replace(' ', '_')}.txt"),
-            caption=(
-                f"✅ *Pembelian berhasil!*\n"
-                f"📦 {item['nama']} x{jumlah}\n"
-                f"💸 Dipotong: Rp{total:,}\n"
-                f"💰 Sisa saldo: Rp{saldo[uid]:,}"
-            ),
-            parse_mode="Markdown"
+            caption="📎 File backup akun kamu.",
         )
     try:
         os.remove(file_path)
@@ -950,9 +990,7 @@ async def handle_dep_metode(update: Update, context: CallbackContext):
 async def handle_cancel_deposit(update: Update, context: CallbackContext):
     query = update.callback_query
     uid   = str(query.from_user.id)
-    pending = load_json(deposit_file)
-    pending = [p for p in pending if str(p["user_id"]) != uid]
-    save_json(deposit_file, pending)
+    db_remove_pending_any_by_user(uid)
     context.user_data.pop("nominal_asli",   None)
     context.user_data.pop("total_transfer", None)
     context.user_data.pop("awaiting_custom", None)
@@ -1010,9 +1048,8 @@ async def _show_qris_deposit(user, nominal: int, context, delete_msg=None):
     expected = nominal + kode
     log.info(f"📲 QRIS Deposit: user={user.id} (@{user.username}) nominal=Rp{nominal:,} expected=Rp{expected:,}")
 
-    pending = load_json(deposit_file)
-    pending = [p for p in pending if not (p["user_id"] == user.id and p.get("metode", "").startswith("qris"))]
-    pending.append({
+    db_remove_pending_by_user(user.id)
+    db_add_pending({
         "user_id":         user.id,
         "username":        user.username,
         "metode":          "qris",
@@ -1022,7 +1059,6 @@ async def _show_qris_deposit(user, nominal: int, context, delete_msg=None):
         "waktu":           datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
         "cek_count":       3,
     })
-    save_json(deposit_file, pending)
 
     caption = (
         f"💳 *Bayar via QRIS*\n\n"
@@ -1056,21 +1092,25 @@ async def handle_beli_qris(update: Update, context: CallbackContext):
         await query.answer("❌ QRIS belum diatur admin.", show_alert=True)
         return
 
-    produk = load_produk()
-    item   = produk.get(info["produk_id"])
-    if not item or item["stok"] < info["jumlah"]:
-        await query.answer("❌ Stok tidak mencukupi", show_alert=True)
-        return
+    jumlah = info["jumlah"]
+    async with purchase_lock:
+        produk = load_produk()
+        item   = produk.get(info["produk_id"])
+        if not item or item["stok"] < jumlah or len(item.get("akun_list", [])) < jumlah:
+            await query.answer("❌ Stok tidak mencukupi", show_alert=True)
+            return
+        # Reservasi stok: pop akun sekarang, simpan di pending
+        reserved_akun = [item["akun_list"].pop(0) for _ in range(jumlah)]
+        save_produk(produk)
+        log.info(f"🔒 Stok direservasi: {len(reserved_akun)} akun {item['nama']} untuk user {query.from_user.id}")
 
-    jumlah   = info["jumlah"]
     nominal  = jumlah * item["harga"]
     kode     = _generate_kode_unik(nominal)
     expected = nominal + kode
     log.info(f"🛒 QRIS Beli: user={query.from_user.id} produk={item['nama']} x{jumlah} nominal=Rp{nominal:,} expected=Rp{expected:,}")
 
-    pending = load_json(deposit_file)
-    pending = [p for p in pending if not (p["user_id"] == query.from_user.id and p.get("metode", "").startswith("qris"))]
-    pending.append({
+    db_remove_pending_by_user(query.from_user.id)
+    db_add_pending({
         "user_id":         query.from_user.id,
         "username":        query.from_user.username,
         "metode":          "qris_beli",
@@ -1081,8 +1121,8 @@ async def handle_beli_qris(update: Update, context: CallbackContext):
         "kode_unik":       kode,
         "waktu":           datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
         "cek_count":       3,
+        "reserved_akun":   reserved_akun,
     })
-    save_json(deposit_file, pending)
     context.user_data.pop("konfirmasi", None)
 
     caption = (
@@ -1113,13 +1153,7 @@ async def handle_cek_mutasi(update: Update, context: CallbackContext):
     query = update.callback_query
     uid   = query.from_user.id
 
-    pending = load_json(deposit_file)
-    user_pending = None
-    for p in pending:
-        if p["user_id"] == uid and p.get("metode", "").startswith("qris"):
-            user_pending = p
-            break
-
+    user_pending = db_get_pending_by_user(uid)
     if not user_pending:
         await query.answer("✅ Tidak ada pembayaran aktif.", show_alert=True)
         return
@@ -1134,19 +1168,14 @@ async def handle_cek_mutasi(update: Update, context: CallbackContext):
     await query.answer("🔍 Mengecek pembayaran...")
 
     # Kurangi counter & simpan
-    user_pending["cek_count"] = cek_count - 1
-    save_json(deposit_file, pending)
+    db_update_pending_cek_count(uid, cek_count - 1)
 
     # Jalankan cek mutasi sekarang + reset timer 30-detik loop
     await proses_mutasi(context.application)
     _manual_check_event.set()
 
     # Cek apakah pembayaran sudah terkonfirmasi
-    pending_after = load_json(deposit_file)
-    still_pending = any(
-        p["user_id"] == uid and p.get("metode", "").startswith("qris")
-        for p in pending_after
-    )
+    still_pending = db_get_pending_by_user(uid) is not None
     if not still_pending:
         return  # Sudah terkonfirmasi — proses_mutasi sudah kirim pesan sukses
 
@@ -1175,19 +1204,18 @@ async def handle_riwayat_user(update: Update, context: CallbackContext):
         user_id = update.effective_user.id
         send_fn = lambda txt, kb: update.message.reply_text(txt, reply_markup=kb, parse_mode="Markdown")
 
-    riwayat = load_json(riwayat_file)
-    data    = riwayat.get(str(user_id), [])
+    data = db_get_riwayat(user_id, RIWAYAT_LIMIT)
 
     if not data:
         text = "📜 *Riwayat Transaksi*\n\nBelum ada transaksi."
     else:
-        recent = data[-RIWAYAT_LIMIT:][::-1]
-        text   = f"📜 *Riwayat Transaksi* (last {len(recent)})\n\n"
-        for r in recent:
-            icon = "📥" if r["tipe"] == "DEPOSIT" else "🛒"
+        text = f"📜 *Riwayat Transaksi* (last {len(data)})\n\n"
+        for r in data:
+            icon  = "📥" if r["tipe"] == "DEPOSIT" else "🛒"
+            trx   = f"\n   🔖 `{r['trx_id']}`" if r.get("trx_id") else ""
             text += f"{icon} `{r['tipe']}` — Rp{r['jumlah']:,}\n"
             text += f"   _{r['keterangan']}_\n"
-            text += f"   🕐 {r['waktu']}\n\n"
+            text += f"   🕐 {r['waktu']}{trx}\n\n"
 
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Kembali ke Menu", callback_data="back_to_produk")]])
     await send_fn(text, kb)
@@ -1205,8 +1233,8 @@ async def handle_admin_panel(update: Update, context: CallbackContext):
         await query.answer("⛔ Akses ditolak", show_alert=True)
         return
 
-    saldo   = load_json(saldo_file)
-    pending = load_json(deposit_file)
+    saldo   = db_get_all_saldo()
+    pending = db_get_all_pending()
 
     text = "*📊 DATA USER:*\n"
     for u, s in saldo.items():
@@ -1420,10 +1448,7 @@ async def handle_admin_confirm(update: Update, context: CallbackContext):
 async def handle_admin_final(update: Update, context: CallbackContext):
     query   = update.callback_query
     user_id = int(query.data.split(":")[1])
-    pending = load_json(deposit_file)
-    saldo   = load_json(saldo_file)
-
-    item = next((p for p in pending if p["user_id"] == user_id), None)
+    item = db_get_pending_any_by_user(user_id)
     if not item:
         try:
             await query.edit_message_caption("❌ Data deposit tidak ditemukan.")
@@ -1431,13 +1456,10 @@ async def handle_admin_final(update: Update, context: CallbackContext):
             await query.edit_message_text("❌ Data deposit tidak ditemukan.")
         return
 
-    nominal           = item["nominal"]
-    saldo[str(user_id)] = saldo.get(str(user_id), 0) + nominal
-    save_json(saldo_file, saldo, backup=True)
-
-    pending = [p for p in pending if p["user_id"] != user_id]
-    save_json(deposit_file, pending)
-    add_riwayat(user_id, "DEPOSIT", "Konfirmasi Admin", nominal)
+    nominal = item["nominal"]
+    db_add_saldo(user_id, nominal)
+    db_remove_pending_any_by_user(user_id)
+    trx_id = db_add_riwayat(user_id, "DEPOSIT", "Konfirmasi Admin", nominal)
 
     result_text = (
         f"✅ Saldo *Rp{nominal:,}* berhasil ditambahkan\n"
@@ -1450,7 +1472,10 @@ async def handle_admin_final(update: Update, context: CallbackContext):
 
     await context.bot.send_message(
         chat_id=user_id,
-        text=f"✅ Deposit *Rp{nominal:,}* telah dikonfirmasi dan masuk ke saldo kamu!",
+        text=(
+            f"✅ Deposit *Rp{nominal:,}* telah dikonfirmasi dan masuk ke saldo kamu!\n"
+            f"🔖 ID Transaksi: `{trx_id}`"
+        ),
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardRemove()
     )
@@ -1461,10 +1486,7 @@ async def handle_admin_reject(update: Update, context: CallbackContext):
     query   = update.callback_query
     user_id = int(query.data.split(":")[1])
 
-    # Hapus dari pending
-    pending = load_json(deposit_file)
-    pending = [p for p in pending if p["user_id"] != user_id]
-    save_json(deposit_file, pending)
+    db_remove_pending_any_by_user(user_id)
 
     try:
         await query.edit_message_caption("❌ Deposit telah ditolak.", parse_mode="Markdown")
@@ -1609,10 +1631,7 @@ async def handle_text(update: Update, context: CallbackContext):
 
     # ── Batal universal ──────────────────────────────────────────────
     if text == "❌ Batal" or text == "❌ Batalkan Deposit":
-        # Hapus pending deposit jika ada
-        pending = load_json(deposit_file)
-        pending = [p for p in pending if str(p["user_id"]) != uid]
-        save_json(deposit_file, pending)
+        db_remove_pending_any_by_user(uid)
         # Bersihkan semua state
         for key in ["awaiting_custom", "awaiting_qris_custom", "nominal_asli", "total_transfer",
                     "admin_state", "new_produk", "restock_pid",
@@ -1919,20 +1938,18 @@ async def handle_photo(update: Update, context: CallbackContext):
     path  = f"bukti/{user.id}_{int(time.time())}.jpg"
     await file.download_to_drive(path)
 
-    total   = context.user_data.get("total_transfer", nominal)
-    pending = load_json(deposit_file)
-
-    # Cegah duplikat pending dari user yang sama
-    pending = [p for p in pending if p["user_id"] != user.id]
-    pending.append({
-        "user_id":      user.id,
-        "username":     user.username,
-        "bukti_path":   path,
-        "nominal":      nominal,
+    total = context.user_data.get("total_transfer", nominal)
+    # Cegah duplikat: hapus pending lama user ini, lalu simpan yang baru
+    db_remove_pending_any_by_user(user.id)
+    db_add_pending({
+        "user_id":        user.id,
+        "username":       user.username,
+        "metode":         "manual",
+        "bukti_path":     path,
+        "nominal":        nominal,
         "total_transfer": total,
-        "waktu":        datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        "waktu":          datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
     })
-    save_json(deposit_file, pending)
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Konfirmasi",  callback_data=f"confirm:{user.id}")],

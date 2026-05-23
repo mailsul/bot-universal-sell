@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Produk — {{ cfg.nama_toko }}{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-12">
+    <h4 class="fw-bold text-purple"><i class="bi bi-grid-fill"></i> Katalog Produk Digital</h4>
+    <p class="text-muted">Akun digital berkualitas dengan harga terjangkau. Beli via bot Telegram atau langsung di sini.</p>
+  </div>
+
+  {% if not current_user %}
+  <div class="col-12">
+    <div class="alert alert-info d-flex align-items-center gap-2">
+      <i class="bi bi-info-circle-fill fs-5"></i>
+      <span>Untuk membeli, <a href="/login" class="fw-bold">login</a> atau <a href="/register" class="fw-bold">daftar</a> terlebih dahulu.</span>
+    </div>
+  </div>
+  {% endif %}
+
+  {% for p in produk %}
+  <div class="col-md-6 col-lg-4">
+    <div class="card produk-card h-100">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+          <h5 class="card-title fw-bold mb-0">{{ p.nama }}</h5>
+          {% if p.stok > 0 %}
+          <span class="badge bg-success"><i class="bi bi-check-circle"></i> Stok: {{ p.stok }}</span>
+          {% else %}
+          <span class="badge bg-secondary">Habis</span>
+          {% endif %}
+        </div>
+        <p class="card-text text-muted small">{{ p.deskripsi or '' }}</p>
+        <div class="d-flex justify-content-between align-items-center mt-3">
+          <span class="fs-5 fw-bold text-purple">Rp{{ "{:,}".format(p.harga) }}</span>
+          {% if p.stok > 0 %}
+            {% if current_user %}
+            <a href="https://t.me/{{ cfg.kontak_admin | replace('@','') }}?start=beli_{{ p.id }}"
+               class="btn btn-brand btn-sm" target="_blank">
+              <i class="bi bi-telegram"></i> Beli via Bot
+            </a>
+            {% else %}
+            <a href="/login" class="btn btn-outline-secondary btn-sm">Login untuk Beli</a>
+            {% endif %}
+          {% else %}
+          <button class="btn btn-secondary btn-sm" disabled>Stok Habis</button>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <div class="col-12 text-center py-5 text-muted">
+    <i class="bi bi-box-seam display-4"></i>
+    <p class="mt-2">Belum ada produk tersedia.</p>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

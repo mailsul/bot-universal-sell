@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — {{ cfg.nama_toko }}{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-12">
+    <h4 class="fw-bold"><i class="bi bi-speedometer2"></i> Dashboard</h4>
+  </div>
+
+  <!-- Saldo -->
+  <div class="col-md-4">
+    <div class="saldo-box h-100">
+      <p class="mb-1 opacity-75 small"><i class="bi bi-wallet2"></i> Saldo Kamu</p>
+      <h2 class="fw-bold mb-0">Rp{{ "{:,}".format(saldo) }}</h2>
+      <a href="/deposit" class="btn btn-light btn-sm mt-3 fw-semibold">
+        <i class="bi bi-plus-circle"></i> Top Up Saldo
+      </a>
+    </div>
+  </div>
+
+  <!-- Quick links -->
+  <div class="col-md-8">
+    <div class="card h-100">
+      <div class="card-body">
+        <h6 class="card-title fw-bold mb-3">Menu Cepat</h6>
+        <div class="row g-3">
+          <div class="col-6">
+            <a href="/" class="btn btn-outline-secondary w-100 py-3">
+              <i class="bi bi-grid fs-4 d-block mb-1"></i>Katalog Produk
+            </a>
+          </div>
+          <div class="col-6">
+            <a href="/deposit" class="btn btn-outline-secondary w-100 py-3">
+              <i class="bi bi-wallet2 fs-4 d-block mb-1"></i>Deposit Saldo
+            </a>
+          </div>
+          <div class="col-6">
+            <a href="/riwayat" class="btn btn-outline-secondary w-100 py-3">
+              <i class="bi bi-clock-history fs-4 d-block mb-1"></i>Riwayat Transaksi
+            </a>
+          </div>
+          <div class="col-6">
+            <a href="https://t.me/{{ cfg.kontak_admin | replace('@','') }}" target="_blank" class="btn btn-outline-secondary w-100 py-3">
+              <i class="bi bi-telegram fs-4 d-block mb-1"></i>Hubungi Admin
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Transaksi Terakhir -->
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header">
+        <h6 class="mb-0"><i class="bi bi-clock-history"></i> Transaksi Terakhir</h6>
+      </div>
+      <div class="card-body p-0">
+        {% if hist %}
+        <div class="table-responsive">
+          <table class="table table-hover mb-0">
+            <thead class="table-light">
+              <tr>
+                <th>Waktu</th>
+                <th>Tipe</th>
+                <th>Keterangan</th>
+                <th class="text-end">Jumlah</th>
+                <th>ID Transaksi</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for h in hist %}
+              <tr>
+                <td class="small text-muted">{{ h.waktu }}</td>
+                <td>
+                  {% if h.tipe == 'DEPOSIT' %}
+                  <span class="badge bg-success">{{ h.tipe }}</span>
+                  {% elif h.tipe == 'BELI' %}
+                  <span class="badge bg-primary">{{ h.tipe }}</span>
+                  {% else %}
+                  <span class="badge bg-secondary">{{ h.tipe }}</span>
+                  {% endif %}
+                </td>
+                <td class="small">{{ h.keterangan or '-' }}</td>
+                <td class="text-end fw-bold">Rp{{ "{:,}".format(h.jumlah) }}</td>
+                <td><code class="small">{{ h.trx_id or '-' }}</code></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="text-center py-4 text-muted">
+          <i class="bi bi-inbox fs-3"></i>
+          <p class="mt-2 mb-0 small">Belum ada transaksi</p>
+        </div>
+        {% endif %}
+      </div>
+      {% if hist %}
+      <div class="card-footer text-end">
+        <a href="/riwayat" class="btn btn-sm btn-outline-secondary">Lihat Semua <i class="bi bi-arrow-right"></i></a>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

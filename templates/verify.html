@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Verifikasi OTP — {{ cfg.nama_toko }}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-5 col-lg-4">
+    <div class="card">
+      <div class="card-header text-center py-3">
+        <h5 class="mb-0"><i class="bi bi-shield-check"></i> Verifikasi OTP</h5>
+      </div>
+      <div class="card-body p-4 text-center">
+        <div class="mb-3">
+          <i class="bi bi-telegram display-4 text-primary"></i>
+        </div>
+        <p class="text-muted mb-4">Kode OTP 6 digit telah dikirim ke Telegram kamu. Masukkan kode tersebut di bawah ini. <strong>Berlaku 5 menit.</strong></p>
+        <form method="post" action="/verify">
+          <div class="mb-4">
+            <input type="text" name="otp" class="form-control form-control-lg text-center fw-bold fs-4 tracking-wide"
+                   placeholder="000000" maxlength="6" pattern="\d{6}" inputmode="numeric" autocomplete="one-time-code" required>
+          </div>
+          <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold">
+            <i class="bi bi-check-circle"></i> Verifikasi & Buat Akun
+          </button>
+        </form>
+        <hr>
+        <small class="text-muted">OTP tidak datang? <a href="/register">Kembali dan coba lagi</a></small>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
