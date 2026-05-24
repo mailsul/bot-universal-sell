@@ -157,34 +157,11 @@ def _pe(text: str, pm: str = "Markdown") -> tuple[str, list]:
         return text, []
 
 
-_STYLE_DOT = {
-    "success":   "🟢",
-    "danger":    "🔴",
-    "warning":   "🟡",
-    "primary":   "🔵",
-    "secondary": "",   # netral — tanpa dot
-}
-
 def _ikb(text: str, emoji_char: str = "", style: str = None, **kwargs) -> InlineKeyboardButton:
-    """InlineKeyboardButton dengan indikator warna via colored-dot prefix.
-    - Dot ditambahkan ke depan teks berdasarkan style (SELALU, selama tombol bukan icon-only).
-    - Tombol icon-only (teks = emoji saja, mis. '➕') tidak diberi dot."""
+    """InlineKeyboardButton dengan teks bersih.
+    - style hanya sebagai penanda semantik di kode (tidak dikirim ke Telegram API).
+    - Telegram tidak mendukung warna background pada InlineKeyboardButton."""
     kw = dict(kwargs)
-    # `style` TIDAK dikirim ke Telegram API — hanya dipakai untuk dot prefix
-
-    # Cek apakah teks hanya berisi emoji_char saja (mis. tombol "➕")
-    stripped = text
-    if emoji_char:
-        while stripped.startswith(emoji_char):
-            stripped = stripped[len(emoji_char):].lstrip()
-    is_icon_only = bool(emoji_char and not stripped)
-
-    # Tambahkan colored-dot prefix jika: ada style, bukan icon-only, belum ada dot
-    if style and not is_icon_only:
-        dot = _STYLE_DOT.get(style, "")
-        if dot and not text.startswith(dot):
-            text = dot + " " + text
-
     # Pastikan teks tidak kosong
     if not text or not text.strip():
         text = "·"
