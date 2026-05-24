@@ -158,10 +158,10 @@ def _pe(text: str, pm: str = "Markdown") -> tuple[str, list]:
 
 
 def _ikb(text: str, emoji_char: str = "", style: str = None, **kwargs) -> InlineKeyboardButton:
-    """InlineKeyboardButton dengan premium emoji icon.
+    """InlineKeyboardButton dengan premium emoji icon dan warna tombol.
     - Jika emoji_char ada di _EID → pakai sebagai icon_custom_emoji_id (premium animasi).
     - Teks emoji di-strip dari text agar tidak dobel (kecuali text hanya emoji saja).
-    - style hanya penanda semantik — TIDAK dikirim ke Telegram API."""
+    - style dikirim ke Telegram API: 'primary' (biru), 'success' (hijau), 'danger' (merah)."""
     kw = dict(kwargs)
 
     if emoji_char:
@@ -179,6 +179,11 @@ def _ikb(text: str, emoji_char: str = "", style: str = None, **kwargs) -> Inline
 
     if not text or not text.strip():
         text = "·"
+
+    # Teruskan style ke Telegram API untuk warna tombol
+    if style:
+        kw["style"] = style
+
     return InlineKeyboardButton(text=text, **kw)
 
 # ─── KONFIGURASI ────────────────────────────────────────────────────────────
@@ -893,7 +898,7 @@ async def send_main_menu(bot_or_context, chat_id: int, user):
         [_ikb("🛍 List Produk",   "🛍", "success",  callback_data="list_produk"),
          _ikb("🆘 Bantuan",        "🆘", "danger",   callback_data="info_bot")],
         [_ikb("💰 Deposit Saldo",  "💰", "primary",  callback_data="deposit")],
-        [_ikb("📜 Riwayat",         "📜", "warning",  callback_data="riwayat_user")],
+        [_ikb("📜 Riwayat",         "📜", "primary",  callback_data="riwayat_user")],
     ]
     if is_admin(user.id):
         keyboard.append([_ikb("🛠 Admin Panel", "🛠", "danger", callback_data="admin_panel")])
@@ -1073,9 +1078,9 @@ def _order_text(item: dict, jumlah: int, tipe_item: dict | None = None) -> str:
 def _order_keyboard(jumlah: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            _ikb("➖", "➖", "secondary", callback_data="qty_minus"),
-            _ikb(f"  {jumlah}  ", "", "secondary", callback_data="ignore"),
-            _ikb("➕", "➕", "success",   callback_data="qty_plus"),
+            _ikb("➖", "➖", "danger",  callback_data="qty_minus"),
+            _ikb(f"  {jumlah}  ", "", "primary", callback_data="ignore"),
+            _ikb("➕", "➕", "success", callback_data="qty_plus"),
         ],
         [_ikb("✅ Konfirmasi Order", "✅", "success", callback_data="confirm_order")],
         [_ikb("🔙 Kembali",          "🔙", "danger",  callback_data="back_to_produk")],
@@ -1526,7 +1531,7 @@ async def handle_deposit(update: Update, context: CallbackContext):
     query         = update.callback_query
     qris_tersedia = _qris_available()
     keyboard      = [[_ikb(f"Rp{n:,}", "", "primary", callback_data=f"deposit_{n}") for n in DEPOSIT_NOMINALS]]
-    keyboard.append([_ikb("🔧 Custom Nominal", "🔧", "secondary", callback_data="deposit_custom")])
+    keyboard.append([_ikb("🔧 Custom Nominal", "🔧", "primary", callback_data="deposit_custom")])
     keyboard.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="back_to_produk")])
     qris_note = "\n✅ _QRIS tersedia — pilih nominal lalu pilih metode!_" if qris_tersedia else ""
     text = (
@@ -1591,7 +1596,7 @@ async def _show_metode_deposit(query_or_message, context, nominal: int):
     if qris_tersedia:
         kb.append([_ikb("💳 QRIS (Otomatis / Lebih Cepat)", "", "primary", callback_data=f"dep_qris_{nominal}")])
     if manual_aktif:
-        kb.append([_ikb("🏦 Transfer Manual (Konfirmasi Admin)", "🏦", "warning", callback_data=f"dep_manual_{nominal}")])
+        kb.append([_ikb("🏦 Transfer Manual (Konfirmasi Admin)", "🏦", "primary", callback_data=f"dep_manual_{nominal}")])
     if not kb:
         kb.append([_ikb("❌ Metode deposit sedang tidak tersedia", "❌", "danger", callback_data="ignore")])
     kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="deposit")])
@@ -1660,7 +1665,7 @@ async def handle_deposit_qris(update: Update, context: CallbackContext):
         await query.answer("❌ QRIS belum diatur admin.", show_alert=True)
         return
     keyboard = [[_ikb(f"Rp{n:,}", "", "primary", callback_data=f"qris_dep_{n}") for n in DEPOSIT_NOMINALS]]
-    keyboard.append([_ikb("🔧 Custom Nominal", "🔧", "secondary", callback_data="qris_dep_custom")])
+    keyboard.append([_ikb("🔧 Custom Nominal", "🔧", "primary", callback_data="qris_dep_custom")])
     keyboard.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="deposit")])
     await safe_edit(
         query, context,
@@ -1907,9 +1912,9 @@ async def _show_riwayat(update: Update, context: CallbackContext, filter_tipe: s
 
     kb = InlineKeyboardMarkup([
         [
-            _ikb("📋 Semua",     "📋", "primary"   if filter_tipe == "semua"   else "secondary", callback_data="riwayat_user"),
-            _ikb("🛒 Pembelian", "🛒", "success"   if filter_tipe == "beli"    else "secondary", callback_data="riwayat_beli"),
-            _ikb("💰 Deposit",   "💰", "primary"   if filter_tipe == "deposit" else "secondary", callback_data="riwayat_deposit"),
+            _ikb("📋 Semua",     "📋", "primary" if filter_tipe == "semua"   else "danger", callback_data="riwayat_user"),
+            _ikb("🛒 Pembelian", "🛒", "success" if filter_tipe == "beli"    else "danger", callback_data="riwayat_beli"),
+            _ikb("💰 Deposit",   "💰", "primary" if filter_tipe == "deposit" else "danger", callback_data="riwayat_deposit"),
         ],
         [_ikb("🔙 Kembali ke Menu", "🔙", "danger", callback_data="back_to_produk")],
     ])
@@ -2482,8 +2487,8 @@ async def _send_rating_request(context: CallbackContext):
         stars_kb = [
             [
                 _ikb("⭐ 1", "⭐", "danger",    callback_data=f"rate_1_{trx_id}"),
-                _ikb("⭐ 2", "⭐", "warning",   callback_data=f"rate_2_{trx_id}"),
-                _ikb("⭐ 3", "⭐", "secondary", callback_data=f"rate_3_{trx_id}"),
+                _ikb("⭐ 2", "⭐", "primary",  callback_data=f"rate_2_{trx_id}"),
+                _ikb("⭐ 3", "⭐", "primary",  callback_data=f"rate_3_{trx_id}"),
                 _ikb("⭐ 4", "⭐", "primary",   callback_data=f"rate_4_{trx_id}"),
                 _ikb("⭐ 5", "⭐", "success",   callback_data=f"rate_5_{trx_id}"),
             ]
@@ -3026,7 +3031,7 @@ async def handle_text(update: Update, context: CallbackContext):
             kb = []
             if qris_tersedia:
                 kb.append([_ikb("💳 QRIS (Otomatis / Lebih Cepat)", "", "primary", callback_data=f"dep_qris_{nominal}")])
-            kb.append([_ikb("🏦 Transfer Manual (Konfirmasi Admin)", "🏦", "warning", callback_data=f"dep_manual_{nominal}")])
+            kb.append([_ikb("🏦 Transfer Manual (Konfirmasi Admin)", "🏦", "primary", callback_data=f"dep_manual_{nominal}")])
             kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="deposit")])
             metode_hint = (
                 "✅ *QRIS* — dikonfirmasi otomatis setelah bayar\n"

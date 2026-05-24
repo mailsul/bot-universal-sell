@@ -38,3 +38,31 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# File & folder yang tidak perlu di-push ke GitHub
+
+# Asset gambar besar
+attached_assets/
+
+# Semua file zip
+*.zip
+
+# Log
+logs/
+
+# Backup database
+backup_db/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Replit internal
+.cache/
+.pythonlibs/
+.local/
+
+# Git attributes (biarkan ada, tapi tidak perlu di-push ulang)
