@@ -868,6 +868,31 @@ def db_get_all_vouchers() -> list:
     return [dict(r) for r in rows]
 
 
+def db_check_voucher(kode: str, user_id: str) -> str | int:
+    """Cek validitas voucher TANPA mengonsumsi. Return int (nominal) atau 'invalid'/'used'."""
+    kode = kode.upper().strip()
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT * FROM voucher WHERE kode=? AND aktif=1", (kode,)
+        ).fetchone()
+        if not row:
+            conn.close()
+            return "invalid"
+        if row["used"] >= row["max_uses"]:
+            conn.close()
+            return "invalid"
+        already = conn.execute(
+            "SELECT id FROM voucher_log WHERE kode=? AND user_id=?", (kode, str(user_id))
+        ).fetchone()
+        if already:
+            conn.close()
+            return "used"
+        nominal = int(row["nominal"])
+        conn.close()
+    return nominal
+
+
 def db_use_voucher(kode: str, user_id: str) -> str | int:
     """
     Pakai voucher. Return:

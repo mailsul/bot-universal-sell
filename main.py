@@ -22,7 +22,8 @@ from db import (
     web_get_user_by_email, web_get_user_by_phone, web_update_profile,
     db_add_bot_user, db_get_all_bot_users,
     db_get_rekap_penjualan,
-    db_add_voucher, db_use_voucher, db_get_all_vouchers, db_delete_voucher,
+    db_add_voucher, db_use_voucher, db_check_voucher, db_get_all_vouchers,
+    db_delete_voucher, db_toggle_voucher,
     db_add_rating, db_get_ratings,
     db_ticket_create, db_ticket_list, db_ticket_get, db_ticket_reply, db_ticket_close,
     db_referral_create, db_referral_list, db_is_first_purchase,
@@ -1347,30 +1348,40 @@ async def handle_confirm_order(update: Update, context: CallbackContext):
                 pass
         return
 
-    saldo_user = db_get_saldo(query.from_user.id)
-    nama_tipe  = tipe_obj.get("nama", "")
-    msg_text   = (
+    saldo_user  = db_get_saldo(query.from_user.id)
+    nama_tipe   = tipe_obj.get("nama", "")
+    voucher_kode = context.user_data.get("voucher_kode", "")
+    diskon_vc    = context.user_data.get("voucher_diskon", 0)
+    total_bayar  = max(0, total - diskon_vc)
+
+    vc_line = ""
+    if voucher_kode and diskon_vc:
+        vc_line = f"\n🏷 Voucher `{voucher_kode}`: -Rp{diskon_vc:,}"
+
+    msg_text = (
         f"💳 *Pilih metode pembayaran*\n\n"
         f"📦 {item['nama']} [{nama_tipe}] x{jumlah}\n"
-        f"💸 Total: *Rp{total:,}*\n"
+        f"💸 Total: *Rp{total_bayar:,}*" + vc_line + f"\n"
         f"💰 Saldo kamu: Rp{saldo_user:,}"
     )
 
-    # Pilih metode pembayaran
     if _qris_available():
         kb = []
-        if saldo_user >= total:
+        if saldo_user >= total_bayar:
             kb.append([_ikb(
                 f"💰 Bayar dengan Saldo (Rp{saldo_user:,})", "💰", "success",
                 callback_data="confirm_saldo"
             )])
         kb.append([_ikb("💳 Bayar via QRIS (Otomatis)", "💳", "primary", callback_data="beli_qris")])
-        if saldo_user < total:
+        if saldo_user < total_bayar:
             kb.append([_ikb("💰 Top Up Saldo dulu", "💰", "primary", callback_data="deposit")])
+        if voucher_kode:
+            kb.append([_ikb("🔄 Ganti Voucher", "🔄", "primary", callback_data="voucher_input")])
+        else:
+            kb.append([_ikb("🏷 Masukkan Voucher (opsional)", "🏷", "primary", callback_data="voucher_input")])
         kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="list_produk")])
         await safe_edit(query, context, msg_text, reply_markup=InlineKeyboardMarkup(kb))
     else:
-        # QRIS tidak tersedia — langsung proses dengan saldo
         await _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total, saldo_user)
 
 
@@ -1392,13 +1403,28 @@ async def handle_confirm_saldo(update: Update, context: CallbackContext):
             pass
         return
     jumlah     = info["jumlah"]
-    total      = jumlah * tipe_obj.get("harga", 0)
+    harga_satuan = tipe_obj.get("harga", 0)
+    total      = jumlah * harga_satuan
     saldo_user = db_get_saldo(query.from_user.id)
 
-    await _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total, saldo_user)
+    # Terapkan voucher jika ada
+    voucher_kode = context.user_data.pop("voucher_kode", "")
+    diskon_vc    = context.user_data.pop("voucher_diskon", 0)
+    uid_str      = str(query.from_user.id)
+    if voucher_kode and diskon_vc:
+        v_check = db_use_voucher(voucher_kode, uid_str)
+        if isinstance(v_check, int):
+            total = max(0, total - v_check)
+        else:
+            voucher_kode = ""
+            diskon_vc    = 0
+
+    await _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total, saldo_user,
+                             voucher_kode=voucher_kode, diskon_vc=diskon_vc)
 
 
-async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total, saldo_user):
+async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total, saldo_user,
+                             voucher_kode: str = "", diskon_vc: int = 0):
     """Logika inti pembelian menggunakan saldo — dipanggil setelah metode dipilih."""
     uid       = str(query.from_user.id)
     produk_id = info["produk_id"]
@@ -1440,7 +1466,8 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
             tipe_now["stok"] = len(tipe_now["akun_list"])
             save_produk(produk)
         nama_tipe = tipe_obj.get("nama", "")
-        trx_id = db_add_riwayat(uid, "BELI", f"{item['nama']} [{nama_tipe}] x{jumlah}", total)
+        ket_vc = f" [Voucher -{diskon_vc:,}]" if diskon_vc else ""
+        trx_id = db_add_riwayat(uid, "BELI", f"{item['nama']} [{nama_tipe}] x{jumlah}{ket_vc}", total)
 
         os.makedirs("akun_dikirim", exist_ok=True)
         stamp     = int(time.time())
@@ -1457,6 +1484,7 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
     text_akun = (
         f"✅ *Pembelian Berhasil!*\n\n"
         f"📦 {item['nama']} [{nama_tipe}] x{jumlah}\n"
+        + (f"🏷 Diskon Voucher: -Rp{diskon_vc:,}\n" if diskon_vc else "") +
         f"💸 Dipotong: Rp{total:,}\n"
         f"💰 Sisa saldo: Rp{new_saldo:,}\n"
         f"🔖 ID Transaksi: `{trx_id}`\n"
@@ -1532,19 +1560,6 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
                         f"🎉 Ada bonus referral *Rp{bonus:,}* menunggu konfirmasi admin.")
     except Exception:
         pass
-
-    # F7: Kirim request rating 5 menit setelah pembelian
-    if context.application.job_queue is not None:
-        try:
-            context.application.job_queue.run_once(
-                _send_rating_request,
-                when=300,
-                data={"user_id": query.from_user.id, "trx_id": trx_id,
-                      "produk": f"{item['nama']} [{nama_tipe}]"},
-                name=f"rating_{query.from_user.id}"
-            )
-        except Exception:
-            pass
 
     await send_main_menu(context, query.from_user.id, query.from_user)
 
@@ -2135,10 +2150,13 @@ async def handle_admin_panel(update: Update, context: CallbackContext):
         text += "  _Tidak ada._\n"
 
     keyboard = [
-        [_ikb("📦 Kelola Produk",   "📦", "success", callback_data="admin_kelola_produk")],
-        [_ikb("⚙️ Pengaturan Bot",  "⚙",  "primary", callback_data="admin_settings")],
-        [_ikb("📢 Broadcast",        "📢", "primary", callback_data="admin_broadcast")],
-        [_ikb("🔙 Kembali ke Menu",  "🔙", "danger",  callback_data="back_to_menu")],
+        [_ikb("📦 Kelola Produk",    "📦", "success", callback_data="admin_kelola_produk"),
+         _ikb("📊 Rekap & Statistik","📊", "primary", callback_data="admin_rekap")],
+        [_ikb("👥 Kelola User",      "👥", "primary", callback_data="admin_kelola_user"),
+         _ikb("🎟 Kelola Voucher",   "🎟", "primary", callback_data="admin_kelola_voucher")],
+        [_ikb("⚙️ Pengaturan Bot",   "⚙",  "primary", callback_data="admin_settings")],
+        [_ikb("📢 Broadcast",         "📢", "primary", callback_data="admin_broadcast")],
+        [_ikb("🔙 Kembali ke Menu",   "🔙", "danger",  callback_data="back_to_menu")],
     ]
     await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -2162,14 +2180,17 @@ async def handle_admin_kelola_produk(update: Update, context: CallbackContext):
             lines.append(f"  ↳ {t['nama']}: {stok_t} stok | Rp{harga_t:,}")
     text = f"*📦 KELOLA PRODUK*\n\n" + ("\n".join(lines) or "_Belum ada produk._")
     keyboard = [
-        [_ikb("➕ Tambah Produk",   "➕", "success", callback_data="admin_add_produk"),
-         _ikb("➕ Tambah Tipe",     "➕", "success", callback_data="admin_add_tipe")],
-        [_ikb("📦 Restock",          "📦", "primary", callback_data="admin_restock_produk"),
-         _ikb("💰 Ubah Harga",       "💰", "primary", callback_data="admin_ubah_harga_tipe")],
-        [_ikb("📝 Deskripsi Tipe",   "📝", "primary", callback_data="admin_edit_tipe_desc"),
-         _ikb("🗑 Hapus Tipe",       "🗑", "danger",  callback_data="admin_hapus_tipe")],
-        [_ikb("🗑 Hapus Produk",     "🗑", "danger",  callback_data="admin_hapus_produk")],
-        [_ikb("🔙 Kembali",          "🔙", "danger",  callback_data="admin_panel")],
+        [_ikb("➕ Tambah Produk",    "➕", "success", callback_data="admin_add_produk"),
+         _ikb("➕ Tambah Tipe",      "➕", "success", callback_data="admin_add_tipe")],
+        [_ikb("📦 Restock",           "📦", "primary", callback_data="admin_restock_produk"),
+         _ikb("💰 Ubah Harga",        "💰", "primary", callback_data="admin_ubah_harga_tipe")],
+        [_ikb("✏️ Rename Produk",     "✏",  "primary", callback_data="admin_rename_produk"),
+         _ikb("✏️ Rename Tipe",       "✏",  "primary", callback_data="admin_rename_tipe")],
+        [_ikb("📝 Deskripsi Tipe",    "📝", "primary", callback_data="admin_edit_tipe_desc"),
+         _ikb("🗑 Hapus Tipe",        "🗑", "danger",  callback_data="admin_hapus_tipe")],
+        [_ikb("🗑 Hapus Akun (1x1)",  "🗑", "danger",  callback_data="admin_hapus_akun"),
+         _ikb("🗑 Hapus Produk",      "🗑", "danger",  callback_data="admin_hapus_produk")],
+        [_ikb("🔙 Kembali",           "🔙", "danger",  callback_data="admin_panel")],
     ]
     await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -2615,11 +2636,14 @@ async def handle_admin_settings(update: Update, context: CallbackContext):
     )
     qris_status = "✅ Aktif via env var" if QRIS_BASE64 else ("✅ Ada (gambar)" if os.path.exists(qris_file) else "❌ Belum diatur")
     text += f"\n\n🔳 *QRIS*: {qris_status}"
+    maint = cfg.get("maintenance", False)
+    maint_label = "🔴 Maintenance: ON  — Nonaktifkan" if maint else "🟢 Maintenance: OFF — Aktifkan"
     keyboard = [
         [_ikb("✏️ Ubah Nama Toko",   "✏",  "primary", callback_data="admin_ubah_nama")],
         [_ikb("🏦 Ubah Rekening",     "🏦", "primary", callback_data="admin_ubah_rekening")],
         [_ikb("📞 Ubah Kontak Admin", "📞", "primary", callback_data="admin_ubah_kontak")],
         [_ikb("🌐 Ubah Website URL",  "🌐", "primary", callback_data="admin_ubah_website")],
+        [_ikb(maint_label,            "🔧", "danger" if maint else "primary", callback_data="admin_toggle_maintenance")],
         [_ikb("🔙 Kembali",           "🔙", "danger",  callback_data="admin_panel")],
     ]
     await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -2861,6 +2885,7 @@ async def handle_info_bot(update: Update, context: CallbackContext):
     if kontak:
         tg = kontak.lstrip("@")
         kb_rows.append([_ikb("👤 Hubungi Admin ↗", "👤", "primary", url=f"https://t.me/{tg}")])
+    kb_rows.append([_ikb("🎫 Buat Tiket Support", "🎫", "primary", callback_data="buat_tiket")])
     kb_rows.append([_ikb("🔥 Kembali ke Menu", "🔥", "danger", callback_data="back_to_menu")])
     markup = InlineKeyboardMarkup(kb_rows)
     await query.answer()
@@ -2912,6 +2937,259 @@ async def _broadcast_ask_message(query, context: CallbackContext, convert: bool)
     )
 
 
+# ─── VOUCHER INPUT (di konfirmasi pesanan) ───────────────────────────────────
+
+async def handle_voucher_input(update: Update, context: CallbackContext):
+    """Tombol Masukkan Voucher di konfirmasi pesanan — minta input kode."""
+    query = update.callback_query
+    context.user_data["admin_state"] = "voucher_input"
+    await query.message.delete()
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text="🏷 *Masukkan Kode Voucher*\n\nKetik kode voucher kamu:",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
+    )
+
+
+# ─── TIKET SUPPORT (tombol di Bantuan) ───────────────────────────────────────
+
+async def handle_buat_tiket(update: Update, context: CallbackContext):
+    """Tombol Buat Tiket di menu Bantuan."""
+    query = update.callback_query
+    context.user_data["admin_state"] = "tiket_input"
+    await query.message.delete()
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text=(
+            "🎫 *Buat Tiket Support*\n\n"
+            "Ketik pesan/keluhan kamu, admin akan segera merespons.\n\n"
+            "_(Kirim ❌ Batal untuk membatalkan)_"
+        ),
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
+    )
+
+
+# ─── ADMIN: REKAP & STATISTIK ────────────────────────────────────────────────
+
+async def handle_admin_rekap(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    rekap  = db_get_rekap_penjualan()
+    b      = rekap["beli"]
+    d      = rekap["deposit"]
+    produk = load_produk()
+    stats  = db_get_all_statistik()
+    text = (
+        f"📊 *REKAP & STATISTIK*\n"
+        f"_{rekap['bulan']} | {rekap['tanggal']}_\n\n"
+        f"🛒 *PENJUALAN*\n"
+        f"• Hari ini : *{b['hari_ini']['count']}x* — Rp{b['hari_ini']['total']:,}\n"
+        f"• Bulan ini: *{b['bulan_ini']['count']}x* — Rp{b['bulan_ini']['total']:,}\n"
+        f"• Semua    : *{b['semua']['count']}x* — Rp{b['semua']['total']:,}\n\n"
+        f"💰 *DEPOSIT*\n"
+        f"• Hari ini : *{d['hari_ini']['count']}x* — Rp{d['hari_ini']['total']:,}\n"
+        f"• Bulan ini: *{d['bulan_ini']['count']}x* — Rp{d['bulan_ini']['total']:,}\n"
+        f"• Semua    : *{d['semua']['count']}x* — Rp{d['semua']['total']:,}\n\n"
+        f"📦 *STOK PRODUK*\n"
+    )
+    for pid, item in produk.items():
+        total_stok = sum(len(t.get("akun_list", [])) for t in item.get("tipe", {}).values())
+        icon = "🟢" if total_stok > 0 else "🔴"
+        text += f"  {icon} {item['nama']}: *{total_stok}* stok\n"
+    kb = [[_ikb("🔙 Kembali", "🔙", "danger", callback_data="admin_panel")]]
+    await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(kb))
+
+
+# ─── ADMIN: KELOLA USER ───────────────────────────────────────────────────────
+
+async def handle_admin_kelola_user(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    users  = db_get_all_bot_users()
+    saldo  = db_get_all_saldo()
+    stats  = db_get_all_statistik()
+    total  = len(users)
+    text   = f"👥 *KELOLA USER* ({total} terdaftar)\n\n"
+    for u in users[:25]:
+        tid = str(u["telegram_id"])
+        s   = saldo.get(tid, 0)
+        j   = stats.get(tid, {}).get("jumlah", 0)
+        un  = f"@{u['username']}" if u.get("username") else f"`{tid}`"
+        text += f"• {un} — 💰Rp{s:,} | 🛒{j}x\n"
+    if total > 25:
+        text += f"\n_...dan {total - 25} user lainnya_"
+    kb = [
+        [_ikb("📨 Kirim DM ke User", "📨", "primary", callback_data="admin_dm_start")],
+        [_ikb("🔙 Kembali",          "🔙", "danger",  callback_data="admin_panel")],
+    ]
+    await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def handle_admin_dm_start(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    context.user_data["admin_state"] = "admin_dm_id"
+    await query.message.delete()
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text="📨 *Kirim DM ke User*\n\nKetik *Telegram ID* user tujuan:",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
+    )
+
+
+# ─── ADMIN: KELOLA VOUCHER ────────────────────────────────────────────────────
+
+async def handle_admin_kelola_voucher(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    vouchers = db_get_all_vouchers()
+    text = "*🎟 KELOLA VOUCHER*\n\n"
+    if vouchers:
+        for v in vouchers:
+            status = "✅" if v.get("aktif", True) else "❌"
+            text += (
+                f"{status} `{v['kode']}` — Rp{v['nominal']:,} "
+                f"(sisa: {v.get('max_pakai',1) - v.get('used',0)}x)\n"
+            )
+    else:
+        text += "_Belum ada voucher._\n"
+    kb = [
+        [_ikb("➕ Buat Voucher Baru",   "➕", "success", callback_data="admin_add_voucher")],
+        [_ikb("🔄 Toggle ON/OFF",        "🔄", "primary", callback_data="admin_toggle_voucher")],
+        [_ikb("🗑 Hapus Voucher",         "🗑", "danger",  callback_data="admin_hapus_voucher")],
+        [_ikb("🔙 Kembali",              "🔙", "danger",  callback_data="admin_panel")],
+    ]
+    await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def handle_admin_add_voucher(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    context.user_data["admin_state"] = "add_voucher_kode"
+    await query.message.delete()
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text="🎟 *Buat Voucher Baru*\n\nKetik *kode* voucher (huruf besar, contoh: `PROMO2025`):",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
+    )
+
+
+async def handle_admin_toggle_voucher_start(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    context.user_data["admin_state"] = "toggle_voucher_kode"
+    await query.message.delete()
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text="🔄 *Toggle Voucher ON/OFF*\n\nKetik kode voucher yang ingin di-toggle:",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
+    )
+
+
+async def handle_admin_hapus_voucher_start(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    context.user_data["admin_state"] = "hapus_voucher_kode"
+    await query.message.delete()
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text="🗑 *Hapus Voucher*\n\nKetik kode voucher yang ingin dihapus:",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
+    )
+
+
+# ─── ADMIN: RENAME PRODUK / TIPE ─────────────────────────────────────────────
+
+async def handle_admin_rename_produk(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    produk = load_produk()
+    if not produk:
+        await query.answer("Belum ada produk!", show_alert=True)
+        return
+    kb = [[_ikb(f"{item['nama']} (ID:{pid})", "", "primary",
+                callback_data=f"rename_produk_sel_{pid}")]
+          for pid, item in produk.items()]
+    kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="admin_kelola_produk")])
+    await safe_edit(query, context, "✏️ *Rename Produk*\n\nPilih produk:",
+                    reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def handle_admin_rename_tipe(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    produk = load_produk()
+    if not produk:
+        await query.answer("Belum ada produk!", show_alert=True)
+        return
+    kb = [[_ikb(f"{item['nama']} (ID:{pid})", "", "primary",
+                callback_data=f"rename_tipe_pid_{pid}")]
+          for pid, item in produk.items()]
+    kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="admin_kelola_produk")])
+    await safe_edit(query, context, "✏️ *Rename Tipe*\n\nPilih produk:",
+                    reply_markup=InlineKeyboardMarkup(kb))
+
+
+# ─── ADMIN: HAPUS AKUN SATU PER SATU ─────────────────────────────────────────
+
+async def handle_admin_hapus_akun(update: Update, context: CallbackContext):
+    """Pilih produk untuk hapus akun satu per satu."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    produk = load_produk()
+    if not produk:
+        await query.answer("Belum ada produk!", show_alert=True)
+        return
+    kb = [[_ikb(f"{item['nama']} (ID:{pid})", "", "primary",
+                callback_data=f"hapus_akun_pid_{pid}")]
+          for pid, item in produk.items()]
+    kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="admin_kelola_produk")])
+    await safe_edit(query, context, "🗑 *Hapus Akun Stok*\n\nPilih produk:",
+                    reply_markup=InlineKeyboardMarkup(kb))
+
+
+# ─── ADMIN: MAINTENANCE MODE ──────────────────────────────────────────────────
+
+async def handle_admin_toggle_maintenance(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    cfg = load_config()
+    maint = not cfg.get("maintenance", False)
+    cfg["maintenance"] = maint
+    save_config(cfg)
+    status = "🔴 AKTIF" if maint else "🟢 NONAKTIF"
+    await query.answer(f"Maintenance mode {status}", show_alert=True)
+    await handle_admin_settings(update, context)
+
+
 async def handle_broadcast_yes(update: Update, context: CallbackContext):
     query = update.callback_query
     if not is_admin(query.from_user.id):
@@ -2928,106 +3206,66 @@ async def handle_broadcast_no(update: Update, context: CallbackContext):
     await _broadcast_ask_message(query, context, convert=False)
 
 
-# ─── RATING: Request & Handler ───────────────────────────────────────────────
-
-async def _send_rating_request(context: CallbackContext):
-    """Job: kirim request rating ke user 5 menit setelah pembelian."""
-    try:
-        data     = context.job.data
-        user_id  = data["user_id"]
-        trx_id   = data["trx_id"]
-        produk   = data["produk"]
-        stars_kb = [
-            [
-                _ikb("⭐ 1", "⭐", "danger",    callback_data=f"rate_1_{trx_id}"),
-                _ikb("⭐ 2", "⭐", "primary",  callback_data=f"rate_2_{trx_id}"),
-                _ikb("⭐ 3", "⭐", "primary",  callback_data=f"rate_3_{trx_id}"),
-                _ikb("⭐ 4", "⭐", "primary",   callback_data=f"rate_4_{trx_id}"),
-                _ikb("⭐ 5", "⭐", "success",   callback_data=f"rate_5_{trx_id}"),
-            ]
-        ]
-        await _send_pe(
-            context.bot, user_id,
-            f"⭐ *Gimana produknya?*\n"
-            f"_{produk}_\n\n"
-            "Beri rating 1–5 untuk membantu kami meningkatkan layanan:",
-            reply_markup=InlineKeyboardMarkup(stars_kb)
-        )
-    except Exception as e:
-        log.warning(f"Rating request error: {e}")
-
-
-async def handle_rate(update: Update, context: CallbackContext):
-    """Callback rate_N_TRXID — simpan rating user."""
-    query = update.callback_query
-    parts = query.data.split("_", 2)   # ["rate", "5", "TRX001"]
-    if len(parts) < 3:
-        await query.answer("❌ Data tidak valid", show_alert=True)
-        return
-    bintang = int(parts[1])
-    trx_id  = parts[2]
-    uid     = str(query.from_user.id)
-    riwayat = db_get_riwayat(query.from_user.id, 50)
-    produk_name = next(
-        (r["keterangan"] for r in riwayat if r.get("trx_id") == trx_id),
-        "Produk"
-    )
-    try:
-        db_add_rating(uid, trx_id, produk_name, bintang)
-        stars = "⭐" * bintang
-        await query.answer(f"{stars} Terima kasih!", show_alert=False)
-        await query.edit_message_text(
-            f"✅ *Rating {stars} berhasil dikirim!*\nTerima kasih sudah berbelanja 🙏"
-        )
-    except Exception as e:
-        await query.answer("❌ Gagal simpan rating", show_alert=True)
-        log.warning(f"handle_rate error: {e}")
 
 
 # ─── ROUTING CALLBACK ─────────────────────────────────────────────────────────
 
 CALLBACK_MAP = {
-    "list_produk":            handle_list_produk,
-    "cek_stok":               handle_cek_stok,
-    "info_bot":               handle_info_bot,
-    "deposit":                handle_deposit,
-    "deposit_custom":         handle_deposit_nominal,
-    "cancel_deposit":         handle_cancel_deposit,
-    "admin_panel":            handle_admin_panel,
-    "admin_kelola_produk":    handle_admin_kelola_produk,
-    "admin_add_produk":       handle_admin_add_produk,
-    "admin_restock_produk":   handle_admin_restock_produk,
-    "admin_hapus_produk":     handle_admin_hapus_produk,
-    "admin_settings":         handle_admin_settings,
-    "admin_ubah_nama":        handle_admin_ubah_nama,
-    "admin_ubah_rekening":    handle_admin_ubah_rekening,
-    "admin_ubah_kontak":      handle_admin_ubah_kontak,
-    "admin_ubah_website":     handle_admin_ubah_website,
-    "admin_upload_qris":      handle_admin_upload_qris,
-    "admin_broadcast":        handle_admin_broadcast,
-    "broadcast_yes":          handle_broadcast_yes,
-    "broadcast_no":           handle_broadcast_no,
-    "deposit_qris":           handle_deposit_qris,
-    "qris_dep_custom":        handle_qris_dep_nominal,
-    "beli_qris":              handle_beli_qris,
-    "cek_mutasi":             handle_cek_mutasi,
-    "qty_plus":               handle_qty_plus,
-    "qty_minus":              handle_qty_minus,
-    "confirm_order":          handle_confirm_order,
-    "confirm_saldo":          handle_confirm_saldo,
-    "back":                   handle_back,
-    "back_to_produk":         handle_back_to_produk,
-    "back_to_menu":           handle_back_to_menu,
-    "riwayat_user":           handle_riwayat_user,
-    "riwayat_beli":           handle_riwayat_beli,
-    "riwayat_deposit":        handle_riwayat_deposit,
-    "ignore":                 handle_ignore,
-    "file_txt_ya":            handle_file_txt_ya,
-    "file_txt_tidak":         handle_file_txt_tidak,
-    "admin_edit_tipe_desc":   handle_admin_edit_tipe_desc,
-    "admin_add_tipe":         handle_admin_add_tipe,
-    "admin_ubah_harga_tipe":  handle_admin_ubah_harga_tipe,
-    "admin_hapus_tipe":       handle_admin_hapus_tipe,
+    "list_produk":              handle_list_produk,
+    "cek_stok":                 handle_cek_stok,
+    "info_bot":                 handle_info_bot,
+    "deposit":                  handle_deposit,
+    "deposit_custom":           handle_deposit_nominal,
+    "cancel_deposit":           handle_cancel_deposit,
+    "admin_panel":              handle_admin_panel,
+    "admin_kelola_produk":      handle_admin_kelola_produk,
+    "admin_add_produk":         handle_admin_add_produk,
+    "admin_restock_produk":     handle_admin_restock_produk,
+    "admin_hapus_produk":       handle_admin_hapus_produk,
+    "admin_settings":           handle_admin_settings,
+    "admin_ubah_nama":          handle_admin_ubah_nama,
+    "admin_ubah_rekening":      handle_admin_ubah_rekening,
+    "admin_ubah_kontak":        handle_admin_ubah_kontak,
+    "admin_ubah_website":       handle_admin_ubah_website,
+    "admin_upload_qris":        handle_admin_upload_qris,
+    "admin_broadcast":          handle_admin_broadcast,
+    "broadcast_yes":            handle_broadcast_yes,
+    "broadcast_no":             handle_broadcast_no,
+    "deposit_qris":             handle_deposit_qris,
+    "qris_dep_custom":          handle_qris_dep_nominal,
+    "beli_qris":                handle_beli_qris,
+    "cek_mutasi":               handle_cek_mutasi,
+    "qty_plus":                 handle_qty_plus,
+    "qty_minus":                handle_qty_minus,
+    "confirm_order":            handle_confirm_order,
+    "confirm_saldo":            handle_confirm_saldo,
+    "back":                     handle_back,
+    "back_to_produk":           handle_back_to_produk,
+    "back_to_menu":             handle_back_to_menu,
+    "riwayat_user":             handle_riwayat_user,
+    "riwayat_beli":             handle_riwayat_beli,
+    "riwayat_deposit":          handle_riwayat_deposit,
+    "ignore":                   handle_ignore,
+    "file_txt_ya":              handle_file_txt_ya,
+    "file_txt_tidak":           handle_file_txt_tidak,
+    "admin_edit_tipe_desc":     handle_admin_edit_tipe_desc,
+    "admin_add_tipe":           handle_admin_add_tipe,
+    "admin_ubah_harga_tipe":    handle_admin_ubah_harga_tipe,
+    "admin_hapus_tipe":         handle_admin_hapus_tipe,
+    # ── Baru ──
+    "voucher_input":            handle_voucher_input,
+    "buat_tiket":               handle_buat_tiket,
+    "admin_rekap":              handle_admin_rekap,
+    "admin_kelola_user":        handle_admin_kelola_user,
+    "admin_dm_start":           handle_admin_dm_start,
+    "admin_kelola_voucher":     handle_admin_kelola_voucher,
+    "admin_add_voucher":        handle_admin_add_voucher,
+    "admin_toggle_voucher":     handle_admin_toggle_voucher_start,
+    "admin_hapus_voucher":      handle_admin_hapus_voucher_start,
+    "admin_rename_produk":      handle_admin_rename_produk,
+    "admin_rename_tipe":        handle_admin_rename_tipe,
+    "admin_hapus_akun":         handle_admin_hapus_akun,
+    "admin_toggle_maintenance": handle_admin_toggle_maintenance,
 }
 
 
@@ -3076,12 +3314,117 @@ async def button_callback(update: Update, context: CallbackContext):
         await handle_htipe_tid(update, context)
     elif data.startswith("htipe_ok_"):
         await handle_htipe_ok(update, context)
+    elif data.startswith("rename_produk_sel_"):
+        pid = data.replace("rename_produk_sel_", "")
+        context.user_data["rename_produk_pid"] = pid
+        context.user_data["admin_state"] = "rename_produk_input"
+        produk = load_produk()
+        nama_lama = produk.get(pid, {}).get("nama", pid)
+        await query.message.delete()
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text=f"✏️ *Rename Produk*\n\nNama saat ini: *{nama_lama}*\n\nKetik nama baru:",
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
+        )
+    elif data.startswith("rename_tipe_pid_"):
+        pid = data.replace("rename_tipe_pid_", "")
+        produk = load_produk()
+        item = produk.get(pid)
+        if not item:
+            await query.answer("Produk tidak ditemukan!", show_alert=True)
+            return
+        kb = [[_ikb(f"{t['nama']} (ID:{tid})", "", "primary",
+                    callback_data=f"rename_tipe_tid_{pid}_{tid}")]
+              for tid, t in item.get("tipe", {}).items()]
+        kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="admin_rename_tipe")])
+        await safe_edit(query, context, f"✏️ *Rename Tipe — {item['nama']}*\n\nPilih tipe:",
+                        reply_markup=InlineKeyboardMarkup(kb))
+    elif data.startswith("rename_tipe_tid_"):
+        parts = data.replace("rename_tipe_tid_", "").split("_", 1)
+        if len(parts) == 2:
+            pid, tid = parts
+            context.user_data["rename_tipe_pid"] = pid
+            context.user_data["rename_tipe_tid"] = tid
+            context.user_data["admin_state"] = "rename_tipe_input"
+            produk = load_produk()
+            nama_lama = produk.get(pid, {}).get("tipe", {}).get(tid, {}).get("nama", tid)
+            await query.message.delete()
+            await context.bot.send_message(
+                chat_id=query.from_user.id,
+                text=f"✏️ *Rename Tipe*\n\nNama saat ini: *{nama_lama}*\n\nKetik nama baru:",
+                parse_mode="Markdown",
+                reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
+            )
+    elif data.startswith("hapus_akun_pid_"):
+        pid = data.replace("hapus_akun_pid_", "")
+        produk = load_produk()
+        item = produk.get(pid)
+        if not item:
+            await query.answer("Produk tidak ditemukan!", show_alert=True)
+            return
+        kb = [[_ikb(f"{t['nama']} ({len(t.get('akun_list',[]))} akun)", "", "primary",
+                    callback_data=f"hapus_akun_tipe_{pid}_{tid}")]
+              for tid, t in item.get("tipe", {}).items() if t.get("akun_list")]
+        if not kb:
+            await query.answer("Tidak ada akun untuk dihapus!", show_alert=True)
+            return
+        kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="admin_hapus_akun")])
+        await safe_edit(query, context, f"🗑 *Hapus Akun — {item['nama']}*\n\nPilih tipe:",
+                        reply_markup=InlineKeyboardMarkup(kb))
+    elif data.startswith("hapus_akun_tipe_"):
+        parts = data.replace("hapus_akun_tipe_", "").split("_", 1)
+        if len(parts) == 2:
+            pid, tid = parts
+            produk = load_produk()
+            item = produk.get(pid)
+            tipe = item.get("tipe", {}).get(tid) if item else None
+            if not tipe or not tipe.get("akun_list"):
+                await query.answer("Tidak ada akun!", show_alert=True)
+                return
+            akun_list = tipe["akun_list"]
+            lines = []
+            for i, a in enumerate(akun_list[:20]):
+                lines.append(f"`{i}` — {a.get('username','')}")
+            text = f"🗑 *Pilih akun yang dihapus — {tipe['nama']}*\n\n" + "\n".join(lines)
+            if len(akun_list) > 20:
+                text += f"\n_...dan {len(akun_list)-20} lainnya_"
+            kb = [[_ikb(f"[{i}] {a.get('username','')[:20]}", "", "danger",
+                        callback_data=f"hapus_akun_idx_{pid}_{tid}_{i}")]
+                  for i, a in enumerate(akun_list[:20])]
+            kb.append([_ikb("🔙 Kembali", "🔙", "danger",
+                            callback_data=f"hapus_akun_pid_{pid}")])
+            await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(kb))
+    elif data.startswith("hapus_akun_idx_"):
+        parts = data.replace("hapus_akun_idx_", "").split("_", 2)
+        if len(parts) == 3:
+            pid, tid, idx_str = parts
+            try:
+                idx = int(idx_str)
+            except ValueError:
+                await query.answer("Index tidak valid!", show_alert=True)
+                return
+            produk = load_produk()
+            item = produk.get(pid)
+            tipe = item.get("tipe", {}).get(tid) if item else None
+            if not tipe or idx >= len(tipe.get("akun_list", [])):
+                await query.answer("Akun tidak ditemukan!", show_alert=True)
+                return
+            akun = tipe["akun_list"].pop(idx)
+            tipe["stok"] = len(tipe["akun_list"])
+            save_produk(produk)
+            await query.answer(f"✅ Akun {akun.get('username','')} dihapus!", show_alert=True)
+            await safe_edit(query, context,
+                            f"✅ Akun *{akun.get('username','')}* berhasil dihapus dari *{tipe['nama']}*.\n"
+                            f"Sisa stok: {tipe['stok']}",
+                            reply_markup=InlineKeyboardMarkup(
+                                [[_ikb("🔙 Kembali ke Kelola Produk", "🔙", "danger",
+                                       callback_data="admin_kelola_produk")]]
+                            ))
     elif data.startswith("dep_manual_") or data.startswith("dep_qris_"):
         await handle_dep_metode(update, context)
     elif data.startswith("qris_dep_"):
         await handle_qris_dep_nominal(update, context)
-    elif data.startswith("rate_"):
-        await handle_rate(update, context)
     elif data.startswith("confirm:"):
         await handle_admin_confirm(update, context)
     elif data.startswith("final:"):
@@ -3194,6 +3537,136 @@ async def handle_text(update: Update, context: CallbackContext):
             )
             await send_main_menu_safe(update, context)
             return
+        if admin_state == "admin_dm_id":
+            try:
+                tgt = int(text.strip())
+            except ValueError:
+                await update.message.reply_text("❌ ID tidak valid. Ketik angka Telegram ID:")
+                return
+            context.user_data["admin_dm_target"] = tgt
+            context.user_data["admin_state"]     = "admin_dm_msg"
+            await update.message.reply_text(f"📨 Kirim ke ID `{tgt}`.\n\nKetik pesan:", parse_mode="Markdown")
+            return
+
+        if admin_state == "admin_dm_msg":
+            tgt = context.user_data.pop("admin_dm_target", None)
+            context.user_data.pop("admin_state", None)
+            if not tgt:
+                await update.message.reply_text("❌ Sesi tidak valid.", reply_markup=ReplyKeyboardRemove())
+                return
+            try:
+                await context.bot.send_message(chat_id=tgt, text=text)
+                await update.message.reply_text(f"✅ Pesan terkirim ke `{tgt}`.", parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
+            except Exception as e:
+                await update.message.reply_text(f"❌ Gagal kirim: {e}", reply_markup=ReplyKeyboardRemove())
+            await send_main_menu_safe(update, context)
+            return
+
+        if admin_state == "add_voucher_kode":
+            kode = text.strip().upper()
+            if not kode or len(kode) < 3:
+                await update.message.reply_text("❌ Kode terlalu pendek. Minimal 3 karakter:")
+                return
+            context.user_data["new_voucher_kode"] = kode
+            context.user_data["admin_state"]      = "add_voucher_nominal"
+            await update.message.reply_text(f"✅ Kode: *{kode}*\n\nKetik *nominal* diskon (angka, contoh: `25000`):", parse_mode="Markdown")
+            return
+
+        if admin_state == "add_voucher_nominal":
+            try:
+                nominal = int(text.strip().replace(".", "").replace(",", ""))
+                if nominal <= 0:
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text("❌ Nominal tidak valid. Ketik angka positif:")
+                return
+            context.user_data["new_voucher_nominal"] = nominal
+            context.user_data["admin_state"]         = "add_voucher_max"
+            await update.message.reply_text(f"💰 Nominal: *Rp{nominal:,}*\n\nKetik *max pemakaian* (contoh: `100`):", parse_mode="Markdown")
+            return
+
+        if admin_state == "add_voucher_max":
+            try:
+                max_uses = int(text.strip())
+                if max_uses <= 0:
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text("❌ Tidak valid. Ketik angka positif:")
+                return
+            kode    = context.user_data.pop("new_voucher_kode", "")
+            nominal = context.user_data.pop("new_voucher_nominal", 0)
+            context.user_data.pop("admin_state", None)
+            ok = db_add_voucher(kode, nominal, max_uses)
+            if ok:
+                await update.message.reply_text(
+                    f"✅ *Voucher dibuat!*\n🏷 `{kode}` | Rp{nominal:,} | Max {max_uses}x",
+                    parse_mode="Markdown", reply_markup=ReplyKeyboardRemove()
+                )
+            else:
+                await update.message.reply_text("❌ Kode sudah ada.", reply_markup=ReplyKeyboardRemove())
+            await send_main_menu_safe(update, context)
+            return
+
+        if admin_state == "toggle_voucher_kode":
+            kode = text.strip().upper()
+            context.user_data.pop("admin_state", None)
+            ok = db_toggle_voucher(kode)
+            msg = f"✅ Voucher `{kode}` di-toggle." if ok else f"❌ Voucher `{kode}` tidak ditemukan."
+            await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
+            await send_main_menu_safe(update, context)
+            return
+
+        if admin_state == "hapus_voucher_kode":
+            kode = text.strip().upper()
+            context.user_data.pop("admin_state", None)
+            db_delete_voucher(kode)
+            await update.message.reply_text(f"🗑 Voucher `{kode}` dihapus.", parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
+            await send_main_menu_safe(update, context)
+            return
+
+        if admin_state == "rename_produk_input":
+            pid = context.user_data.pop("rename_produk_pid", None)
+            context.user_data.pop("admin_state", None)
+            nama_baru = text.strip()
+            if not pid or len(nama_baru) < 2:
+                await update.message.reply_text("❌ Nama tidak valid.", reply_markup=ReplyKeyboardRemove())
+                return
+            produk = load_produk()
+            if pid not in produk:
+                await update.message.reply_text("❌ Produk tidak ditemukan.", reply_markup=ReplyKeyboardRemove())
+                return
+            nama_lama = produk[pid]["nama"]
+            produk[pid]["nama"] = nama_baru
+            save_produk(produk)
+            await update.message.reply_text(
+                f"✅ Produk direname: *{nama_lama}* → *{nama_baru}*",
+                parse_mode="Markdown", reply_markup=ReplyKeyboardRemove()
+            )
+            await send_main_menu_safe(update, context)
+            return
+
+        if admin_state == "rename_tipe_input":
+            pid = context.user_data.pop("rename_tipe_pid", None)
+            tid = context.user_data.pop("rename_tipe_tid", None)
+            context.user_data.pop("admin_state", None)
+            nama_baru = text.strip()
+            if not pid or not tid or len(nama_baru) < 1:
+                await update.message.reply_text("❌ Input tidak valid.", reply_markup=ReplyKeyboardRemove())
+                return
+            produk = load_produk()
+            if pid not in produk or tid not in produk[pid].get("tipe", {}):
+                await update.message.reply_text("❌ Tipe tidak ditemukan.", reply_markup=ReplyKeyboardRemove())
+                return
+            nama_lama = produk[pid]["tipe"][tid]["nama"]
+            produk[pid]["tipe"][tid]["nama"] = nama_baru
+            save_produk(produk)
+            await update.message.reply_text(
+                f"✅ Tipe direname: *{nama_lama}* → *{nama_baru}*",
+                parse_mode="Markdown", reply_markup=ReplyKeyboardRemove()
+            )
+            await send_main_menu_safe(update, context)
+            return
+
         return  # state tidak dikenal, abaikan
 
     # ── QRIS custom nominal ──────────────────────────────────────────
@@ -3210,6 +3683,70 @@ async def handle_text(update: Update, context: CallbackContext):
             )
             return
         await _show_qris_deposit(update.effective_user, nominal, context)
+        return
+
+    # ── States untuk semua user (voucher, tiket) ─────────────────────
+    _gen_state = context.user_data.get("admin_state")
+
+    if _gen_state == "voucher_input":
+        kode    = text.strip().upper()
+        uid_str = str(update.effective_user.id)
+        chk     = db_check_voucher(kode, uid_str)
+        if chk == "invalid":
+            await update.message.reply_text(
+                "❌ Voucher tidak valid atau sudah habis pakai.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            context.user_data.pop("admin_state", None)
+            await send_main_menu_safe(update, context)
+            return
+        if chk == "used":
+            await update.message.reply_text(
+                "❌ Kamu sudah pernah menggunakan voucher ini.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            context.user_data.pop("admin_state", None)
+            await send_main_menu_safe(update, context)
+            return
+        context.user_data["voucher_kode"]   = kode
+        context.user_data["voucher_diskon"] = chk
+        context.user_data.pop("admin_state", None)
+        await update.message.reply_text(
+            f"✅ *Voucher `{kode}` valid!*\n"
+            f"💰 Diskon: *-Rp{chk:,}*\n\nLanjutkan ke pembayaran:",
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await update.message.reply_text(
+            "↩ Kembali ke konfirmasi pesanan:",
+            reply_markup=InlineKeyboardMarkup([[
+                _ikb("✅ Lanjut ke Pembayaran", "✅", "success", callback_data="confirm_order")
+            ]])
+        )
+        return
+
+    if _gen_state == "tiket_input":
+        pesan = text.strip()
+        if not pesan or len(pesan) < 5:
+            await update.message.reply_text("❌ Pesan terlalu pendek. Coba lagi:")
+            return
+        uid_str = str(update.effective_user.id)
+        tid     = db_ticket_create(uid_str, pesan)
+        context.user_data.pop("admin_state", None)
+        await update.message.reply_text(
+            f"🎫 *Tiket #{tid} berhasil dibuat!*\n\nAdmin akan segera merespons. Terima kasih.",
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        _u   = update.effective_user
+        _nm  = _u.full_name or str(_u.id)
+        await _notify_group(
+            context.bot,
+            f"🎫 *Tiket Support Baru #{tid}*\n\n"
+            f"👤 {_nm} (`{_u.id}`)\n"
+            f"💬 {pesan[:500]}"
+        )
+        await send_main_menu_safe(update, context)
         return
 
     # ── Alur admin multi-step ────────────────────────────────────────
@@ -4151,17 +4688,7 @@ def main():  # Made With love by @govtrashit A.K.A RzkyO
         raise RuntimeError("❌ BOT_TOKEN tidak ditemukan di environment variable!")
 
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start",      start))
-    app.add_handler(CommandHandler("riwayat",    cmd_riwayat))
-    app.add_handler(CommandHandler("rekap",      cmd_rekap))
-    app.add_handler(CommandHandler("dm",         cmd_dm))
-    app.add_handler(CommandHandler("users",      cmd_users))
-    app.add_handler(CommandHandler("stats",      cmd_stats))
-    app.add_handler(CommandHandler("addstok",    cmd_addstok))
-    app.add_handler(CommandHandler("voucher",    cmd_voucher))
-    app.add_handler(CommandHandler("addvoucher", cmd_addvoucher))
-    app.add_handler(CommandHandler("tiket",      cmd_tiket))
-    app.add_handler(CommandHandler("rating",     cmd_rating))
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.PHOTO,              handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
