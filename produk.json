@@ -16,7 +16,8 @@
         "deskripsi": ""
       }
     },
-    "gambar": "/static/produk_img/1.png"
+    "gambar": "/static/produk_img/1.png",
+    "gambar_file_id": "AgACAgUAAxkDAAIKPWoR-LwlqlGnpj6B9TbjqD6qyPFiAAIWD2sb-R2RVMuEuXq8RaBHAQADAgADeAADOwQ"
   },
   "2": {
     "nama": "NETFLIX",
