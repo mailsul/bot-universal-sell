@@ -46,6 +46,42 @@ from telegram.ext import (
     CallbackQueryHandler, filters, CallbackContext
 )
 from datetime import datetime
+import secrets as _secrets
+import string as _string
+
+BULAN_ID = ["","Januari","Februari","Maret","April","Mei","Juni",
+            "Juli","Agustus","September","Oktober","November","Desember"]
+
+def fmt_waktu(s: str) -> str:
+    """Ubah '24/05/2026 13:00:00' → '24 Mei 2026, 13:00' atau '24/05/2026' → '24 Mei 2026'."""
+    try:
+        s = str(s).strip()
+        if " " in s:
+            dt = datetime.strptime(s, "%d/%m/%Y %H:%M:%S")
+            return f"{dt.day} {BULAN_ID[dt.month]} {dt.year}, {dt.strftime('%H:%M')}"
+        dt = datetime.strptime(s, "%d/%m/%Y")
+        return f"{dt.day} {BULAN_ID[dt.month]} {dt.year}"
+    except Exception:
+        return s
+
+def _auto_generate_password() -> str:
+    """Generate password acak 12 karakter yang memenuhi semua syarat keamanan."""
+    chars = _string.ascii_letters + _string.digits + "!@#$%&*"
+    for _ in range(200):
+        pw = "".join(_secrets.choice(chars) for _ in range(12))
+        if (any(c.isupper() for c in pw) and any(c.islower() for c in pw)
+                and any(c.isdigit() for c in pw) and any(c in "!@#$%&*" for c in pw)):
+            return pw
+    return "Ibra@Store1!"
+
+def _get_website_url() -> str:
+    """Auto-detect URL website: config manual → REPLIT_DEV_DOMAIN → kosong."""
+    cfg = load_config()
+    manual = cfg.get("website_url", "").strip()
+    if manual:
+        return manual
+    domain = os.environ.get("REPLIT_DEV_DOMAIN", "").strip()
+    return f"https://{domain}" if domain else ""
 
 # ─── PREMIUM EMOJI ADAPTER ────────────────────────────────────────────────────
 
@@ -2193,6 +2229,12 @@ async def handle_info_bot(update: Update, context: CallbackContext):
     query  = update.callback_query
     cfg    = load_config()
     kontak = cfg.get("kontak_admin", "")
+    web_on  = cfg.get("web_aktif", True)
+    web_url = _get_website_url()
+    web_line = ""
+    if web_on and web_url:
+        safe_url = web_url.replace(".", "\\.").replace("-", "\\-").replace("_","\\_ ")
+        web_line = f"\n🌐 *Website*: {web_url}\n"
     text   = (
         "🆘 *PUSAT BANTUAN*\n\n"
         "Selamat datang\\! Berikut panduan lengkap penggunaan bot kami:\n\n"
@@ -2206,8 +2248,11 @@ async def handle_info_bot(update: Update, context: CallbackContext):
         "◉ Akun dikirim instan setelah pembayaran\n"
         "◉ Pesan berisi akun akan disematkan\n"
         "◉ Butuh bantuan? Hubungi Admin"
+        f"{web_line}"
     )
     kb_rows = []
+    if web_on and web_url:
+        kb_rows.append([_ikb("🌐 Buka Website ↗", "🌐", "primary", url=web_url)])
     if kontak:
         tg = kontak.lstrip("@")
         kb_rows.append([_ikb("👤 Hubungi Admin ↗", "👤", "primary", url=f"https://t.me/{tg}")])
@@ -2406,7 +2451,7 @@ async def handle_text(update: Update, context: CallbackContext):
             context.user_data["reg_state"] = "reg_email"
             await update.message.reply_text(
                 "✅ Nomor HP diterima!\n\n"
-                "📧 *Langkah 2/3* — Masukkan *email* kamu:\n"
+                "📧 *Langkah 2/2* — Masukkan *email* kamu:\n"
                 "Contoh: `nama@gmail.com`",
                 parse_mode="Markdown"
             )
@@ -2424,35 +2469,11 @@ async def handle_text(update: Update, context: CallbackContext):
                     "❌ Email ini sudah terdaftar. Gunakan email lain:"
                 )
                 return
-            context.user_data["reg_email"] = email
-            context.user_data["reg_state"] = "reg_password"
-            await update.message.reply_text(
-                "✅ Email diterima!\n\n"
-                "🔐 *Langkah 3/3* — Buat *password* kamu:\n\n"
-                "Syarat password:\n"
-                "• Minimal *8 karakter*\n"
-                "• Ada huruf *KAPITAL* (A–Z)\n"
-                "• Ada *angka* (0–9)\n"
-                "• Ada *simbol* (!@#$%^&\\* dll)\n\n"
-                "Ketik password kamu:",
-                parse_mode="Markdown"
-            )
-            return
-
-        if reg_state == "reg_password":
-            password = text.strip()
-            pw_err = _validate_password(password)
-            if pw_err:
-                await update.message.reply_text(
-                    f"❌ {pw_err}\n\nCoba lagi:",
-                    parse_mode="Markdown"
-                )
-                return
-            phone = context.user_data.pop("reg_phone", None)
-            email = context.user_data.pop("reg_email", None)
+            phone    = context.user_data.pop("reg_phone", None)
             context.user_data.pop("reg_state", None)
-            pw_hash = generate_password_hash(password)
-            role = "admin" if is_admin(update.effective_user.id) else "user"
+            password = _auto_generate_password()
+            pw_hash  = generate_password_hash(password)
+            role     = "admin" if is_admin(update.effective_user.id) else "user"
             try:
                 web_create_user(
                     update.effective_user.id,
@@ -2467,13 +2488,24 @@ async def handle_text(update: Update, context: CallbackContext):
                     reply_markup=ReplyKeyboardRemove()
                 )
                 return
+            cfg_r   = load_config()
+            web_on  = cfg_r.get("web_aktif", True)
+            web_url = _get_website_url()
+            if web_on and web_url:
+                web_line = (
+                    f"\n🌐 *Website*: {web_url}\n"
+                    f"🔐 *Password*: `{password}`\n\n"
+                    "_Simpan password ini\\! Login dengan email/nomor HP kamu\\._"
+                )
+            else:
+                web_line = f"\n🔐 *Password*: `{password}`\n\n_Simpan password ini\\!_"
             await update.message.reply_text(
-                "🎉 *Akun berhasil dibuat!*\n\n"
+                "🎉 *Akun berhasil dibuat\\!*\n\n"
                 f"📱 HP: `{phone}`\n"
-                f"📧 Email: `{email}`\n\n"
-                "✅ Kamu sudah bisa login ke website menggunakan email/nomor HP dan password kamu.\n\n"
-                "Selamat berbelanja!",
-                parse_mode="Markdown",
+                f"📧 Email: `{email}`"
+                f"{web_line}\n\n"
+                "Selamat berbelanja\\!",
+                parse_mode="MarkdownV2",
                 reply_markup=ReplyKeyboardRemove()
             )
             await send_main_menu_safe(update, context)
@@ -2927,12 +2959,12 @@ async def start(update: Update, context: CallbackContext):
         context.user_data["reg_state"] = "reg_phone"
         cfg_r = load_config()
         await update.message.reply_text(
-            f"👋 *Selamat datang di {cfg_r.get('nama_toko','Ibra Store')}!*\n\n"
-            "Untuk mulai berbelanja, kamu perlu *mendaftar* dulu.\n\n"
-            "📱 *Langkah 1/3* — Masukkan nomor HP kamu:\n"
-            "Format: `+6281234567890`\n\n"
-            "_(Nomor ini untuk login di website)_",
-            parse_mode="Markdown",
+            f"👋 *Selamat datang di {cfg_r.get('nama_toko','Ibra Store')}\\!*\n\n"
+            "Untuk mulai berbelanja, kamu perlu *mendaftar* dulu\\.\n\n"
+            "📱 *Langkah 1/2* — Masukkan nomor HP kamu:\n"
+            "Format: `\\+6281234567890`\n\n"
+            "_Nomor ini untuk login di website_",
+            parse_mode="MarkdownV2",
             reply_markup=ReplyKeyboardMarkup(
                 [[KeyboardButton("❌ Batal")]], resize_keyboard=True, one_time_keyboard=True
             ),

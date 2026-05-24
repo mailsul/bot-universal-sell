@@ -94,20 +94,28 @@
 
     <!-- Tabel Penjualan Terbaru -->
     <div class="card mb-4">
-      <div class="card-header d-flex align-items-center gap-2">
+      <div class="card-header d-flex align-items-center gap-2 flex-wrap">
         <h6 class="mb-0"><i class="bi bi-bag-check me-1"></i>Penjualan Terbaru</h6>
         <span class="badge bg-success">{{ rekap.beli.semua.count }} transaksi</span>
-        <span class="ms-auto fw-semibold small" style="color:var(--brand)">Rp{{ "{:,}".format(rekap.beli.semua.total) }}</span>
+        <span class="fw-semibold small" style="color:var(--brand-text,#fff)">Rp{{ "{:,}".format(rekap.beli.semua.total) }}</span>
+        <div class="ms-auto d-flex align-items-center gap-2">
+          <label class="small mb-0" style="color:var(--brand-text,#fff)">Per halaman:</label>
+          <select id="rekapPerPage" class="form-select form-select-sm" style="width:80px" onchange="rekapPaginate(1)">
+            <option value="10" selected>10</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </div>
       </div>
       <div class="card-body p-0">
         {% if rekap.beli.semua.rows %}
         <div class="table-responsive">
-          <table class="table table-sm mb-0">
+          <table class="table table-sm mb-0" id="tblRekap">
             <thead><tr><th>Waktu</th><th>User</th><th>Produk</th><th class="text-end">Harga</th></tr></thead>
-            <tbody>
+            <tbody id="tblRekapBody">
               {% for r in rekap.beli.semua.rows %}
-              <tr>
-                <td class="small text-muted" style="white-space:nowrap">{{ r.waktu }}</td>
+              <tr class="rekap-row">
+                <td class="small text-muted" style="white-space:nowrap">{{ r.waktu | fmt_waktu }}</td>
                 <td>
                   {% set uname = bot_uid_map.get(r.user_id|string) %}
                   {% if uname %}<span class="text-brand small">@{{ uname }}</span><br>{% endif %}
@@ -119,6 +127,11 @@
               {% endfor %}
             </tbody>
           </table>
+        </div>
+        <!-- Pagination controls -->
+        <div class="d-flex align-items-center justify-content-between px-3 py-2 border-top" id="rekapPaginationBar">
+          <span class="small text-muted" id="rekapPaginationInfo"></span>
+          <div class="d-flex gap-1" id="rekapPaginationBtns"></div>
         </div>
         {% else %}
         <div class="text-center py-4 text-muted">
@@ -516,7 +529,7 @@
                     value="{{ cfg.kontak_admin }}" placeholder="@username">
                 </div>
               </div>
-              <div class="mb-4">
+              <div class="mb-3">
                 <label class="form-label d-block">Transfer Manual</label>
                 <div class="form-check form-switch">
                   <input class="form-check-input" type="checkbox" name="transfer_manual_aktif" id="chkTransferManual"
@@ -529,6 +542,25 @@
                   </label>
                 </div>
                 <div class="form-text">Jika dinonaktifkan, opsi Transfer Manual tidak muncul di menu deposit bot.</div>
+              </div>
+
+              <div class="mb-4">
+                <label class="form-label d-block"><i class="bi bi-globe2 me-1"></i>Akses Website untuk User</label>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="web_aktif" id="chkWebAktif"
+                    {% if cfg.get('web_aktif', True) %}checked{% endif %}>
+                  <label class="form-check-label" for="chkWebAktif">
+                    User baru dapat link &amp; password website saat daftar
+                    <span class="badge {% if cfg.get('web_aktif', True) %}bg-success{% else %}bg-secondary{% endif %} ms-1">
+                      {% if cfg.get('web_aktif', True) %}Aktif{% else %}Nonaktif{% endif %}
+                    </span>
+                  </label>
+                </div>
+                <div class="form-text">
+                  Jika <strong>diaktifkan</strong>: bot otomatis kirim link website &amp; password saat pendaftaran, dan menu Bantuan tampilkan link website.<br>
+                  Jika <strong>dinonaktifkan</strong>: bot tidak kirim info website — cocok jika web hanya untuk admin.
+                  {% if website_url %}<br><span class="text-brand fw-semibold">🔗 URL terdeteksi: {{ website_url }}</span>{% endif %}
+                </div>
               </div>
               <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold">
                 <i class="bi bi-check-circle me-1"></i>Simpan Pengaturan
@@ -621,6 +653,7 @@
               <input type="hidden" name="rekening" value="{{ cfg.rekening | join('\n') if cfg.rekening else '' }}">
               <input type="hidden" name="kontak_admin" value="{{ cfg.kontak_admin }}">
               {% if cfg.get('transfer_manual_aktif', True) %}<input type="hidden" name="transfer_manual_aktif" value="on">{% endif %}
+              {% if cfg.get('web_aktif', True) %}<input type="hidden" name="web_aktif" value="on">{% endif %}
             </form>
             <button class="btn btn-brand btn-sm mt-3 fw-semibold" onclick="submitColor()">
               <i class="bi bi-check-circle me-1"></i>Terapkan Warna
@@ -999,6 +1032,48 @@ if (hashMap[location.hash]) {
   const tabEl = document.querySelector(`[data-bs-target="#${hashMap[location.hash]}"]`);
   if (tabEl) new bootstrap.Tab(tabEl).show();
 }
+
+// ── REKAP PAGINATION ─────────────────────────────────────────────────────────
+(function(){
+  const rows = Array.from(document.querySelectorAll('#tblRekapBody .rekap-row'));
+  if (!rows.length) return;
+  let _page = 1;
+
+  window.rekapPaginate = function(p) {
+    const perPage = parseInt(document.getElementById('rekapPerPage').value, 10) || 10;
+    const total   = rows.length;
+    const pages   = Math.max(1, Math.ceil(total / perPage));
+    _page = Math.max(1, Math.min(p, pages));
+
+    rows.forEach((tr, i) => {
+      tr.style.display = (i >= (_page-1)*perPage && i < _page*perPage) ? '' : 'none';
+    });
+
+    // Info
+    const from = (_page-1)*perPage + 1;
+    const to   = Math.min(_page*perPage, total);
+    document.getElementById('rekapPaginationInfo').textContent =
+      `Menampilkan ${from}–${to} dari ${total} transaksi`;
+
+    // Buttons
+    const btnDiv = document.getElementById('rekapPaginationBtns');
+    btnDiv.innerHTML = '';
+    const makeBtn = (label, pg, disabled, active) => {
+      const b = document.createElement('button');
+      b.className = 'btn btn-sm ' + (active ? 'btn-brand' : 'btn-outline-secondary');
+      b.textContent = label;
+      b.disabled = disabled;
+      if (!disabled) b.onclick = () => rekapPaginate(pg);
+      return b;
+    };
+    btnDiv.appendChild(makeBtn('‹', _page-1, _page===1, false));
+    const start = Math.max(1, _page-2), end = Math.min(pages, _page+2);
+    for (let i=start; i<=end; i++) btnDiv.appendChild(makeBtn(i, i, false, i===_page));
+    btnDiv.appendChild(makeBtn('›', _page+1, _page===pages, false));
+  };
+
+  rekapPaginate(1);
+})();
 
 // ── HIDE ZERO SALDO ──────────────────────────────────────────────────────────
 let _hideZero = false;

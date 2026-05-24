@@ -619,7 +619,7 @@ def db_get_rekap_penjualan() -> dict:
             "SELECT * FROM riwayat WHERE tipe='BELI' AND waktu LIKE ? ORDER BY id DESC",
             (f"%{month_str}%",)).fetchall()
         beli_all_r  = conn.execute(
-            "SELECT * FROM riwayat WHERE tipe='BELI' ORDER BY id DESC LIMIT 100").fetchall()
+            "SELECT * FROM riwayat WHERE tipe='BELI' ORDER BY id DESC LIMIT 500").fetchall()
         beli_agg    = conn.execute(
             "SELECT COUNT(*) as c, COALESCE(SUM(jumlah),0) as s FROM riwayat WHERE tipe='BELI'").fetchone()
         dep_today   = conn.execute(
@@ -632,6 +632,8 @@ def db_get_rekap_penjualan() -> dict:
             "SELECT COUNT(*) as c, COALESCE(SUM(jumlah),0) as s FROM riwayat WHERE tipe='DEPOSIT'").fetchone()
         conn.close()
 
+    _bulan = ["","Januari","Februari","Maret","April","Mei","Juni",
+              "Juli","Agustus","September","Oktober","November","Desember"]
     return {
         "beli": {
             "hari_ini":  _parse(beli_today),
@@ -644,8 +646,8 @@ def db_get_rekap_penjualan() -> dict:
             "bulan_ini": _parse(dep_month),
             "semua":     {"count": dep_agg["c"], "total": dep_agg["s"]},
         },
-        "tanggal": now.strftime("%d/%m/%Y"),
-        "bulan":   now.strftime("%B %Y"),
+        "tanggal": f"{now.day} {_bulan[now.month]} {now.year}",
+        "bulan":   f"{_bulan[now.month]} {now.year}",
     }
 
 

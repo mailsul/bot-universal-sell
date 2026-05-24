@@ -105,20 +105,20 @@
       padding: 12px 0;
     }
     .navbar-brand {
-      font-weight: 800; font-size: 1.2rem; letter-spacing: -.3px; color: #fff !important;
+      font-weight: 800; font-size: 1.2rem; letter-spacing: -.3px; color: var(--navbar-text, #fff) !important;
     }
     .navbar-brand i { opacity: .9; }
     .nav-link { color: var(--navbar-text) !important; font-weight: 500; font-size: .9rem; transition: color .15s; }
-    .nav-link:hover { color: #fff !important; }
+    .nav-link:hover { color: var(--brand-navbar-text, #fff) !important; }
     .nav-saldo { color: #fde68a !important; font-weight: 700; }
     .btn-nav-register {
-      background: rgba(255,255,255,.15);
-      border: 1px solid rgba(255,255,255,.3);
-      color: #fff !important;
+      background: rgba(128,128,128,.15);
+      border: 1px solid var(--navbar-text, rgba(255,255,255,.3));
+      color: var(--navbar-text, #fff) !important;
       border-radius: 8px; font-size: .85rem; font-weight: 600; padding: 6px 14px;
       transition: background .15s;
     }
-    .btn-nav-register:hover { background: rgba(255,255,255,.25); }
+    .btn-nav-register:hover { background: rgba(128,128,128,.25); }
 
     /* Theme toggle */
     .btn-theme {
@@ -144,7 +144,7 @@
     .card:hover { box-shadow: var(--card-shadow-h); }
     .card-header {
       background: linear-gradient(135deg, var(--brand-dark), var(--brand)) !important;
-      color: #fff !important;
+      color: var(--brand-text, #fff) !important;
       border-radius: 16px 16px 0 0 !important;
       padding: 14px 20px; font-weight: 600; border: none !important;
     }
@@ -153,10 +153,10 @@
     /* ── BUTTONS ── */
     .btn-brand {
       background: linear-gradient(135deg, var(--brand-dark), var(--brand));
-      color: #fff; border: none; border-radius: 10px; font-weight: 600;
+      color: var(--brand-text, #fff); border: none; border-radius: 10px; font-weight: 600;
       transition: opacity .15s, transform .1s;
     }
-    .btn-brand:hover { color: #fff; opacity: .92; transform: translateY(-1px); }
+    .btn-brand:hover { color: var(--brand-text, #fff); opacity: .92; transform: translateY(-1px); }
     .btn-brand:active { transform: translateY(0); }
     .btn-outline-brand {
       border: 2px solid var(--brand); color: var(--brand);
@@ -301,24 +301,30 @@
   {% if brand %}
   <style id="brandVars">
     :root {
-      --brand:       {{ brand.brand }};
-      --brand-dark:  {{ brand.dark }};
-      --brand-light: {{ brand.light }};
-      --brand-mid:   {{ brand.mid }};
-      --brand-glow:  {{ brand.glow }};
-      --brand-glow-h:{{ brand.glow_h }};
-      --card-shadow:  0 1px 3px rgba(0,0,0,.06), 0 4px 16px {{ brand.glow }};
-      --card-shadow-h:0 8px 32px {{ brand.glow_h }};
+      --brand:             {{ brand.brand }};
+      --brand-dark:        {{ brand.dark }};
+      --brand-light:       {{ brand.light }};
+      --brand-mid:         {{ brand.mid }};
+      --brand-glow:        {{ brand.glow }};
+      --brand-glow-h:      {{ brand.glow_h }};
+      --brand-text:        {{ brand.brand_text | default('#ffffff') }};
+      --brand-navbar-text: {{ brand.brand_navbar_text | default('rgba(255,255,255,.9)') }};
+      --navbar-text:       {{ brand.brand_navbar_text | default('rgba(255,255,255,.85)') }};
+      --card-shadow:        0 1px 3px rgba(0,0,0,.06), 0 4px 16px {{ brand.glow }};
+      --card-shadow-h:      0 8px 32px {{ brand.glow_h }};
     }
     [data-theme="dark"] {
-      --brand:       {{ brand.dm_brand }};
-      --brand-dark:  {{ brand.dm_dark }};
-      --brand-light: {{ brand.dm_light }};
-      --brand-mid:   {{ brand.mid }};
-      --brand-glow:  {{ brand.glow }};
-      --brand-glow-h:{{ brand.glow_h }};
-      --card-shadow:  0 1px 4px rgba(0,0,0,.4), 0 4px 20px {{ brand.glow }};
-      --card-shadow-h:0 8px 36px {{ brand.glow_h }};
+      --brand:             {{ brand.dm_brand }};
+      --brand-dark:        {{ brand.dm_dark }};
+      --brand-light:       {{ brand.dm_light }};
+      --brand-mid:         {{ brand.mid }};
+      --brand-glow:        {{ brand.glow }};
+      --brand-glow-h:      {{ brand.glow_h }};
+      --brand-text:        #ffffff;
+      --brand-navbar-text: rgba(255,255,255,.9);
+      --navbar-text:       rgba(255,255,255,.9);
+      --card-shadow:        0 1px 4px rgba(0,0,0,.4), 0 4px 20px {{ brand.glow }};
+      --card-shadow-h:      0 8px 36px {{ brand.glow_h }};
     }
   </style>
   {% endif %}

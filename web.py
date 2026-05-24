@@ -11,6 +11,22 @@ import time
 import shutil
 from collections import defaultdict
 from datetime import datetime, timedelta
+
+BULAN_ID = ["","Januari","Februari","Maret","April","Mei","Juni",
+            "Juli","Agustus","September","Oktober","November","Desember"]
+
+def fmt_waktu(s: str) -> str:
+    """Ubah '24/05/2026 13:00:00' → '24 Mei 2026, 13:00' atau '24/05/2026' → '24 Mei 2026'."""
+    try:
+        s = str(s).strip()
+        if " " in s:
+            dt = datetime.strptime(s, "%d/%m/%Y %H:%M:%S")
+            return f"{dt.day} {BULAN_ID[dt.month]} {dt.year}, {dt.strftime('%H:%M')}"
+        dt = datetime.strptime(s, "%d/%m/%Y")
+        return f"{dt.day} {BULAN_ID[dt.month]} {dt.year}"
+    except Exception:
+        return s
+
 from functools import wraps
 
 import httpx
@@ -127,6 +143,7 @@ def _csrf_ok() -> bool:
     return bool(t and s and secrets.compare_digest(t, s))
 
 app.jinja_env.globals["csrf_token"] = _csrf_token
+app.jinja_env.filters["fmt_waktu"]  = fmt_waktu
 
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -224,81 +241,97 @@ BRAND_PRESETS: dict[str, dict] = {
         "brand": "#7c3aed", "dark": "#5b21b6", "light": "#ede9fe", "mid": "#a78bfa",
         "dm_brand": "#a78bfa", "dm_dark": "#7c3aed", "dm_light": "#2d1d5e",
         "glow": "rgba(124,58,237,.13)", "glow_h": "rgba(124,58,237,.30)",
+        "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
     },
     "blue": {
         "brand": "#2563eb", "dark": "#1d4ed8", "light": "#dbeafe", "mid": "#60a5fa",
         "dm_brand": "#60a5fa", "dm_dark": "#2563eb", "dm_light": "#1e2a4a",
         "glow": "rgba(37,99,235,.13)", "glow_h": "rgba(37,99,235,.30)",
+        "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
     },
     "green": {
         "brand": "#059669", "dark": "#047857", "light": "#d1fae5", "mid": "#34d399",
         "dm_brand": "#34d399", "dm_dark": "#059669", "dm_light": "#0d2e20",
         "glow": "rgba(5,150,105,.13)", "glow_h": "rgba(5,150,105,.30)",
+        "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
     },
     "red": {
         "brand": "#dc2626", "dark": "#b91c1c", "light": "#fee2e2", "mid": "#f87171",
         "dm_brand": "#f87171", "dm_dark": "#dc2626", "dm_light": "#2d0a0a",
         "glow": "rgba(220,38,38,.13)", "glow_h": "rgba(220,38,38,.30)",
+        "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
     },
     "orange": {
         "brand": "#ea580c", "dark": "#c2410c", "light": "#ffedd5", "mid": "#fb923c",
         "dm_brand": "#fb923c", "dm_dark": "#ea580c", "dm_light": "#2d1400",
         "glow": "rgba(234,88,12,.13)", "glow_h": "rgba(234,88,12,.30)",
+        "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
     },
     "pink": {
         "brand": "#db2777", "dark": "#be185d", "light": "#fce7f3", "mid": "#f472b6",
         "dm_brand": "#f472b6", "dm_dark": "#db2777", "dm_light": "#2d0a1e",
         "glow": "rgba(219,39,119,.13)", "glow_h": "rgba(219,39,119,.30)",
+        "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
     },
     "teal": {
         "brand": "#0d9488", "dark": "#0f766e", "light": "#ccfbf1", "mid": "#2dd4bf",
         "dm_brand": "#2dd4bf", "dm_dark": "#0d9488", "dm_light": "#0a2525",
         "glow": "rgba(13,148,136,.13)", "glow_h": "rgba(13,148,136,.30)",
+        "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
     },
     "indigo": {
         "brand": "#4f46e5", "dark": "#4338ca", "light": "#e0e7ff", "mid": "#818cf8",
         "dm_brand": "#818cf8", "dm_dark": "#4f46e5", "dm_light": "#1a1a45",
         "glow": "rgba(79,70,229,.13)", "glow_h": "rgba(79,70,229,.30)",
+        "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
     },
     "yellow": {
         "brand": "#ca8a04", "dark": "#a16207", "light": "#fef9c3", "mid": "#facc15",
         "dm_brand": "#facc15", "dm_dark": "#ca8a04", "dm_light": "#2a1e00",
         "glow": "rgba(202,138,4,.13)", "glow_h": "rgba(202,138,4,.30)",
+        "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
     },
     "cyan": {
         "brand": "#0891b2", "dark": "#0e7490", "light": "#cffafe", "mid": "#22d3ee",
         "dm_brand": "#22d3ee", "dm_dark": "#0891b2", "dm_light": "#062535",
         "glow": "rgba(8,145,178,.13)", "glow_h": "rgba(8,145,178,.30)",
+        "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
     },
     "rose": {
         "brand": "#e11d48", "dark": "#be123c", "light": "#ffe4e6", "mid": "#fb7185",
         "dm_brand": "#fb7185", "dm_dark": "#e11d48", "dm_light": "#2d0a14",
         "glow": "rgba(225,29,72,.13)", "glow_h": "rgba(225,29,72,.30)",
+        "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
     },
     "amber": {
         "brand": "#d97706", "dark": "#b45309", "light": "#fef3c7", "mid": "#fbbf24",
         "dm_brand": "#fbbf24", "dm_dark": "#d97706", "dm_light": "#271900",
         "glow": "rgba(217,119,6,.13)", "glow_h": "rgba(217,119,6,.30)",
+        "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
     },
     "lime": {
         "brand": "#65a30d", "dark": "#4d7c0f", "light": "#ecfccb", "mid": "#a3e635",
         "dm_brand": "#a3e635", "dm_dark": "#65a30d", "dm_light": "#162007",
         "glow": "rgba(101,163,13,.13)", "glow_h": "rgba(101,163,13,.30)",
+        "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
     },
     "sky": {
         "brand": "#0284c7", "dark": "#0369a1", "light": "#e0f2fe", "mid": "#38bdf8",
         "dm_brand": "#38bdf8", "dm_dark": "#0284c7", "dm_light": "#062030",
         "glow": "rgba(2,132,199,.13)", "glow_h": "rgba(2,132,199,.30)",
+        "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
     },
     "violet": {
         "brand": "#6d28d9", "dark": "#5b21b6", "light": "#ede9fe", "mid": "#8b5cf6",
         "dm_brand": "#8b5cf6", "dm_dark": "#6d28d9", "dm_light": "#2a1764",
         "glow": "rgba(109,40,217,.13)", "glow_h": "rgba(109,40,217,.30)",
+        "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
     },
     "slate": {
         "brand": "#475569", "dark": "#334155", "light": "#f1f5f9", "mid": "#94a3b8",
         "dm_brand": "#94a3b8", "dm_dark": "#475569", "dm_light": "#1e2535",
         "glow": "rgba(71,85,105,.13)", "glow_h": "rgba(71,85,105,.30)",
+        "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
     },
 }
 
@@ -322,11 +355,20 @@ def hex_to_brand(hex_color: str) -> dict:
     dm_dark  = hex_color
     dm_light = _hls(hue, max(0.10, lightness - 0.35), min(0.7, saturation))
     ri, gi, bi = int(r * 255), int(g * 255), int(b * 255)
+
+    # Relative luminance untuk tentukan warna teks (WCAG)
+    def _lum(c): return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    luminance = 0.2126 * _lum(r) + 0.7152 * _lum(g) + 0.0722 * _lum(b)
+    brand_text        = "#111111" if luminance > 0.35 else "#ffffff"
+    brand_navbar_text = "rgba(0,0,0,.80)" if luminance > 0.35 else "rgba(255,255,255,.90)"
+
     return {
         "brand": hex_color, "dark": dark, "light": light, "mid": mid,
         "dm_brand": dm_brand, "dm_dark": dm_dark, "dm_light": dm_light,
         "glow":   f"rgba({ri},{gi},{bi},.13)",
         "glow_h": f"rgba({ri},{gi},{bi},.30)",
+        "brand_text":        brand_text,
+        "brand_navbar_text": brand_navbar_text,
     }
 
 
@@ -336,6 +378,15 @@ def load_config() -> dict:
             return json.load(f)
     except Exception:
         return {"nama_toko": "Ibra Store", "rekening": [], "kontak_admin": ""}
+
+def _get_website_url() -> str:
+    """Auto-detect URL website: config manual → REPLIT_DEV_DOMAIN → kosong."""
+    cfg    = load_config()
+    manual = cfg.get("website_url", "").strip()
+    if manual:
+        return manual
+    domain = os.environ.get("REPLIT_DEV_DOMAIN", "").strip()
+    return f"https://{domain}" if domain else ""
 
 LOGO_EXTS = ["png", "jpg", "jpeg", "webp"]
 
@@ -470,6 +521,8 @@ def _ctx():
         "brand":         brand,
         "brand_presets": BRAND_PRESETS,
         "brand_name":    preset_name,
+        "web_aktif":     cfg.get("web_aktif", True),
+        "website_url":   _get_website_url(),
     }
 
 
@@ -1632,6 +1685,8 @@ def admin_config_save():
     cfg["kontak_admin"] = kontak
     # Toggle Transfer Manual
     cfg["transfer_manual_aktif"] = request.form.get("transfer_manual_aktif") == "on"
+    # Toggle Web Aktif untuk user
+    cfg["web_aktif"] = request.form.get("web_aktif") == "on"
     # Brand color
     brand_color = request.form.get("brand_color", "").strip()
     custom_hex  = request.form.get("custom_hex",  "").strip()
