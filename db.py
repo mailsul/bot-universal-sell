@@ -600,6 +600,55 @@ def web_save_otp(telegram_id: int, otp_code: str, expires_at: str):
         conn.close()
 
 
+def db_get_rekap_penjualan() -> dict:
+    """Rekap penjualan BELI dan DEPOSIT dari tabel riwayat."""
+    now        = datetime.now()
+    today_str  = now.strftime("%d/%m/%Y")
+    month_str  = f"/{now.strftime('%m/%Y')}"
+
+    def _parse(rows):
+        r = [dict(x) for x in rows]
+        return {"count": len(r), "total": sum(x["jumlah"] for x in r), "rows": r[:20]}
+
+    with _lock:
+        conn = _get_conn()
+        beli_today  = conn.execute(
+            "SELECT * FROM riwayat WHERE tipe='BELI' AND waktu LIKE ? ORDER BY id DESC",
+            (f"{today_str}%",)).fetchall()
+        beli_month  = conn.execute(
+            "SELECT * FROM riwayat WHERE tipe='BELI' AND waktu LIKE ? ORDER BY id DESC",
+            (f"%{month_str}%",)).fetchall()
+        beli_all_r  = conn.execute(
+            "SELECT * FROM riwayat WHERE tipe='BELI' ORDER BY id DESC LIMIT 100").fetchall()
+        beli_agg    = conn.execute(
+            "SELECT COUNT(*) as c, COALESCE(SUM(jumlah),0) as s FROM riwayat WHERE tipe='BELI'").fetchone()
+        dep_today   = conn.execute(
+            "SELECT * FROM riwayat WHERE tipe='DEPOSIT' AND waktu LIKE ? ORDER BY id DESC",
+            (f"{today_str}%",)).fetchall()
+        dep_month   = conn.execute(
+            "SELECT * FROM riwayat WHERE tipe='DEPOSIT' AND waktu LIKE ? ORDER BY id DESC",
+            (f"%{month_str}%",)).fetchall()
+        dep_agg     = conn.execute(
+            "SELECT COUNT(*) as c, COALESCE(SUM(jumlah),0) as s FROM riwayat WHERE tipe='DEPOSIT'").fetchone()
+        conn.close()
+
+    return {
+        "beli": {
+            "hari_ini":  _parse(beli_today),
+            "bulan_ini": _parse(beli_month),
+            "semua":     {"count": beli_agg["c"], "total": beli_agg["s"],
+                          "rows": [dict(r) for r in beli_all_r]},
+        },
+        "deposit": {
+            "hari_ini":  _parse(dep_today),
+            "bulan_ini": _parse(dep_month),
+            "semua":     {"count": dep_agg["c"], "total": dep_agg["s"]},
+        },
+        "tanggal": now.strftime("%d/%m/%Y"),
+        "bulan":   now.strftime("%B %Y"),
+    }
+
+
 def web_verify_otp(telegram_id: int, otp_code: str) -> bool:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with _lock:

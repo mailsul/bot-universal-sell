@@ -32,6 +32,7 @@ from db import (
     db_get_all_pending, db_get_pending_any_by_user,
     db_remove_pending_any_by_user, db_add_pending, db_remove_pending_by_id,
     db_get_all_statistik, db_get_all_saldo, db_get_all_bot_users,
+    db_get_rekap_penjualan,
 )
 from qris_helper import generate_qr_with_amount
 
@@ -259,7 +260,74 @@ BRAND_PRESETS: dict[str, dict] = {
         "dm_brand": "#818cf8", "dm_dark": "#4f46e5", "dm_light": "#1a1a45",
         "glow": "rgba(79,70,229,.13)", "glow_h": "rgba(79,70,229,.30)",
     },
+    "yellow": {
+        "brand": "#ca8a04", "dark": "#a16207", "light": "#fef9c3", "mid": "#facc15",
+        "dm_brand": "#facc15", "dm_dark": "#ca8a04", "dm_light": "#2a1e00",
+        "glow": "rgba(202,138,4,.13)", "glow_h": "rgba(202,138,4,.30)",
+    },
+    "cyan": {
+        "brand": "#0891b2", "dark": "#0e7490", "light": "#cffafe", "mid": "#22d3ee",
+        "dm_brand": "#22d3ee", "dm_dark": "#0891b2", "dm_light": "#062535",
+        "glow": "rgba(8,145,178,.13)", "glow_h": "rgba(8,145,178,.30)",
+    },
+    "rose": {
+        "brand": "#e11d48", "dark": "#be123c", "light": "#ffe4e6", "mid": "#fb7185",
+        "dm_brand": "#fb7185", "dm_dark": "#e11d48", "dm_light": "#2d0a14",
+        "glow": "rgba(225,29,72,.13)", "glow_h": "rgba(225,29,72,.30)",
+    },
+    "amber": {
+        "brand": "#d97706", "dark": "#b45309", "light": "#fef3c7", "mid": "#fbbf24",
+        "dm_brand": "#fbbf24", "dm_dark": "#d97706", "dm_light": "#271900",
+        "glow": "rgba(217,119,6,.13)", "glow_h": "rgba(217,119,6,.30)",
+    },
+    "lime": {
+        "brand": "#65a30d", "dark": "#4d7c0f", "light": "#ecfccb", "mid": "#a3e635",
+        "dm_brand": "#a3e635", "dm_dark": "#65a30d", "dm_light": "#162007",
+        "glow": "rgba(101,163,13,.13)", "glow_h": "rgba(101,163,13,.30)",
+    },
+    "sky": {
+        "brand": "#0284c7", "dark": "#0369a1", "light": "#e0f2fe", "mid": "#38bdf8",
+        "dm_brand": "#38bdf8", "dm_dark": "#0284c7", "dm_light": "#062030",
+        "glow": "rgba(2,132,199,.13)", "glow_h": "rgba(2,132,199,.30)",
+    },
+    "violet": {
+        "brand": "#6d28d9", "dark": "#5b21b6", "light": "#ede9fe", "mid": "#8b5cf6",
+        "dm_brand": "#8b5cf6", "dm_dark": "#6d28d9", "dm_light": "#2a1764",
+        "glow": "rgba(109,40,217,.13)", "glow_h": "rgba(109,40,217,.30)",
+    },
+    "slate": {
+        "brand": "#475569", "dark": "#334155", "light": "#f1f5f9", "mid": "#94a3b8",
+        "dm_brand": "#94a3b8", "dm_dark": "#475569", "dm_light": "#1e2535",
+        "glow": "rgba(71,85,105,.13)", "glow_h": "rgba(71,85,105,.30)",
+    },
 }
+
+
+def hex_to_brand(hex_color: str) -> dict:
+    """Compute full brand dict from any hex color string (e.g. '#7c3aed')."""
+    import colorsys
+    h = hex_color.lstrip("#")
+    if len(h) != 6:
+        return BRAND_PRESETS["purple"]
+    r, g, b = int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255
+    hue, lightness, saturation = colorsys.rgb_to_hls(r, g, b)
+
+    def _hex(*rgb): return "#{:02x}{:02x}{:02x}".format(*[int(c * 255) for c in rgb])
+    def _hls(hu, li, sa): return _hex(*colorsys.hls_to_rgb(hu, max(0, min(1, li)), max(0, min(1, sa))))
+
+    dark     = _hls(hue, lightness - 0.15, saturation)
+    light    = _hls(hue, min(0.96, lightness + 0.50), min(0.9, saturation))
+    mid      = _hls(hue, min(0.80, lightness + 0.18), saturation)
+    dm_brand = _hls(hue, min(0.78, lightness + 0.22), saturation)
+    dm_dark  = hex_color
+    dm_light = _hls(hue, max(0.10, lightness - 0.35), min(0.7, saturation))
+    ri, gi, bi = int(r * 255), int(g * 255), int(b * 255)
+    return {
+        "brand": hex_color, "dark": dark, "light": light, "mid": mid,
+        "dm_brand": dm_brand, "dm_dark": dm_dark, "dm_light": dm_light,
+        "glow":   f"rgba({ri},{gi},{bi},.13)",
+        "glow_h": f"rgba({ri},{gi},{bi},.30)",
+    }
 
 
 def load_config() -> dict:
@@ -390,7 +458,10 @@ def check_mutation(expected: int) -> bool:
 def _ctx():
     cfg          = load_config()
     preset_name  = cfg.get("brand_color", "purple")
-    brand        = BRAND_PRESETS.get(preset_name, BRAND_PRESETS["purple"])
+    if preset_name == "custom":
+        brand = hex_to_brand(cfg.get("custom_hex", "#7c3aed"))
+    else:
+        brand = BRAND_PRESETS.get(preset_name, BRAND_PRESETS["purple"])
     return {
         "cfg":           cfg,
         "current_user":  current_user(),
@@ -1039,6 +1110,7 @@ def admin():
         users_web=web_get_all_users(), produk=load_produk(),
         total_saldo=sum(saldo_all.values()),
         bot_uid_map=bot_uid_map,
+        rekap=db_get_rekap_penjualan(),
     )
 
 
@@ -1562,8 +1634,13 @@ def admin_config_save():
     cfg["transfer_manual_aktif"] = request.form.get("transfer_manual_aktif") == "on"
     # Brand color
     brand_color = request.form.get("brand_color", "").strip()
-    if brand_color in BRAND_PRESETS:
+    custom_hex  = request.form.get("custom_hex",  "").strip()
+    if brand_color == "custom" and custom_hex.startswith("#"):
+        cfg["brand_color"] = "custom"
+        cfg["custom_hex"]  = custom_hex
+    elif brand_color in BRAND_PRESETS:
         cfg["brand_color"] = brand_color
+        cfg.pop("custom_hex", None)
     save_config(cfg)
     flash("✅ Pengaturan berhasil disimpan.", "success")
     return redirect(url_for("admin") + "#tab-config")

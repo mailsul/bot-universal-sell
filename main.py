@@ -20,6 +20,7 @@ from db import (
     web_get_user_by_tid, web_create_user,
     web_get_user_by_email, web_get_user_by_phone, web_update_profile,
     db_add_bot_user, db_get_all_bot_users,
+    db_get_rekap_penjualan,
 )
 
 import sys
@@ -2940,13 +2941,41 @@ async def start(update: Update, context: CallbackContext):
     await send_main_menu(context, update.effective_chat.id, user)
 
 
+async def cmd_rekap(update: Update, context: CallbackContext):
+    """Rekap penjualan harian/bulanan/semua untuk admin."""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    try:
+        rekap = db_get_rekap_penjualan()
+    except Exception as e:
+        await update.message.reply_text(f"❌ Gagal ambil rekap: {e}")
+        return
+    b = rekap["beli"]
+    d = rekap["deposit"]
+    text = (
+        f"📊 *Rekap Penjualan — {rekap['tanggal']}*\n"
+        f"_{rekap['bulan']}_\n\n"
+        f"🛒 *PENJUALAN*\n"
+        f"• Hari ini : *{b['hari_ini']['count']}x* — Rp{b['hari_ini']['total']:,}\n"
+        f"• Bulan ini: *{b['bulan_ini']['count']}x* — Rp{b['bulan_ini']['total']:,}\n"
+        f"• Semua    : *{b['semua']['count']}x* — Rp{b['semua']['total']:,}\n\n"
+        f"💰 *DEPOSIT*\n"
+        f"• Hari ini : *{d['hari_ini']['count']}x* — Rp{d['hari_ini']['total']:,}\n"
+        f"• Bulan ini: *{d['bulan_ini']['count']}x* — Rp{d['bulan_ini']['total']:,}\n"
+        f"• Semua    : *{d['semua']['count']}x* — Rp{d['semua']['total']:,}\n\n"
+        f"_Data dari semua transaksi bot + web_"
+    )
+    await _send_pe(context.bot, update.effective_chat.id, text)
+
+
 def main():  # Made With love by @govtrashit A.K.A RzkyO
     if not BOT_TOKEN:
         raise RuntimeError("❌ BOT_TOKEN tidak ditemukan di environment variable!")
 
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start",    start))
-    app.add_handler(CommandHandler("riwayat", cmd_riwayat))
+    app.add_handler(CommandHandler("riwayat",  cmd_riwayat))
+    app.add_handler(CommandHandler("rekap",    cmd_rekap))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.PHOTO,              handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

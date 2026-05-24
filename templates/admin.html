@@ -67,6 +67,68 @@
       {% endfor %}
     </div>
 
+    <!-- Rekap Penjualan -->
+    <div class="row g-3 mb-4">
+      <div class="col-12 mb-1">
+        <span class="fw-semibold" style="color:var(--brand)"><i class="bi bi-graph-up-arrow me-1"></i>Rekap Penjualan</span>
+        <span class="text-muted small ms-2">{{ rekap.tanggal }} — {{ rekap.bulan }}</span>
+      </div>
+      {% for icon, count, total, label, color in [
+        ('bi-bag-fill',        rekap.beli.hari_ini.count,  rekap.beli.hari_ini.total,  'Penjualan Hari Ini', '#7c3aed'),
+        ('bi-bag-check-fill',  rekap.beli.bulan_ini.count, rekap.beli.bulan_ini.total, 'Penjualan Bulan Ini','#0891b2'),
+        ('bi-bar-chart-fill',  rekap.beli.semua.count,     rekap.beli.semua.total,     'Total Semua Waktu',  '#059669'),
+        ('bi-cash-coin',       rekap.deposit.hari_ini.count, rekap.deposit.hari_ini.total, 'Deposit Hari Ini', '#f59e0b'),
+        ('bi-cash-stack',      rekap.deposit.bulan_ini.count,rekap.deposit.bulan_ini.total,'Deposit Bulan Ini','#ea580c'),
+        ('bi-piggy-bank',      rekap.deposit.semua.count,  rekap.deposit.semua.total,  'Total Deposit',      '#10b981'),
+      ] %}
+      <div class="col-6 col-md-4 col-lg-2">
+        <div class="stat-card text-center">
+          <i class="bi {{ icon }} fs-4 mb-1" style="color:{{ color }}"></i>
+          <div class="fw-bold" style="color:{{ color }};font-size:1rem">{{ count }}x</div>
+          <div class="fw-semibold small">Rp{{ "{:,}".format(total) }}</div>
+          <div class="text-muted" style="font-size:.7rem">{{ label }}</div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- Tabel Penjualan Terbaru -->
+    <div class="card mb-4">
+      <div class="card-header d-flex align-items-center gap-2">
+        <h6 class="mb-0"><i class="bi bi-bag-check me-1"></i>Penjualan Terbaru</h6>
+        <span class="badge bg-success">{{ rekap.beli.semua.count }} transaksi</span>
+        <span class="ms-auto fw-semibold small" style="color:var(--brand)">Rp{{ "{:,}".format(rekap.beli.semua.total) }}</span>
+      </div>
+      <div class="card-body p-0">
+        {% if rekap.beli.semua.rows %}
+        <div class="table-responsive">
+          <table class="table table-sm mb-0">
+            <thead><tr><th>Waktu</th><th>User</th><th>Produk</th><th class="text-end">Harga</th></tr></thead>
+            <tbody>
+              {% for r in rekap.beli.semua.rows %}
+              <tr>
+                <td class="small text-muted" style="white-space:nowrap">{{ r.waktu }}</td>
+                <td>
+                  {% set uname = bot_uid_map.get(r.user_id|string) %}
+                  {% if uname %}<span class="text-brand small">@{{ uname }}</span><br>{% endif %}
+                  <code class="small">{{ r.user_id }}</code>
+                </td>
+                <td class="small">{{ r.keterangan }}</td>
+                <td class="text-end fw-bold small text-success">Rp{{ "{:,}".format(r.jumlah) }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="text-center py-4 text-muted">
+          <i class="bi bi-bag-x fs-3 opacity-25"></i>
+          <p class="small mt-2 mb-0">Belum ada penjualan</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
     <!-- Pending Deposits -->
     <div class="card mb-4">
       <div class="card-header d-flex align-items-center gap-2">
@@ -427,7 +489,9 @@
 
   <!-- ── PENGATURAN ── -->
   <div class="tab-pane fade" id="tab-config">
-    <div class="row justify-content-center g-4">
+    <div class="row g-4">
+
+      <!-- Pengaturan Toko -->
       <div class="col-md-7">
         <div class="card">
           <div class="card-header"><h6 class="mb-0"><i class="bi bi-gear me-1"></i>Pengaturan Toko</h6></div>
@@ -474,57 +538,14 @@
         </div>
       </div>
 
-      <!-- Brand Color Picker -->
-      <div class="col-md-12 col-lg-12 mb-2">
-        <div class="card">
-          <div class="card-header"><h6 class="mb-0"><i class="bi bi-palette me-1"></i>Warna Tema Website</h6></div>
-          <div class="card-body p-4">
-            <p class="text-muted small mb-3">Pilih warna utama website. Berlaku untuk navbar, tombol, dan semua elemen brand.</p>
-            <div class="d-flex gap-3 flex-wrap align-items-center" id="colorSwatches">
-              {% set preset_labels = {
-                'purple':'Ungu','blue':'Biru','green':'Hijau','red':'Merah',
-                'orange':'Oranye','pink':'Pink','teal':'Teal','indigo':'Indigo'
-              } %}
-              {% for pname, pcolors in brand_presets.items() %}
-              <div class="text-center" style="cursor:pointer" onclick="pickColor('{{ pname }}')">
-                <div class="color-swatch-btn {% if brand_name == pname %}active{% endif %}"
-                  id="swatch-{{ pname }}"
-                  style="width:40px;height:40px;border-radius:50%;background:{{ pcolors.brand }};
-                    border:3px solid {% if brand_name == pname %}#fff{% else %}transparent{% endif %};
-                    box-shadow:{% if brand_name == pname %}0 0 0 2px {{pcolors.brand}},0 4px 12px rgba(0,0,0,.3){% else %}0 2px 8px rgba(0,0,0,.2){% endif %};
-                    transition:all .2s;margin:0 auto 4px">
-                </div>
-                <div class="small text-muted" style="font-size:.72rem">{{ preset_labels.get(pname, pname) }}</div>
-              </div>
-              {% endfor %}
-            </div>
-            <div class="mt-3 d-flex align-items-center gap-2">
-              <div id="previewColorDot" style="width:20px;height:20px;border-radius:50%;background:{{ brand.brand }};flex-shrink:0;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.2)"></div>
-              <span class="small fw-semibold" id="previewColorName">{{ preset_labels.get(brand_name, brand_name)|capitalize }}</span>
-              <span class="small text-muted" id="previewColorHex">{{ brand.brand }}</span>
-            </div>
-            <form method="post" action="/admin/config" id="colorForm" class="d-none">
-              <input type="hidden" name="brand_color" id="brandColorVal" value="{{ brand_name }}">
-              <input type="hidden" name="nama_toko" value="{{ cfg.nama_toko }}">
-              <input type="hidden" name="rekening" value="{{ cfg.rekening | join('\n') if cfg.rekening else '' }}">
-              <input type="hidden" name="kontak_admin" value="{{ cfg.kontak_admin }}">
-              {% if cfg.get('transfer_manual_aktif', True) %}<input type="hidden" name="transfer_manual_aktif" value="on">{% endif %}
-            </form>
-            <button class="btn btn-brand btn-sm mt-3 fw-semibold" onclick="submitColor()">
-              <i class="bi bi-check-circle me-1"></i>Terapkan Warna
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Logo Upload -->
+      <!-- Logo Toko — sejajar Pengaturan Toko -->
       <div class="col-md-5">
-        <div class="card">
+        <div class="card h-100">
           <div class="card-header"><h6 class="mb-0"><i class="bi bi-image me-1"></i>Logo Toko</h6></div>
           <div class="card-body p-4">
             {% if logo_url %}
             <div class="text-center mb-3">
-              <img src="{{ logo_url }}" style="max-height:120px;max-width:100%;object-fit:contain;border-radius:12px;border:1.5px solid #ede9fe" alt="Logo">
+              <img src="{{ logo_url }}" style="max-height:130px;max-width:100%;object-fit:contain;border-radius:12px;border:1.5px solid var(--brand-light)" alt="Logo">
               <p class="small text-muted mt-2 mb-0">Logo aktif</p>
             </div>
             {% else %}
@@ -544,6 +565,70 @@
           </div>
         </div>
       </div>
+
+      <!-- Warna Tema — full width di bawah -->
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header"><h6 class="mb-0"><i class="bi bi-palette me-1"></i>Warna Tema Website</h6></div>
+          <div class="card-body p-4">
+            <p class="text-muted small mb-3">Pilih warna utama website. Berlaku untuk navbar, tombol, dan semua elemen brand. Atau tentukan warna custom sendiri.</p>
+            {% set preset_labels = {
+              'purple':'Ungu','blue':'Biru','green':'Hijau','red':'Merah',
+              'orange':'Oranye','pink':'Pink','teal':'Teal','indigo':'Indigo',
+              'yellow':'Kuning','cyan':'Cyan','rose':'Rose','amber':'Amber',
+              'lime':'Lime','sky':'Sky','violet':'Violet','slate':'Abu'
+            } %}
+            <div class="d-flex gap-3 flex-wrap align-items-center" id="colorSwatches">
+              {% for pname, pcolors in brand_presets.items() %}
+              <div class="text-center" style="cursor:pointer" onclick="pickColor('{{ pname }}','{{ pcolors.brand }}','{{ preset_labels.get(pname, pname) }}')">
+                <div class="color-swatch-btn {% if brand_name == pname %}active{% endif %}"
+                  id="swatch-{{ pname }}"
+                  style="width:40px;height:40px;border-radius:50%;background:{{ pcolors.brand }};
+                    border:3px solid {% if brand_name == pname %}#fff{% else %}transparent{% endif %};
+                    box-shadow:{% if brand_name == pname %}0 0 0 2px {{pcolors.brand}},0 4px 12px rgba(0,0,0,.3){% else %}0 2px 8px rgba(0,0,0,.2){% endif %};
+                    transition:all .2s;margin:0 auto 4px">
+                </div>
+                <div class="small text-muted" style="font-size:.72rem">{{ preset_labels.get(pname, pname) }}</div>
+              </div>
+              {% endfor %}
+              <!-- Custom color swatch -->
+              <div class="text-center" style="cursor:pointer" onclick="document.getElementById('customColorInput').click()">
+                <div style="width:40px;height:40px;border-radius:50%;background:conic-gradient(red,yellow,lime,cyan,blue,magenta,red);
+                    border:3px solid {% if brand_name == 'custom' %}#fff{% else %}transparent{% endif %};
+                    box-shadow:{% if brand_name == 'custom' %}0 0 0 2px var(--brand),0 4px 12px rgba(0,0,0,.3){% else %}0 2px 8px rgba(0,0,0,.2){% endif %};
+                    transition:all .2s;margin:0 auto 4px;position:relative;overflow:hidden">
+                  <i class="bi bi-eyedropper" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#fff;font-size:.9rem;text-shadow:0 1px 3px rgba(0,0,0,.6)"></i>
+                </div>
+                <div class="small text-muted" style="font-size:.72rem">Custom</div>
+              </div>
+              <input type="color" id="customColorInput" class="d-none"
+                value="{{ cfg.get('custom_hex','#7c3aed') if brand_name == 'custom' else '#7c3aed' }}"
+                onchange="pickCustomColor(this.value)">
+            </div>
+
+            <div class="mt-3 d-flex align-items-center gap-2">
+              <div id="previewColorDot" style="width:20px;height:20px;border-radius:50%;background:{{ brand.brand }};flex-shrink:0;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.2)"></div>
+              <span class="small fw-semibold" id="previewColorName">
+                {% if brand_name == 'custom' %}Custom{% else %}{{ preset_labels.get(brand_name, brand_name)|capitalize }}{% endif %}
+              </span>
+              <span class="small text-muted" id="previewColorHex">{{ brand.brand }}</span>
+            </div>
+
+            <form method="post" action="/admin/config" id="colorForm" class="d-none">
+              <input type="hidden" name="brand_color" id="brandColorVal" value="{{ brand_name }}">
+              <input type="hidden" name="custom_hex"  id="customHexVal" value="{{ cfg.get('custom_hex','') }}">
+              <input type="hidden" name="nama_toko" value="{{ cfg.nama_toko }}">
+              <input type="hidden" name="rekening" value="{{ cfg.rekening | join('\n') if cfg.rekening else '' }}">
+              <input type="hidden" name="kontak_admin" value="{{ cfg.kontak_admin }}">
+              {% if cfg.get('transfer_manual_aktif', True) %}<input type="hidden" name="transfer_manual_aktif" value="on">{% endif %}
+            </form>
+            <button class="btn btn-brand btn-sm mt-3 fw-semibold" onclick="submitColor()">
+              <i class="bi bi-check-circle me-1"></i>Terapkan Warna
+            </button>
+          </div>
+        </div>
+      </div>
+
     </div>
   </div>
 
@@ -939,32 +1024,45 @@ function toggleHideZero() {
 const _presetColors = {{ brand_presets | tojson }};
 const _presetLabels = {
   purple:'Ungu', blue:'Biru', green:'Hijau', red:'Merah',
-  orange:'Oranye', pink:'Pink', teal:'Teal', indigo:'Indigo'
+  orange:'Oranye', pink:'Pink', teal:'Teal', indigo:'Indigo',
+  yellow:'Kuning', cyan:'Cyan', rose:'Rose', amber:'Amber',
+  lime:'Lime', sky:'Sky', violet:'Violet', slate:'Abu'
 };
 let _pickedColor = document.getElementById('brandColorVal')?.value || 'purple';
 
-function pickColor(name) {
+function pickColor(name, hex, label) {
   _pickedColor = name;
+  document.getElementById('customHexVal').value = '';
   // Update all swatches
   Object.keys(_presetColors).forEach(pname => {
     const el = document.getElementById('swatch-' + pname);
     if (!el) return;
     if (pname === name) {
       el.style.border = '3px solid #fff';
-      el.style.boxShadow = '0 0 0 2px ' + _presetColors[pname].brand + ',0 4px 12px rgba(0,0,0,.3)';
+      el.style.boxShadow = '0 0 0 2px ' + hex + ',0 4px 12px rgba(0,0,0,.3)';
     } else {
       el.style.border = '3px solid transparent';
       el.style.boxShadow = '0 2px 8px rgba(0,0,0,.2)';
     }
   });
-  // Update preview
-  const c = _presetColors[name];
-  if (c) {
-    document.getElementById('previewColorDot').style.background = c.brand;
-    document.getElementById('previewColorName').textContent = (_presetLabels[name] || name);
-    document.getElementById('previewColorHex').textContent = c.brand;
-  }
-  document.getElementById('brandColorVal').value = name;
+  document.getElementById('previewColorDot').style.background  = hex;
+  document.getElementById('previewColorName').textContent       = label || (_presetLabels[name] || name);
+  document.getElementById('previewColorHex').textContent        = hex;
+  document.getElementById('brandColorVal').value                = name;
+}
+
+function pickCustomColor(hex) {
+  _pickedColor = 'custom';
+  // Deselect all preset swatches
+  Object.keys(_presetColors).forEach(pname => {
+    const el = document.getElementById('swatch-' + pname);
+    if (el) { el.style.border = '3px solid transparent'; el.style.boxShadow = '0 2px 8px rgba(0,0,0,.2)'; }
+  });
+  document.getElementById('previewColorDot').style.background = hex;
+  document.getElementById('previewColorName').textContent      = 'Custom';
+  document.getElementById('previewColorHex').textContent       = hex;
+  document.getElementById('brandColorVal').value               = 'custom';
+  document.getElementById('customHexVal').value                = hex;
 }
 
 function submitColor() {
