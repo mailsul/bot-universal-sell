@@ -158,11 +158,25 @@ def _pe(text: str, pm: str = "Markdown") -> tuple[str, list]:
 
 
 def _ikb(text: str, emoji_char: str = "", style: str = None, **kwargs) -> InlineKeyboardButton:
-    """InlineKeyboardButton dengan teks bersih.
-    - style hanya sebagai penanda semantik di kode (tidak dikirim ke Telegram API).
-    - Telegram tidak mendukung warna background pada InlineKeyboardButton."""
+    """InlineKeyboardButton dengan premium emoji icon.
+    - Jika emoji_char ada di _EID → pakai sebagai icon_custom_emoji_id (premium animasi).
+    - Teks emoji di-strip dari text agar tidak dobel (kecuali text hanya emoji saja).
+    - style hanya penanda semantik — TIDAK dikirim ke Telegram API."""
     kw = dict(kwargs)
-    # Pastikan teks tidak kosong
+
+    if emoji_char:
+        # Strip emoji dari depan teks untuk mendapat teks sisanya
+        stripped = text
+        while stripped.startswith(emoji_char):
+            stripped = stripped[len(emoji_char):].lstrip()
+
+        icon_id = _EID.get(emoji_char)
+        if icon_id and stripped:
+            # Ada premium icon DAN ada teks selain emoji → pakai premium icon, hilangkan emoji dari teks
+            kw["icon_custom_emoji_id"] = icon_id
+            text = stripped
+        # else (icon tidak ada, atau text hanya emoji "➕") → biarkan text apa adanya, tanpa icon
+
     if not text or not text.strip():
         text = "·"
     return InlineKeyboardButton(text=text, **kw)
