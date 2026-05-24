@@ -1720,22 +1720,29 @@ async def handle_admin_panel(update: Update, context: CallbackContext):
 
     saldo   = db_get_all_saldo()
     pending = db_get_all_pending()
+    bot_cnt = len(db_get_all_bot_users())
 
-    text = "*📊 DATA USER:*\n"
-    for u, s in saldo.items():
-        text += f"• `{u}`: Rp{s:,}\n"
+    text = f"*🛠 ADMIN PANEL*\n\n"
+    text += f"👥 Total user bot: *{bot_cnt}*\n\n"
+    text += "*📊 DATA USER (bersaldo):*\n"
+    if saldo:
+        for u, s in saldo.items():
+            text += f"  • `{u}`: Rp{s:,}\n"
+    else:
+        text += "  _Belum ada user bersaldo._\n"
 
     text += "\n*⏳ PENDING DEPOSIT:*\n"
     if pending:
         for p in pending:
-            text += f"- @{p.get('username') or p['user_id']} (`{p['user_id']}`) → Rp{p['nominal']:,}\n"
+            text += f"  - @{p.get('username') or p['user_id']} (`{p['user_id']}`) → Rp{p['nominal']:,}\n"
     else:
-        text += "_Tidak ada._\n"
+        text += "  _Tidak ada._\n"
 
     keyboard = [
-        [_ikb("📦 Kelola Produk",   "📦", "primary", callback_data="admin_kelola_produk")],
-        [_ikb("⚙️ Pengaturan Bot",  "⚙",  None,      callback_data="admin_settings")],
-        [_ikb("🔙 Kembali ke Menu", "🔙", "danger",  callback_data="back_to_produk")],
+        [_ikb("📦 Kelola Produk",   "📦", "success", callback_data="admin_kelola_produk")],
+        [_ikb("⚙️ Pengaturan Bot",  "⚙",  "primary", callback_data="admin_settings")],
+        [_ikb("📢 Broadcast",        "📢", "primary", callback_data="admin_broadcast")],
+        [_ikb("🔙 Kembali ke Menu",  "🔙", "danger",  callback_data="back_to_produk")],
     ]
     await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1747,13 +1754,17 @@ async def handle_admin_kelola_produk(update: Update, context: CallbackContext):
         return
 
     produk  = load_produk()
-    produk_list = "\n".join([f"`{pid}` — {item['nama']}" for pid, item in produk.items()])
-    text    = f"*📦 KELOLA PRODUK*\n\n{produk_list or '_Belum ada produk._'}"
+    lines   = []
+    for pid, item in produk.items():
+        total_stok = sum(len(t.get("akun_list",[])) for t in item.get("tipe",{}).values())
+        icon = "🟢" if total_stok > 0 else "🔴"
+        lines.append(f"  {icon} `{pid}` — {item['nama']} ({total_stok} stok)")
+    text    = f"*📦 KELOLA PRODUK*\n\n" + ("\n".join(lines) or "_Belum ada produk._")
     keyboard = [
         [_ikb("➕ Tambah Produk",  "➕", "success", callback_data="admin_add_produk")],
         [_ikb("📦 Restock",         "📦", "primary", callback_data="admin_restock_produk")],
         [_ikb("🗑 Hapus Produk",    "🗑", "danger",  callback_data="admin_hapus_produk")],
-        [_ikb("🔙 Kembali",         "🔙", None,      callback_data="admin_panel")],
+        [_ikb("🔙 Kembali",         "🔙", "danger",  callback_data="admin_panel")],
     ]
     await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -1776,6 +1787,7 @@ async def handle_admin_add_produk(update: Update, context: CallbackContext):
 
 
 async def handle_admin_restock_produk(update: Update, context: CallbackContext):
+    """Tampilkan daftar produk sebagai inline keyboard untuk dipilih di-restock."""
     query  = update.callback_query
     if not is_admin(query.from_user.id):
         await query.answer("⛔ Akses ditolak", show_alert=True)
@@ -1784,16 +1796,97 @@ async def handle_admin_restock_produk(update: Update, context: CallbackContext):
     if not produk:
         await query.answer("Belum ada produk!", show_alert=True)
         return
-    context.user_data["admin_state"] = "restock_pid"
-    keyboard = [[KeyboardButton(f"{pid} - {item['nama']}")] for pid, item in produk.items()]
-    keyboard.append([KeyboardButton("❌ Batal")])
-    await query.message.delete()
-    lines = [f"  `{pid}` — {item['nama']} (stok: {sum(len(t.get('akun_list',[])) for t in item.get('tipe',{}).values())})" for pid, item in produk.items()]
-    await context.bot.send_message(
-        chat_id=query.from_user.id,
-        text="📦 *RESTOCK PRODUK*\n\n" + "\n".join(lines) + "\n\nPilih produk dari keyboard:",
-        parse_mode="Markdown",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+    btn_row, kb_rows = [], []
+    for nomor, (pid, item) in enumerate(produk.items(), start=1):
+        total_stok = sum(len(t.get("akun_list",[])) for t in item.get("tipe",{}).values())
+        em        = _produk_emoji(item["nama"])
+        btn_style = "success" if total_stok > 0 else "danger"
+        btn_row.append(_ikb(f"{nomor}", em, btn_style, callback_data=f"restock_sel_{pid}"))
+        if len(btn_row) == 5:
+            kb_rows.append(btn_row)
+            btn_row = []
+
+    if btn_row:
+        kb_rows.append(btn_row)
+    kb_rows.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="admin_kelola_produk")])
+
+    lines = []
+    for nomor, (pid, item) in enumerate(produk.items(), start=1):
+        total_stok = sum(len(t.get("akun_list",[])) for t in item.get("tipe",{}).values())
+        icon = "🟢" if total_stok > 0 else "🔴"
+        lines.append(f"  {icon} [{nomor}] {item['nama']} (stok: {total_stok})")
+
+    text = "📦 *RESTOCK PRODUK*\n\n" + "\n".join(lines) + "\n\nPilih nomor produk:"
+    await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(kb_rows))
+
+
+async def handle_restock_sel(update: Update, context: CallbackContext):
+    """Handler: admin memilih produk untuk direstock via inline button."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    pid   = query.data.replace("restock_sel_", "")
+    produk = load_produk()
+    if pid not in produk:
+        await query.answer("Produk tidak ditemukan!", show_alert=True)
+        return
+
+    tipe_dict = produk[pid].get("tipe", {})
+    if len(tipe_dict) == 1:
+        tipe_id   = list(tipe_dict.keys())[0]
+        tipe_nm   = tipe_dict[tipe_id]["nama"]
+        stok_saat = len(tipe_dict[tipe_id].get("akun_list", []))
+        context.user_data["restock_pid"]     = pid
+        context.user_data["restock_tipe_id"] = tipe_id
+        context.user_data["admin_state"]     = "restock_akun"
+        await safe_edit(query, context,
+            f"📦 *Restock: {produk[pid]['nama']}*\n"
+            f"Tipe: *{tipe_nm}* (stok: {stok_saat})\n\n"
+            "Kirim akun baru, *satu per baris*:\n"
+            "`email|password`\n\n_Contoh:_ `user@gmail.com|Pass123!`"
+        )
+    else:
+        # Multi tipe → tampilkan pilihan tipe sebagai inline keyboard
+        kb_rows = []
+        for tid, t in tipe_dict.items():
+            stok_t = len(t.get("akun_list", []))
+            em_t   = "🟢" if stok_t > 0 else "🔴"
+            style_t = "success" if stok_t > 0 else "danger"
+            kb_rows.append([_ikb(f"{em_t} {t['nama']} (stok: {stok_t})", em_t, style_t,
+                                  callback_data=f"restock_tipe_{pid}_{tid}")])
+        kb_rows.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="admin_restock_produk")])
+        context.user_data["restock_pid"] = pid
+        await safe_edit(query, context,
+            f"📦 *{produk[pid]['nama']}*\n\nPilih tipe yang ingin direstock:",
+            reply_markup=InlineKeyboardMarkup(kb_rows)
+        )
+
+
+async def handle_restock_tipe_sel(update: Update, context: CallbackContext):
+    """Handler: admin memilih tipe produk untuk direstock via inline button."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    # data format: restock_tipe_{pid}_{tid}
+    parts   = query.data.replace("restock_tipe_", "").split("_", 1)
+    pid, tid = parts[0], parts[1]
+    produk  = load_produk()
+    if pid not in produk or tid not in produk[pid].get("tipe", {}):
+        await query.answer("Tipe tidak ditemukan!", show_alert=True)
+        return
+    tipe_obj  = produk[pid]["tipe"][tid]
+    stok_saat = len(tipe_obj.get("akun_list", []))
+    context.user_data["restock_pid"]     = pid
+    context.user_data["restock_tipe_id"] = tid
+    context.user_data["admin_state"]     = "restock_akun"
+    await safe_edit(query, context,
+        f"📦 *Restock: {produk[pid]['nama']}*\n"
+        f"Tipe: *{tipe_obj['nama']}* (stok: {stok_saat})\n\n"
+        "Kirim akun baru, *satu per baris*:\n"
+        "`email|password`\n\n_Contoh:_ `user@gmail.com|Pass123!`"
     )
 
 
@@ -2078,6 +2171,60 @@ async def handle_ignore(update: Update, context: CallbackContext):
     await update.callback_query.answer()
 
 
+# ─── ADMIN: BROADCAST ─────────────────────────────────────────────────────────
+
+async def handle_admin_broadcast(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    users = db_get_all_bot_users()
+    kb = InlineKeyboardMarkup([
+        [_ikb("⚡ Ya, convert otomatis",       "⚡", "success", callback_data="broadcast_yes")],
+        [_ikb("💎 Tidak (sudah pakai premium)", "💎", "primary", callback_data="broadcast_no")],
+        [_ikb("🔙 Batal",                       "🔙", "danger",  callback_data="admin_panel")],
+    ])
+    await safe_edit(query, context,
+        f"📢 *BROADCAST*\n\n"
+        f"Total penerima: *{len(users)} user*\n\n"
+        "Mau otomatis convert emoji biasa ke premium?\n\n"
+        "⚡ *Ya, convert otomatis* — emoji biasa 😊 akan dicari padanan premiumnya\n"
+        "💎 *Tidak* — disarankan jika pesanmu sudah menggunakan emoji premium "
+        "(convert akan mengacak pilihan emoji premium)",
+        reply_markup=kb
+    )
+
+
+async def _broadcast_ask_message(query, context: CallbackContext, convert: bool):
+    """Helper: minta admin kirim pesan broadcast setelah memilih mode emoji."""
+    context.user_data["broadcast_convert"] = convert
+    context.user_data["admin_state"]       = "broadcast_msg"
+    mode_str = "⚡ *Auto-convert emoji* aktif" if convert else "💎 *Kirim persis apa adanya* (preserve emoji premium)"
+    await safe_edit(query, context,
+        f"📢 *BROADCAST — Kirim Pesan*\n\n"
+        f"{mode_str}\n\n"
+        "Sekarang kirim pesan yang ingin di-broadcast.\n"
+        "Semua format didukung: *bold*, _italic_, `kode`, emoji, dll.\n\n"
+        "_(Kirim ❌ Batal untuk membatalkan)_"
+    )
+
+
+async def handle_broadcast_yes(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    await _broadcast_ask_message(query, context, convert=True)
+
+
+async def handle_broadcast_no(update: Update, context: CallbackContext):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    await _broadcast_ask_message(query, context, convert=False)
+
+
 # ─── ROUTING CALLBACK ─────────────────────────────────────────────────────────
 
 CALLBACK_MAP = {
@@ -2098,6 +2245,9 @@ CALLBACK_MAP = {
     "admin_ubah_kontak":      handle_admin_ubah_kontak,
     "admin_ubah_website":     handle_admin_ubah_website,
     "admin_upload_qris":      handle_admin_upload_qris,
+    "admin_broadcast":        handle_admin_broadcast,
+    "broadcast_yes":          handle_broadcast_yes,
+    "broadcast_no":           handle_broadcast_no,
     "deposit_qris":           handle_deposit_qris,
     "qris_dep_custom":        handle_qris_dep_nominal,
     "beli_qris":              handle_beli_qris,
@@ -2126,6 +2276,10 @@ async def button_callback(update: Update, context: CallbackContext):
         await handle_tipe_select(update, context)
     elif data.startswith("deposit_"):
         await handle_deposit_nominal(update, context)
+    elif data.startswith("restock_sel_"):
+        await handle_restock_sel(update, context)
+    elif data.startswith("restock_tipe_"):
+        await handle_restock_tipe_sel(update, context)
     elif data.startswith("dep_manual_") or data.startswith("dep_qris_"):
         await handle_dep_metode(update, context)
     elif data.startswith("qris_dep_"):
@@ -2339,6 +2493,7 @@ async def handle_text(update: Update, context: CallbackContext):
             return
 
         if admin_state == "broadcast_msg":
+            convert = context.user_data.pop("broadcast_convert", False)
             context.user_data.pop("admin_state", None)
             users   = db_get_all_bot_users()
             total   = len(users)
@@ -2346,92 +2501,52 @@ async def handle_text(update: Update, context: CallbackContext):
             failed  = 0
             src_cid = update.message.chat_id
             src_mid = update.message.message_id
+
+            # Untuk mode convert: siapkan teks dengan premium emoji via _pe()
+            if convert:
+                raw_text = update.message.text or ""
+                entities = update.message.entities or []
+                # Cek apakah ada premium emoji entity sudah ada
+                has_premium = any(e.type == "custom_emoji" for e in entities)
+                if has_premium:
+                    # Sudah ada premium → kirim apa adanya
+                    convert = False
+                else:
+                    pe_text, pe_entities = _pe(raw_text, "Markdown")
+                    if not pe_entities:
+                        convert = False   # Tidak ada emoji yang bisa dikonvert
+
             await update.message.reply_text(
                 f"📢 Memulai broadcast ke *{total}* user...",
-                parse_mode="Markdown",
-                reply_markup=ReplyKeyboardRemove()
+                parse_mode="Markdown"
             )
             for u in users:
                 try:
-                    await context.bot.copy_message(
-                        chat_id=u["telegram_id"],
-                        from_chat_id=src_cid,
-                        message_id=src_mid
-                    )
+                    if convert:
+                        await context.bot.send_message(
+                            chat_id=u["telegram_id"],
+                            text=pe_text,
+                            entities=pe_entities
+                        )
+                    else:
+                        await context.bot.copy_message(
+                            chat_id=u["telegram_id"],
+                            from_chat_id=src_cid,
+                            message_id=src_mid
+                        )
                     success += 1
                 except Exception:
                     failed += 1
                 await asyncio.sleep(0.05)   # flood control ~20 msg/s
             await update.message.reply_text(
                 f"✅ *Broadcast selesai!*\n\n"
+                f"⚡ Mode   : {'Auto-convert emoji' if convert else 'Kirim persis apa adanya'}\n"
                 f"✔️ Terkirim : *{success}*\n"
                 f"❌ Gagal    : *{failed}*\n"
                 f"📊 Total    : *{total}*",
                 parse_mode="Markdown"
             )
             await send_main_menu_safe(update, context)
-            return
-
-        if admin_state == "restock_pid":
-            pid    = text.split(" - ")[0].strip()
-            produk = load_produk()
-            if pid not in produk:
-                await update.message.reply_text("❌ ID produk tidak valid. Coba lagi:")
-                return
-            tipe_dict = produk[pid].get("tipe", {})
-            context.user_data["restock_pid"] = pid
-            if len(tipe_dict) == 1:
-                # Hanya 1 tipe → langsung ke input akun
-                tipe_id = list(tipe_dict.keys())[0]
-                tipe_nm = tipe_dict[tipe_id]["nama"]
-                stok_saat = len(tipe_dict[tipe_id].get("akun_list", []))
-                context.user_data["restock_tipe_id"] = tipe_id
-                context.user_data["admin_state"]     = "restock_akun"
-                await update.message.reply_text(
-                    f"📦 *Restock: {produk[pid]['nama']}*\n"
-                    f"Tipe: *{tipe_nm}* (stok saat ini: {stok_saat})\n\n"
-                    "Kirim akun baru, *satu per baris*:\n"
-                    "`email|password`\n\n"
-                    "_Contoh:_\n`user@gmail.com|Pass123!`",
-                    parse_mode="Markdown"
-                )
-            else:
-                # Multi tipe → tampilkan pilihan tipe
-                context.user_data["admin_state"] = "restock_tipe"
-                kb = [[KeyboardButton(f"{tid} - {t['nama']} (stok: {len(t.get('akun_list',[]))})")] for tid, t in tipe_dict.items()]
-                kb.append([KeyboardButton("❌ Batal")])
-                await update.message.reply_text(
-                    f"📦 *{produk[pid]['nama']}* — pilih tipe yang ingin direstock:",
-                    parse_mode="Markdown",
-                    reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
-                )
-            return
-
-        if admin_state == "restock_tipe":
-            pid    = context.user_data.get("restock_pid")
-            produk = load_produk()
-            if not pid or pid not in produk:
-                await update.message.reply_text("❌ Produk tidak ditemukan. Ulangi dari awal.")
-                for k in ["admin_state","restock_pid","restock_tipe_id"]: context.user_data.pop(k, None)
-                return
-            tipe_id = text.split(" - ")[0].strip()
-            tipe_dict = produk[pid].get("tipe", {})
-            if tipe_id not in tipe_dict:
-                await update.message.reply_text("❌ Tipe tidak valid. Pilih dari keyboard:")
-                return
-            tipe_nm   = tipe_dict[tipe_id]["nama"]
-            stok_saat = len(tipe_dict[tipe_id].get("akun_list", []))
-            context.user_data["restock_tipe_id"] = tipe_id
-            context.user_data["admin_state"]     = "restock_akun"
-            await update.message.reply_text(
-                f"📦 *Restock: {produk[pid]['nama']}*\n"
-                f"Tipe: *{tipe_nm}* (stok saat ini: {stok_saat})\n\n"
-                "Kirim akun baru, *satu per baris*:\n"
-                "`email|password`\n\n"
-                "_Contoh:_\n`user@gmail.com|Pass123!`",
-                parse_mode="Markdown",
-                reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
-            )
             return
 
         if admin_state == "restock_akun":
@@ -2722,25 +2837,6 @@ async def handle_photo(update: Update, context: CallbackContext):
 
 # ─── ENTRY POINT ─────────────────────────────────────────────────────────────
 
-async def cmd_broadcast(update: Update, context: CallbackContext):
-    """Admin command: /broadcast — broadcast pesan ke semua user yang sudah /start."""
-    uid = update.effective_user.id
-    if not is_admin(uid):
-        await update.message.reply_text("⛔ Akses ditolak.")
-        return
-    context.user_data["admin_state"] = "broadcast_msg"
-    users = db_get_all_bot_users()
-    await update.message.reply_text(
-        f"📢 *BROADCAST*\n\n"
-        f"Total penerima: *{len(users)} user*\n\n"
-        "Kirim pesan yang ingin di-broadcast.\n"
-        "Semua format didukung: *bold*, _italic_, kode, emoji premium, dll.\n\n"
-        "_(Kirim ❌ Batal untuk membatalkan)_",
-        parse_mode="Markdown",
-        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
-    )
-
-
 async def start(update: Update, context: CallbackContext):
     user = update.effective_user
     # Catat user yang sudah start bot
@@ -2771,9 +2867,8 @@ def main():  # Made With love by @govtrashit A.K.A RzkyO
         raise RuntimeError("❌ BOT_TOKEN tidak ditemukan di environment variable!")
 
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start",     start))
-    app.add_handler(CommandHandler("riwayat",  cmd_riwayat))
-    app.add_handler(CommandHandler("broadcast", cmd_broadcast))
+    app.add_handler(CommandHandler("start",    start))
+    app.add_handler(CommandHandler("riwayat", cmd_riwayat))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.PHOTO,              handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

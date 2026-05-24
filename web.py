@@ -1416,6 +1416,69 @@ def admin_logo_upload():
     return redirect(url_for("admin") + "#tab-config")
 
 
+@app.route("/admin/produk/<pid>/rename", methods=["POST"])
+@admin_required
+def admin_produk_rename(pid):
+    """Ganti nama produk."""
+    nama_baru = request.form.get("nama_baru","").strip()
+    if not nama_baru:
+        flash("Nama produk tidak boleh kosong.", "danger")
+        return redirect(url_for("admin") + "#tab-produk")
+    with _purchase_lock, produk_lock():
+        raw = load_produk_raw()
+        if pid not in raw:
+            flash("Produk tidak ditemukan.", "danger")
+            return redirect(url_for("admin") + "#tab-produk")
+        nama_lama = raw[pid].get("nama","")
+        raw[pid]["nama"] = nama_baru
+        save_produk_raw(raw)
+    flash(f"✅ Nama produk diubah dari '{nama_lama}' → '{nama_baru}'.", "success")
+    return redirect(url_for("admin") + "#tab-produk")
+
+
+@app.route("/admin/produk/<pid>/tipe/<tid>/rename", methods=["POST"])
+@admin_required
+def admin_produk_tipe_rename(pid, tid):
+    """Ganti nama tipe produk."""
+    nama_baru = request.form.get("nama_baru","").strip()
+    if not nama_baru:
+        flash("Nama tipe tidak boleh kosong.", "danger")
+        return redirect(url_for("admin") + "#tab-produk")
+    with _purchase_lock, produk_lock():
+        raw  = load_produk_raw()
+        prod = raw.get(pid)
+        if not prod or tid not in prod.get("tipe", {}):
+            flash("Tipe tidak ditemukan.", "danger")
+            return redirect(url_for("admin") + "#tab-produk")
+        nama_lama = prod["tipe"][tid].get("nama","")
+        prod["tipe"][tid]["nama"] = nama_baru
+        raw[pid] = prod
+        save_produk_raw(raw)
+    flash(f"✅ Nama tipe diubah dari '{nama_lama}' → '{nama_baru}'.", "success")
+    return redirect(url_for("admin") + "#tab-produk")
+
+
+@app.route("/admin/user/<int:tid>/gen-password", methods=["POST"])
+@admin_required
+def admin_user_gen_password(tid):
+    """Generate password baru untuk user dan kirim via Telegram."""
+    import secrets, string
+    chars    = string.ascii_letters + string.digits
+    new_pw   = "".join(secrets.choice(chars) for _ in range(12))
+    usr      = web_get_user_by_tid(tid)
+    if not usr:
+        flash("User tidak ditemukan.", "danger")
+        return redirect(url_for("admin") + "#tab-users")
+    web_update_password(tid, generate_password_hash(new_pw))
+    send_telegram(tid,
+        f"🔑 *Password akunmu direset oleh admin.*\n\n"
+        f"Password baru: `{new_pw}`\n\n"
+        f"Segera login dan ganti password kamu di pengaturan."
+    )
+    flash(f"✅ Password baru untuk @{usr.get('telegram_username') or tid} sudah di-generate dan dikirim via Telegram.", "success")
+    return redirect(url_for("admin") + "#tab-users")
+
+
 @app.route("/admin/produk/<pid>/hapus", methods=["POST"])
 @admin_required
 def admin_produk_hapus(pid):

@@ -40,6 +40,7 @@
 <ul class="nav nav-tabs mb-4" id="adminTabs">
   <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-dash"><i class="bi bi-speedometer2 me-1"></i>Dashboard</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-produk"><i class="bi bi-box-seam me-1"></i>Produk</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-users"><i class="bi bi-people me-1"></i>Data User</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-saldo"><i class="bi bi-wallet2 me-1"></i>Saldo</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-config"><i class="bi bi-gear me-1"></i>Pengaturan</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-broadcast"><i class="bi bi-megaphone me-1"></i>Broadcast</button></li>
@@ -213,6 +214,12 @@
               <button class="btn btn-sm btn-outline-secondary" onclick="lihatStok('{{ p.id }}','{{ p.nama|replace("'","\\'")|e }}')">
                 <i class="bi bi-eye"></i>
               </button>
+              <!-- Edit Nama Produk -->
+              <button class="btn btn-sm btn-outline-info" data-bs-toggle="modal"
+                data-bs-target="#renameModal" data-action="/admin/produk/{{ p.id }}/rename"
+                data-label="Nama produk" data-val="{{ p.nama }}">
+                <i class="bi bi-pencil-square"></i>
+              </button>
               <!-- Edit Gambar -->
               <button class="btn btn-sm btn-outline-warning" data-bs-toggle="modal"
                 data-bs-target="#gambarModal" data-pid="{{ p.id }}" data-nama="{{ p.nama }}"
@@ -265,6 +272,13 @@
                       data-pid="{{ p.id }}" data-tid="{{ t.id }}" data-nama="{{ t.nama }}">
                       <i class="bi bi-plus"></i> Stok
                     </button>
+                    <!-- Edit Nama Tipe -->
+                    <button class="btn btn-xs btn-outline-info btn-sm py-0 px-2 ms-1" data-bs-toggle="modal"
+                      data-bs-target="#renameModal"
+                      data-action="/admin/produk/{{ p.id }}/tipe/{{ t.id }}/rename"
+                      data-label="Nama tipe" data-val="{{ t.nama }}">
+                      <i class="bi bi-pencil-square"></i>
+                    </button>
                     <!-- Edit Harga Tipe -->
                     <button class="btn btn-xs btn-outline-primary btn-sm py-0 px-2 ms-1" data-bs-toggle="modal"
                       data-bs-target="#hargaTipeModal"
@@ -296,6 +310,61 @@
           <p class="mt-3 small">Belum ada produk.</p>
         </div>
         {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <!-- ── DATA USER ── -->
+  <div class="tab-pane fade" id="tab-users">
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <h6 class="mb-0"><i class="bi bi-people me-1"></i>Semua User Terdaftar ({{ users_web|length }})</h6>
+      </div>
+      <div class="card-body p-0">
+        {% if users_web %}
+        <div class="table-responsive">
+          <table class="table table-sm table-hover mb-0">
+            <thead class="table-light">
+              <tr>
+                <th>Telegram ID</th>
+                <th>Username</th>
+                <th>No. HP</th>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Saldo</th>
+                <th>Terdaftar</th>
+                <th class="text-center">Aksi</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for u in users_web %}
+              <tr>
+                <td><code>{{ u.telegram_id }}</code></td>
+                <td class="small">{{ ('@' + u.telegram_username) if u.telegram_username else '—' }}</td>
+                <td class="small">{{ u.phone or '—' }}</td>
+                <td class="small">{{ u.email or '—' }}</td>
+                <td><span class="badge {% if u.role=='admin' %}bg-danger{% else %}bg-secondary{% endif %}">{{ u.role }}</span></td>
+                <td class="small">Rp{{ "{:,}".format(saldo_all.get(u.telegram_id|string, 0)) }}</td>
+                <td class="small text-muted">{{ u.created_at[:10] if u.created_at else '—' }}</td>
+                <td class="text-center">
+                  <form method="post" action="/admin/user/{{ u.telegram_id }}/gen-password"
+                    class="d-inline" onsubmit="return confirm('Generate password baru untuk user {{ u.telegram_id }}? Password lama tidak bisa dipakai lagi dan akan dikirim via Telegram.')">
+                    <button class="btn btn-xs btn-outline-warning btn-sm py-0 px-2" title="Reset & kirim password baru via Telegram">
+                      <i class="bi bi-key"></i> Reset PW
+                    </button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="text-center py-5 text-muted">
+          <i class="bi bi-people display-3 opacity-25"></i>
+          <p class="mt-3 small">Belum ada user terdaftar.</p>
+        </div>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -483,6 +552,28 @@
   </div>
 
 </div><!-- end tab-content -->
+
+<!-- MODAL: Rename (Produk / Tipe) -->
+<div class="modal fade" id="renameModal" tabindex="-1">
+  <div class="modal-dialog modal-sm">
+    <div class="modal-content" style="border-radius:16px;border:none">
+      <div class="modal-header" style="background:linear-gradient(135deg,#0284c7,#0ea5e9);color:#fff;border-radius:16px 16px 0 0">
+        <h5 class="modal-title fw-bold" id="renameTitle">Ubah Nama</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="post" id="renameForm">
+        <div class="modal-body p-4">
+          <label class="form-label" id="renameLabel">Nama baru</label>
+          <input type="text" name="nama_baru" id="renameInput" class="form-control" required>
+        </div>
+        <div class="modal-footer border-0">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Batal</button>
+          <button type="submit" class="btn btn-info text-white fw-semibold"><i class="bi bi-check-lg me-1"></i>Simpan</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 
 <!-- MODAL: Tambah Tipe -->
 <div class="modal fade" id="tipeModal" tabindex="-1">
@@ -763,9 +854,20 @@ function hapusAkunTipe(tid, idx, btn) {
     .catch(() => { btn.disabled = false; });
 }
 
+// Rename Modal — set action, label, dan value dari data-* attributes
+document.getElementById('renameModal').addEventListener('show.bs.modal', e => {
+  const btn = e.relatedTarget;
+  document.getElementById('renameForm').action = btn.dataset.action;
+  document.getElementById('renameLabel').textContent = (btn.dataset.label || 'Nama baru') + ':';
+  document.getElementById('renameInput').value = btn.dataset.val || '';
+  document.getElementById('renameTitle').textContent = 'Ubah ' + (btn.dataset.label || 'Nama');
+  setTimeout(() => document.getElementById('renameInput').focus(), 400);
+});
+
 // Aktifkan tab dari URL hash
 const hashMap = {
   '#tab-produk':    'tab-produk',
+  '#tab-users':     'tab-users',
   '#tab-saldo':     'tab-saldo',
   '#tab-config':    'tab-config',
   '#tab-broadcast': 'tab-broadcast',
