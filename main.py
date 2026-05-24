@@ -89,40 +89,12 @@ def _get_website_url() -> str:
 # ─── PREMIUM EMOJI ADAPTER ────────────────────────────────────────────────────
 
 try:
-    from premium_emoji import build_http_entities as _pe_raw
+    from premium_emoji import build_http_entities as _pe_raw, get_emoji_map as _get_emoji_map
     _PE_OK = True
 except Exception:
     _PE_OK = False
-
-# Custom emoji ID untuk tombol & teks (dari emojis.txt)
-_EID: dict[str, str] = {
-    "🛍": "5373052667671093676", "🆘": "5285071241865077373",
-    "💰": "5375296873982604963", "📜": "6077903371275083456",
-    "🛠": "5213214428958306222", "🔥": "5289722755871162900",
-    "🔙": "5352759161945867747", "🎯": "5350460637182993292",
-    "✅": "5980930633298350051", "🔴": "5411225014148014586",
-    "🟢": "5267229058659264159", "🟡": "5267176161842046521",
-    "🔵": "5267145938157184110", "💎": "5267419403019886452",
-    "⚡": "5431449001532594346", "⚠": "5447644880824181073",
-    "🛒": "5431499171045581032", "👑": "5217822164362739968",
-    "📦": "6077646300302548677", "⚙": "5341715473882955310",
-    "➕": "5226945370684140473", "🗑": "5445267414562389170",
-    "✏": "5956143844457189176", "🏦": "5264895611517300926",
-    "📞": "5467539229468793355", "📷": "5821087262099639879",
-    "🎬": "5866430606233046609", "🎨": "5866017524868452229",
-    "🎵": "5463107823946717464", "🎭": "5359441070201513074",
-    "🏰": "5429403746696189687", "🔐": "5472308992514464048",
-    "🌐": "6269490656779965144", "💧": "5393512611968995988",
-    "🖌": "5819016409258135133", "📱": "5407025283456835913",
-    "📝": "5334882760735598374", "🦉": "5445146051671497117",
-    "🤖": "5355051922862653659", "🖼": "5262517101578443800",
-    "👤": "5373012449597335010", "📌": "5397782960512444700",
-    "⭐": "5229227046290343318", "🌟": "5269721741713745479",
-    "🎁": "5199749070830197566",
-    "▶": "5348125953090403204", "▶️": "5348125953090403204",
-    "◀": "5974120159491657171", "◀️": "5974120159491657171",
-    "📢": "5460850689783668519",
-}
+    def _get_emoji_map():
+        return {}
 
 
 def _utf16len(s: str) -> int:
@@ -162,28 +134,31 @@ def _pe(text: str, pm: str = "Markdown") -> tuple[str, list]:
 
 def _ikb(text: str, emoji_char: str = "", style: str = None, **kwargs) -> InlineKeyboardButton:
     """InlineKeyboardButton dengan premium emoji icon dan warna tombol.
-    - Jika emoji_char ada di _EID → pakai sebagai icon_custom_emoji_id (premium animasi).
+    - emoji_char dicari langsung di emojis.txt via get_emoji_map() — tidak ada dict hardcoded.
     - Teks emoji di-strip dari text agar tidak dobel (kecuali text hanya emoji saja).
     - style dikirim ke Telegram API: 'primary' (biru), 'success' (hijau), 'danger' (merah)."""
     kw = dict(kwargs)
 
     if emoji_char:
-        # Strip emoji dari depan teks untuk mendapat teks sisanya
+        # Strip emoji (dan variation selector) dari depan teks
         stripped = text
-        while stripped.startswith(emoji_char):
-            stripped = stripped[len(emoji_char):].lstrip()
+        for variant in (emoji_char, emoji_char.rstrip("\ufe0f").rstrip("\ufe0e")):
+            while stripped.startswith(variant):
+                stripped = stripped[len(variant):].lstrip()
 
-        icon_id = _EID.get(emoji_char)
+        # Cari ID di peta emojis.txt — coba versi asli dulu, lalu tanpa variation selector
+        emap = _get_emoji_map()
+        icon_id = emap.get(emoji_char) or emap.get(
+            "".join(c for c in emoji_char if ord(c) not in (0xFE0F, 0xFE0E))
+        )
         if icon_id and stripped:
-            # Ada premium icon DAN ada teks selain emoji → pakai premium icon, hilangkan emoji dari teks
             kw["icon_custom_emoji_id"] = icon_id
             text = stripped
-        # else (icon tidak ada, atau text hanya emoji "➕") → biarkan text apa adanya, tanpa icon
+        # else: tidak ada di peta → biarkan emoji tetap di teks sebagai fallback
 
     if not text or not text.strip():
         text = "·"
 
-    # Teruskan style ke Telegram API untuk warna tombol
     if style:
         kw["style"] = style
 
