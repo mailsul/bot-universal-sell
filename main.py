@@ -22,6 +22,8 @@ from db import (
     web_get_user_by_email, web_get_user_by_phone, web_update_profile,
     db_add_bot_user, db_get_all_bot_users,
     db_get_rekap_penjualan,
+    db_add_voucher, db_use_voucher, db_get_all_vouchers, db_delete_voucher,
+    db_add_rating, db_get_ratings,
 )
 
 import sys
@@ -225,6 +227,12 @@ purchase_lock = asyncio.Lock()
 
 # Event untuk reset timer loop mutasi ketika user menekan "Cek Sekarang"
 _manual_check_event = asyncio.Event()
+
+# ─── FITUR TAMBAHAN: CONSTANTS ────────────────────────────────────────────────
+LOG_GROUP_ID       = int(os.getenv("LOG_GROUP_ID", "0"))  # ID grup log admin
+ANOMALY_THRESHOLD  = 5_000_000   # Rp5 juta → alert admin jika nominal lebih
+ANTI_SPAM_INTERVAL = 1.5          # detik minimum antar klik tombol (anti-spam)
+_ANTI_SPAM: dict   = {}           # {user_id: monotonic_time} throttle state
 
 
 # ─── HELPER: CONFIG ──────────────────────────────────────────────────────────
@@ -727,13 +735,79 @@ async def mutasi_loop(app: Application):
 
 
 async def post_init(app: Application):
+    import datetime as _dt
     init_db()
     init_web_tables()
     if URL_MUTASI:
         asyncio.create_task(mutasi_loop(app))
+    if app.job_queue is not None:
+        app.job_queue.run_daily(_daily_report_job, time=_dt.time(23, 0, 0), name="daily_report")
+        app.job_queue.run_daily(_auto_backup_job,  time=_dt.time(3,  0, 0), name="auto_backup")
+    else:
+        log.warning("⚠️ JobQueue tidak tersedia — laporan harian & backup otomatis dinonaktifkan.")
 
 
 # ─── MENU UTAMA ─────────────────────────────────────────────────────────────
+
+# ─── HELPER: GROUP LOG, DAILY REPORT, AUTO BACKUP ────────────────────────────
+
+async def _notify_group(bot, text: str):
+    """Kirim log aktivitas ke grup admin (atur LOG_GROUP_ID di env)."""
+    if not LOG_GROUP_ID:
+        return
+    try:
+        await _send_pe(bot, LOG_GROUP_ID, text)
+    except Exception:
+        pass
+
+
+async def _daily_report_job(context: CallbackContext):
+    """Laporan harian otomatis dikirim ke semua admin (job_queue run_daily)."""
+    try:
+        rekap = db_get_rekap_penjualan()
+        b = rekap["beli"]
+        d = rekap["deposit"]
+        text = (
+            f"📊 *Laporan Harian — {rekap['tanggal']}*\n"
+            f"_{rekap['bulan']}_\n\n"
+            f"🛒 *Penjualan Hari Ini*\n"
+            f"• Transaksi : *{b['hari_ini']['count']}x*\n"
+            f"• Pendapatan: *Rp{b['hari_ini']['total']:,}*\n\n"
+            f"💰 *Deposit Hari Ini*\n"
+            f"• Transaksi : *{d['hari_ini']['count']}x*\n"
+            f"• Total     : *Rp{d['hari_ini']['total']:,}*\n\n"
+            f"📦 *Akumulasi Semua Waktu*\n"
+            f"• Penjualan : *{b['semua']['count']}x* — Rp{b['semua']['total']:,}\n"
+            f"• Deposit   : *{d['semua']['count']}x* — Rp{d['semua']['total']:,}"
+        )
+        for admin_id in ADMIN_IDS:
+            try:
+                await _send_pe(context.bot, admin_id, text)
+            except Exception:
+                pass
+    except Exception as e:
+        log.warning(f"Daily report error: {e}")
+
+
+async def _auto_backup_job(context: CallbackContext):
+    """Backup database otomatis ke folder backup/ — simpan 7 terbaru (job_queue)."""
+    os.makedirs("backup", exist_ok=True)
+    today = datetime.now().strftime("%Y%m%d")
+    dst   = f"backup/toko_{today}.db"
+    try:
+        shutil.copy2("toko.db", dst)
+        backups = sorted(
+            f for f in os.listdir("backup") if f.startswith("toko_") and f.endswith(".db")
+        )
+        for old in backups[:-7]:
+            try:
+                os.remove(f"backup/{old}")
+            except OSError:
+                pass
+        log.info(f"✅ Auto-backup DB: {dst}")
+    except Exception as e:
+        log.warning(f"⚠️ Auto-backup gagal: {e}")
+
 
 _LOGO_EXTS = ["png", "jpg", "jpeg", "webp"]
 
@@ -999,9 +1073,9 @@ def _order_text(item: dict, jumlah: int, tipe_item: dict | None = None) -> str:
 def _order_keyboard(jumlah: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            _ikb("➖", "", None,       callback_data="qty_minus"),
-            _ikb(f"  {jumlah}  ", "", None, callback_data="ignore"),
-            _ikb("➕", "➕", None,    callback_data="qty_plus"),
+            _ikb("➖", "➖", "secondary", callback_data="qty_minus"),
+            _ikb(f"  {jumlah}  ", "", "secondary", callback_data="ignore"),
+            _ikb("➕", "➕", "success",   callback_data="qty_plus"),
         ],
         [_ikb("✅ Konfirmasi Order", "✅", "success", callback_data="confirm_order")],
         [_ikb("🔙 Kembali",          "🔙", "danger",  callback_data="back_to_produk")],
@@ -1026,16 +1100,35 @@ async def _send_produk_with_tipe(bot, chat_id: int, pid: str, item: dict, contex
         order_txt = _order_text(item, 1, tipe_obj)
         kb        = _order_keyboard(1)
         plain, ents = _pe(order_txt, "Markdown")
-        if gambar:
+        if gambar or item.get("gambar_file_id"):
             try:
-                base = gambar.lstrip("/")
-                with open(base, "rb") as f:
+                # F28: Gunakan file_id cache jika sudah ada (jauh lebih cepat)
+                fid = item.get("gambar_file_id")
+                if fid:
                     if ents:
-                        await bot.send_photo(chat_id=chat_id, photo=InputFile(f),
+                        await bot.send_photo(chat_id=chat_id, photo=fid,
                                              caption=plain, caption_entities=ents, reply_markup=kb)
                     else:
-                        await bot.send_photo(chat_id=chat_id, photo=InputFile(f),
+                        await bot.send_photo(chat_id=chat_id, photo=fid,
                                              caption=order_txt, reply_markup=kb, parse_mode="Markdown")
+                else:
+                    base = gambar.lstrip("/")
+                    with open(base, "rb") as f:
+                        if ents:
+                            msg = await bot.send_photo(chat_id=chat_id, photo=InputFile(f),
+                                                 caption=plain, caption_entities=ents, reply_markup=kb)
+                        else:
+                            msg = await bot.send_photo(chat_id=chat_id, photo=InputFile(f),
+                                                 caption=order_txt, reply_markup=kb, parse_mode="Markdown")
+                    # Simpan file_id untuk penggunaan berikutnya
+                    try:
+                        with produk_lock():
+                            produk_all = load_produk()
+                            if pid in produk_all:
+                                produk_all[pid]["gambar_file_id"] = msg.photo[-1].file_id
+                                save_produk(produk_all)
+                    except Exception:
+                        pass
                 return
             except Exception:
                 pass
@@ -1053,7 +1146,7 @@ async def _send_produk_with_tipe(bot, chat_id: int, pid: str, item: dict, contex
         if stok > 0:
             btn = _ikb(f"✅ {t['nama']} Rp{t.get('harga',0):,}", "✅", "success", callback_data=f"tipe_{pid}_{tid}")
         else:
-            btn = _ikb(f"❌ {t['nama']} (habis)", "❌", None, callback_data="ignore")
+            btn = _ikb(f"❌ {t['nama']} (habis)", "❌", "danger", callback_data="ignore")
         row.append(btn)
         if len(row) == 2:
             kb_rows.append(row)
@@ -1066,16 +1159,33 @@ async def _send_produk_with_tipe(bot, chat_id: int, pid: str, item: dict, contex
     kb   = InlineKeyboardMarkup(kb_rows)
     plain, ents = _pe(text, "Markdown")
 
-    if gambar:
+    if gambar or item.get("gambar_file_id"):
         try:
-            base = gambar.lstrip("/")
-            with open(base, "rb") as f:
+            fid = item.get("gambar_file_id")
+            if fid:
                 if ents:
-                    await bot.send_photo(chat_id=chat_id, photo=InputFile(f),
+                    await bot.send_photo(chat_id=chat_id, photo=fid,
                                          caption=plain, caption_entities=ents, reply_markup=kb)
                 else:
-                    await bot.send_photo(chat_id=chat_id, photo=InputFile(f),
+                    await bot.send_photo(chat_id=chat_id, photo=fid,
                                          caption=text, reply_markup=kb, parse_mode="Markdown")
+            else:
+                base = gambar.lstrip("/")
+                with open(base, "rb") as f:
+                    if ents:
+                        msg = await bot.send_photo(chat_id=chat_id, photo=InputFile(f),
+                                             caption=plain, caption_entities=ents, reply_markup=kb)
+                    else:
+                        msg = await bot.send_photo(chat_id=chat_id, photo=InputFile(f),
+                                             caption=text, reply_markup=kb, parse_mode="Markdown")
+                try:
+                    with produk_lock():
+                        produk_all = load_produk()
+                        if pid in produk_all:
+                            produk_all[pid]["gambar_file_id"] = msg.photo[-1].file_id
+                            save_produk(produk_all)
+                except Exception:
+                    pass
             return
         except Exception:
             pass
@@ -1344,7 +1454,21 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
             f"─────────────────────\n"
         )
 
-    await _send_pe(context.bot, query.from_user.id, text_akun)
+    # Kirim akun + pin pesan agar tidak tenggelam
+    plain_akun, ents_akun = _pe(text_akun, "Markdown")
+    if ents_akun:
+        sent_akun = await context.bot.send_message(
+            chat_id=query.from_user.id, text=plain_akun, entities=ents_akun)
+    else:
+        sent_akun = await context.bot.send_message(
+            chat_id=query.from_user.id, text=text_akun, parse_mode="Markdown")
+    try:
+        await context.bot.pin_chat_message(
+            chat_id=query.from_user.id, message_id=sent_akun.message_id,
+            disable_notification=True)
+    except Exception:
+        pass
+
     with open(file_path, "rb") as f:
         await context.bot.send_document(
             chat_id=query.from_user.id,
@@ -1356,24 +1480,43 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
     except OSError:
         pass
 
+    # Log ke grup admin
+    await _notify_group(
+        context.bot,
+        f"🛒 *Penjualan Baru*\n"
+        f"👤 @{query.from_user.username or '-'} (`{query.from_user.id}`)\n"
+        f"📦 {item['nama']} [{nama_tipe}] x{jumlah}\n"
+        f"💸 Rp{total:,} | Sisa saldo: Rp{new_saldo:,}"
+    )
+
     sisa_stok = len(tipe_now.get("akun_list", []))
     if sisa_stok <= LOW_STOCK_THRESHOLD:
+        alert_stok = (
+            f"⚠️ *STOK RENDAH — Segera Restock!*\n"
+            f"📦 {item['nama']} [{nama_tipe}]\n"
+            f"Sisa stok: *{sisa_stok}x*"
+        )
         for admin_id in ADMIN_IDS:
             try:
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=(
-                        f"⚠️ *PERINGATAN STOK RENDAH*\n"
-                        f"Produk: {item['nama']} [{nama_tipe}]\n"
-                        f"Sisa stok: {sisa_stok}x\n"
-                        f"Segera lakukan restock!"
-                    ),
-                    parse_mode="Markdown"
-                )
+                await _send_pe(context.bot, admin_id, alert_stok)
             except Exception:
                 pass
 
     context.user_data.pop("konfirmasi", None)
+
+    # F7: Kirim request rating 5 menit setelah pembelian
+    if context.application.job_queue is not None:
+        try:
+            context.application.job_queue.run_once(
+                _send_rating_request,
+                when=300,
+                data={"user_id": query.from_user.id, "trx_id": trx_id,
+                      "produk": f"{item['nama']} [{nama_tipe}]"},
+                name=f"rating_{query.from_user.id}"
+            )
+        except Exception:
+            pass
+
     await send_main_menu(context, query.from_user.id, query.from_user)
 
 
@@ -1383,28 +1526,15 @@ async def handle_deposit(update: Update, context: CallbackContext):
     query         = update.callback_query
     qris_tersedia = _qris_available()
     keyboard      = [[_ikb(f"Rp{n:,}", "", "primary", callback_data=f"deposit_{n}") for n in DEPOSIT_NOMINALS]]
-    keyboard.append([_ikb("🔧 Custom Nominal", "", None, callback_data="deposit_custom")])
-    keyboard.append([_ikb("🔙 Kembali", "🔙", None, callback_data="back_to_produk")])
+    keyboard.append([_ikb("🔧 Custom Nominal", "🔧", "secondary", callback_data="deposit_custom")])
+    keyboard.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="back_to_produk")])
     qris_note = "\n✅ _QRIS tersedia — pilih nominal lalu pilih metode!_" if qris_tersedia else ""
     text = (
         f"💰 *Pilih nominal deposit:*\n"
         f"_(Min: Rp{DEPOSIT_MIN:,} | Max: Rp{DEPOSIT_MAX:,})_{qris_note}"
     )
     markup = InlineKeyboardMarkup(keyboard)
-    try:
-        await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
-    except Exception:
-        try:
-            await query.edit_message_caption(text, reply_markup=markup, parse_mode="Markdown")
-        except Exception:
-            try:
-                await query.message.delete()
-            except Exception:
-                pass
-            await context.bot.send_message(
-                chat_id=query.from_user.id, text=text,
-                reply_markup=markup, parse_mode="Markdown"
-            )
+    await safe_edit(query, context, text, reply_markup=markup)
 
 
 async def _send_deposit_instructions(target, context, nominal: int, is_message=True):
@@ -1418,10 +1548,17 @@ async def _send_deposit_instructions(target, context, nominal: int, is_message=T
     )
     kb = ReplyKeyboardMarkup([[KeyboardButton("❌ Batalkan Deposit")]], resize_keyboard=True, one_time_keyboard=True)
     if is_message:
-        await target.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+        plain_d, ents_d = _pe(text, "Markdown")
+        if ents_d:
+            await target.reply_text(plain_d, entities=ents_d, reply_markup=kb)
+        else:
+            await target.reply_text(text, parse_mode="Markdown", reply_markup=kb)
     else:
-        await target.message.delete()
-        await context.bot.send_message(chat_id=target.from_user.id, text=text, parse_mode="Markdown", reply_markup=kb)
+        try:
+            await target.message.delete()
+        except Exception:
+            pass
+        await _send_pe(context.bot, target.from_user.id, text, reply_markup=kb)
 
 
 async def handle_deposit_nominal(update: Update, context: CallbackContext):
@@ -1454,9 +1591,9 @@ async def _show_metode_deposit(query_or_message, context, nominal: int):
     if qris_tersedia:
         kb.append([_ikb("💳 QRIS (Otomatis / Lebih Cepat)", "", "primary", callback_data=f"dep_qris_{nominal}")])
     if manual_aktif:
-        kb.append([_ikb("🏦 Transfer Manual (Konfirmasi Admin)", "🏦", None, callback_data=f"dep_manual_{nominal}")])
+        kb.append([_ikb("🏦 Transfer Manual (Konfirmasi Admin)", "🏦", "warning", callback_data=f"dep_manual_{nominal}")])
     if not kb:
-        kb.append([_ikb("❌ Metode deposit sedang tidak tersedia", "", None, callback_data="ignore")])
+        kb.append([_ikb("❌ Metode deposit sedang tidak tersedia", "❌", "danger", callback_data="ignore")])
     kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="deposit")])
 
     hints = []
@@ -1471,18 +1608,17 @@ async def _show_metode_deposit(query_or_message, context, nominal: int):
     )
 
     try:
-        await query_or_message.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        plain_m, ents_m = _pe(text, "Markdown")
+        if ents_m:
+            await query_or_message.edit_message_text(plain_m, entities=ents_m, reply_markup=InlineKeyboardMarkup(kb))
+        else:
+            await query_or_message.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
     except Exception:
         try:
             await query_or_message.message.delete()
         except Exception:
             pass
-        await context.bot.send_message(
-            chat_id=query_or_message.from_user.id,
-            text=text,
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
+        await _send_pe(context.bot, query_or_message.from_user.id, text, reply_markup=InlineKeyboardMarkup(kb))
 
 
 async def handle_dep_metode(update: Update, context: CallbackContext):
@@ -1524,7 +1660,7 @@ async def handle_deposit_qris(update: Update, context: CallbackContext):
         await query.answer("❌ QRIS belum diatur admin.", show_alert=True)
         return
     keyboard = [[_ikb(f"Rp{n:,}", "", "primary", callback_data=f"qris_dep_{n}") for n in DEPOSIT_NOMINALS]]
-    keyboard.append([_ikb("🔧 Custom Nominal", "", None, callback_data="qris_dep_custom")])
+    keyboard.append([_ikb("🔧 Custom Nominal", "🔧", "secondary", callback_data="qris_dep_custom")])
     keyboard.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="deposit")])
     await safe_edit(
         query, context,
@@ -1771,9 +1907,9 @@ async def _show_riwayat(update: Update, context: CallbackContext, filter_tipe: s
 
     kb = InlineKeyboardMarkup([
         [
-            _ikb("📋 Semua",     "📋", "primary" if filter_tipe == "semua" else None,    callback_data="riwayat_user"),
-            _ikb("🛒 Pembelian", "🛒", "success" if filter_tipe == "beli" else None,     callback_data="riwayat_beli"),
-            _ikb("💰 Deposit",   "💰", "primary" if filter_tipe == "deposit" else None,  callback_data="riwayat_deposit"),
+            _ikb("📋 Semua",     "📋", "primary"   if filter_tipe == "semua"   else "secondary", callback_data="riwayat_user"),
+            _ikb("🛒 Pembelian", "🛒", "success"   if filter_tipe == "beli"    else "secondary", callback_data="riwayat_beli"),
+            _ikb("💰 Deposit",   "💰", "primary"   if filter_tipe == "deposit" else "secondary", callback_data="riwayat_deposit"),
         ],
         [_ikb("🔙 Kembali ke Menu", "🔙", "danger", callback_data="back_to_produk")],
     ])
@@ -1781,7 +1917,7 @@ async def _show_riwayat(update: Update, context: CallbackContext, filter_tipe: s
     if update.callback_query:
         await safe_edit(update.callback_query, context, text, reply_markup=kb)
     else:
-        await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+        await _send_pe(context.bot, update.effective_chat.id, text, reply_markup=kb)
 
 
 async def handle_riwayat_user(update: Update, context: CallbackContext):
@@ -2169,18 +2305,25 @@ async def handle_admin_final(update: Update, context: CallbackContext):
         f"👤 @{item.get('username') or user_id} (`{user_id}`)"
     )
     try:
-        await query.edit_message_caption(result_text, parse_mode="Markdown")
+        plain_r, ents_r = _pe(result_text, "Markdown")
+        if ents_r:
+            await query.edit_message_caption(plain_r, caption_entities=ents_r)
+        else:
+            await query.edit_message_caption(result_text, parse_mode="Markdown")
     except Exception:
-        await query.edit_message_text(result_text, parse_mode="Markdown")
+        await safe_edit(query, context, result_text)
 
-    await context.bot.send_message(
-        chat_id=user_id,
-        text=(
-            f"✅ Deposit *Rp{nominal:,}* telah dikonfirmasi dan masuk ke saldo kamu!\n"
-            f"🔖 ID Transaksi: `{trx_id}`"
-        ),
-        parse_mode="Markdown",
-        reply_markup=ReplyKeyboardRemove()
+    notif_text = (
+        f"✅ Deposit *Rp{nominal:,}* telah dikonfirmasi dan masuk ke saldo kamu!\n"
+        f"🔖 ID Transaksi: `{trx_id}`"
+    )
+    await _send_pe(context.bot, user_id, notif_text, reply_markup=ReplyKeyboardRemove())
+    await _notify_group(
+        context.bot,
+        f"✅ *Deposit Dikonfirmasi*\n"
+        f"👤 @{item.get('username') or user_id} (`{user_id}`)\n"
+        f"💰 Rp{nominal:,}\n"
+        f"🔖 `{trx_id}`"
     )
     await send_main_menu(context, user_id, await context.bot.get_chat(user_id))
 
@@ -2192,15 +2335,19 @@ async def handle_admin_reject(update: Update, context: CallbackContext):
     db_remove_pending_any_by_user(user_id)
 
     try:
-        await query.edit_message_caption("❌ Deposit telah ditolak.", parse_mode="Markdown")
+        await query.edit_message_caption("❌ Deposit telah ditolak.")
     except Exception:
         await query.edit_message_text("❌ Deposit telah ditolak.")
 
-    await context.bot.send_message(
-        chat_id=user_id,
-        text="❌ Deposit kamu *ditolak* oleh admin. Hubungi admin jika ada pertanyaan.",
-        parse_mode="Markdown",
+    await _send_pe(
+        context.bot, user_id,
+        "❌ Deposit kamu *ditolak* oleh admin. Hubungi admin jika ada pertanyaan.",
         reply_markup=ReplyKeyboardRemove()
+    )
+    await _notify_group(
+        context.bot,
+        f"❌ *Deposit Ditolak*\n"
+        f"👤 User ID: `{user_id}`"
     )
 
 
@@ -2323,6 +2470,62 @@ async def handle_broadcast_no(update: Update, context: CallbackContext):
     await _broadcast_ask_message(query, context, convert=False)
 
 
+# ─── RATING: Request & Handler ───────────────────────────────────────────────
+
+async def _send_rating_request(context: CallbackContext):
+    """Job: kirim request rating ke user 5 menit setelah pembelian."""
+    try:
+        data     = context.job.data
+        user_id  = data["user_id"]
+        trx_id   = data["trx_id"]
+        produk   = data["produk"]
+        stars_kb = [
+            [
+                _ikb("⭐ 1", "⭐", "danger",    callback_data=f"rate_1_{trx_id}"),
+                _ikb("⭐ 2", "⭐", "warning",   callback_data=f"rate_2_{trx_id}"),
+                _ikb("⭐ 3", "⭐", "secondary", callback_data=f"rate_3_{trx_id}"),
+                _ikb("⭐ 4", "⭐", "primary",   callback_data=f"rate_4_{trx_id}"),
+                _ikb("⭐ 5", "⭐", "success",   callback_data=f"rate_5_{trx_id}"),
+            ]
+        ]
+        await _send_pe(
+            context.bot, user_id,
+            f"⭐ *Gimana produknya?*\n"
+            f"_{produk}_\n\n"
+            "Beri rating 1–5 untuk membantu kami meningkatkan layanan:",
+            reply_markup=InlineKeyboardMarkup(stars_kb)
+        )
+    except Exception as e:
+        log.warning(f"Rating request error: {e}")
+
+
+async def handle_rate(update: Update, context: CallbackContext):
+    """Callback rate_N_TRXID — simpan rating user."""
+    query = update.callback_query
+    parts = query.data.split("_", 2)   # ["rate", "5", "TRX001"]
+    if len(parts) < 3:
+        await query.answer("❌ Data tidak valid", show_alert=True)
+        return
+    bintang = int(parts[1])
+    trx_id  = parts[2]
+    uid     = str(query.from_user.id)
+    riwayat = db_get_riwayat(query.from_user.id, 50)
+    produk_name = next(
+        (r["keterangan"] for r in riwayat if r.get("trx_id") == trx_id),
+        "Produk"
+    )
+    try:
+        db_add_rating(uid, trx_id, produk_name, bintang)
+        stars = "⭐" * bintang
+        await query.answer(f"{stars} Terima kasih!", show_alert=False)
+        await query.edit_message_text(
+            f"✅ *Rating {stars} berhasil dikirim!*\nTerima kasih sudah berbelanja 🙏"
+        )
+    except Exception as e:
+        await query.answer("❌ Gagal simpan rating", show_alert=True)
+        log.warning(f"handle_rate error: {e}")
+
+
 # ─── ROUTING CALLBACK ─────────────────────────────────────────────────────────
 
 CALLBACK_MAP = {
@@ -2365,9 +2568,19 @@ CALLBACK_MAP = {
 
 async def button_callback(update: Update, context: CallbackContext):
     query = update.callback_query
-    await query.answer()
     data  = query.data
-    log.info(f"🖱️ Tombol: [{data}] oleh user={query.from_user.id} (@{query.from_user.username})")
+    await query.answer()
+
+    # ── Anti-spam: throttle klik cepat ──────────────────────────────
+    uid_spam = query.from_user.id
+    now_spam = time.monotonic()
+    _NON_SPAM = {"ignore", "qty_minus", "qty_plus"}
+    if data not in _NON_SPAM and (now_spam - _ANTI_SPAM.get(uid_spam, 0.0)) < ANTI_SPAM_INTERVAL:
+        await query.answer("⏳ Terlalu cepat, tunggu sebentar.", show_alert=True)
+        return
+    _ANTI_SPAM[uid_spam] = now_spam
+
+    log.info(f"🖱️ Tombol: [{data}] oleh user={uid_spam} (@{query.from_user.username})")
 
     produk = load_produk()
     if data in produk:
@@ -2386,6 +2599,8 @@ async def button_callback(update: Update, context: CallbackContext):
         await handle_dep_metode(update, context)
     elif data.startswith("qris_dep_"):
         await handle_qris_dep_nominal(update, context)
+    elif data.startswith("rate_"):
+        await handle_rate(update, context)
     elif data.startswith("confirm:"):
         await handle_admin_confirm(update, context)
     elif data.startswith("final:"):
@@ -2811,7 +3026,7 @@ async def handle_text(update: Update, context: CallbackContext):
             kb = []
             if qris_tersedia:
                 kb.append([_ikb("💳 QRIS (Otomatis / Lebih Cepat)", "", "primary", callback_data=f"dep_qris_{nominal}")])
-            kb.append([_ikb("🏦 Transfer Manual (Konfirmasi Admin)", "🏦", None, callback_data=f"dep_manual_{nominal}")])
+            kb.append([_ikb("🏦 Transfer Manual (Konfirmasi Admin)", "🏦", "warning", callback_data=f"dep_manual_{nominal}")])
             kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="deposit")])
             metode_hint = (
                 "✅ *QRIS* — dikonfirmasi otomatis setelah bayar\n"
@@ -2865,14 +3080,29 @@ async def handle_photo(update: Update, context: CallbackContext):
         file  = await context.bot.get_file(photo.file_id)
         await file.download_to_drive(qris_file)
         context.user_data.pop("admin_state", None)
-        await update.message.reply_text(
+        await _send_pe(
+            context.bot, update.effective_chat.id,
             "✅ *Gambar QRIS berhasil disimpan!*\nUser sekarang bisa bayar via QRIS.",
-            parse_mode="Markdown",
             reply_markup=ReplyKeyboardRemove()
         )
         return
 
     nominal = context.user_data.get("nominal_asli", 0)
+
+    # ── Deteksi anomali: nominal sangat besar → alert admin ──────────
+    if nominal > ANOMALY_THRESHOLD:
+        for admin_id in ADMIN_IDS:
+            try:
+                await _send_pe(
+                    context.bot, admin_id,
+                    f"⚠️ *DEPOSIT ANOMALI!*\n"
+                    f"👤 @{user.username or '-'} (`{user.id}`)\n"
+                    f"💸 Nominal: *Rp{nominal:,}*\n"
+                    f"_(Melebihi threshold Rp{ANOMALY_THRESHOLD:,})_\n"
+                    f"Verifikasi manual sebelum mengkonfirmasi!"
+                )
+            except Exception:
+                pass
 
     if nominal == 0:
         await update.message.reply_text("⚠️ Kamu belum memilih nominal deposit. Silakan mulai dari menu deposit.")
@@ -2962,7 +3192,7 @@ async def start(update: Update, context: CallbackContext):
 
 
 async def cmd_rekap(update: Update, context: CallbackContext):
-    """Rekap penjualan harian/bulanan/semua untuk admin."""
+    """Rekap penjualan untuk admin. Dukung /rekap hari | bulan | semua."""
     if update.effective_user.id not in ADMIN_IDS:
         return
     try:
@@ -2972,20 +3202,275 @@ async def cmd_rekap(update: Update, context: CallbackContext):
         return
     b = rekap["beli"]
     d = rekap["deposit"]
-    text = (
-        f"📊 *Rekap Penjualan — {rekap['tanggal']}*\n"
-        f"_{rekap['bulan']}_\n\n"
-        f"🛒 *PENJUALAN*\n"
-        f"• Hari ini : *{b['hari_ini']['count']}x* — Rp{b['hari_ini']['total']:,}\n"
-        f"• Bulan ini: *{b['bulan_ini']['count']}x* — Rp{b['bulan_ini']['total']:,}\n"
-        f"• Semua    : *{b['semua']['count']}x* — Rp{b['semua']['total']:,}\n\n"
-        f"💰 *DEPOSIT*\n"
-        f"• Hari ini : *{d['hari_ini']['count']}x* — Rp{d['hari_ini']['total']:,}\n"
-        f"• Bulan ini: *{d['bulan_ini']['count']}x* — Rp{d['bulan_ini']['total']:,}\n"
-        f"• Semua    : *{d['semua']['count']}x* — Rp{d['semua']['total']:,}\n\n"
-        f"_Data dari semua transaksi bot + web_"
-    )
+
+    args   = context.args
+    filter = args[0].lower() if args else "all"
+
+    if filter in ("hari", "h", "today", "d"):
+        label  = f"Hari Ini — {rekap['tanggal']}"
+        beli_c, beli_t = b['hari_ini']['count'], b['hari_ini']['total']
+        dep_c,  dep_t  = d['hari_ini']['count'], d['hari_ini']['total']
+        text = (
+            f"📊 *Rekap {label}*\n\n"
+            f"🛒 *Penjualan* : *{beli_c}x* — Rp{beli_t:,}\n"
+            f"💰 *Deposit*   : *{dep_c}x* — Rp{dep_t:,}\n\n"
+            f"_/rekap hari | /rekap bulan | /rekap semua_"
+        )
+    elif filter in ("bulan", "b", "month", "m"):
+        label  = rekap['bulan']
+        beli_c, beli_t = b['bulan_ini']['count'], b['bulan_ini']['total']
+        dep_c,  dep_t  = d['bulan_ini']['count'], d['bulan_ini']['total']
+        text = (
+            f"📊 *Rekap {label}*\n\n"
+            f"🛒 *Penjualan* : *{beli_c}x* — Rp{beli_t:,}\n"
+            f"💰 *Deposit*   : *{dep_c}x* — Rp{dep_t:,}\n\n"
+            f"_/rekap hari | /rekap bulan | /rekap semua_"
+        )
+    elif filter in ("semua", "all", "s", "a"):
+        beli_c, beli_t = b['semua']['count'], b['semua']['total']
+        dep_c,  dep_t  = d['semua']['count'], d['semua']['total']
+        text = (
+            f"📊 *Rekap Semua Waktu*\n\n"
+            f"🛒 *Penjualan* : *{beli_c}x* — Rp{beli_t:,}\n"
+            f"💰 *Deposit*   : *{dep_c}x* — Rp{dep_t:,}\n\n"
+            f"_/rekap hari | /rekap bulan | /rekap semua_"
+        )
+    else:
+        text = (
+            f"📊 *Rekap Penjualan — {rekap['tanggal']}*\n"
+            f"_{rekap['bulan']}_\n\n"
+            f"🛒 *PENJUALAN*\n"
+            f"• Hari ini : *{b['hari_ini']['count']}x* — Rp{b['hari_ini']['total']:,}\n"
+            f"• Bulan ini: *{b['bulan_ini']['count']}x* — Rp{b['bulan_ini']['total']:,}\n"
+            f"• Semua    : *{b['semua']['count']}x* — Rp{b['semua']['total']:,}\n\n"
+            f"💰 *DEPOSIT*\n"
+            f"• Hari ini : *{d['hari_ini']['count']}x* — Rp{d['hari_ini']['total']:,}\n"
+            f"• Bulan ini: *{d['bulan_ini']['count']}x* — Rp{d['bulan_ini']['total']:,}\n"
+            f"• Semua    : *{d['semua']['count']}x* — Rp{d['semua']['total']:,}\n\n"
+            f"_Tip: /rekap hari | /rekap bulan | /rekap semua_"
+        )
     await _send_pe(context.bot, update.effective_chat.id, text)
+
+
+# ─── COMMAND: /dm — Admin kirim DM ke user tertentu ──────────────────────────
+
+async def cmd_dm(update: Update, context: CallbackContext):
+    """Admin: /dm <user_id> <pesan> — kirim pesan langsung ke user."""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    args = context.args
+    if not args or len(args) < 2:
+        await update.message.reply_text("Cara pakai: /dm <user_id> <pesan>")
+        return
+    try:
+        target_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("❌ user_id harus berupa angka.")
+        return
+    msg = " ".join(args[1:])
+    try:
+        await _send_pe(context.bot, target_id, f"📬 *Pesan dari Admin:*\n\n{msg}")
+        await _send_pe(context.bot, update.effective_chat.id,
+                       f"✅ Pesan terkirim ke `{target_id}`")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Gagal: {e}")
+
+
+# ─── COMMAND: /users — Daftar semua user bot ──────────────────────────────────
+
+async def cmd_users(update: Update, context: CallbackContext):
+    """Admin: /users — daftar semua user yang terdaftar di bot."""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    users  = db_get_all_bot_users()
+    saldo  = db_get_all_saldo()
+    stats  = db_get_all_statistik()
+    total  = len(users)
+    text   = f"👥 *DAFTAR USER BOT* ({total} terdaftar)\n\n"
+    for u in users[:30]:
+        tid = str(u["telegram_id"])
+        s   = saldo.get(tid, 0)
+        j   = stats.get(tid, {}).get("jumlah", 0)
+        un  = f"@{u['username']}" if u.get("username") else f"`{tid}`"
+        text += f"• {un} — 💰Rp{s:,} | 🛒{j}x\n"
+    if total > 30:
+        text += f"\n_...dan {total - 30} user lainnya_"
+    text += f"\n\n_Gunakan /rekap untuk statistik penjualan_"
+    await _send_pe(context.bot, update.effective_chat.id, text)
+
+
+# ─── COMMAND: /stats — Statistik per produk ───────────────────────────────────
+
+async def cmd_stats(update: Update, context: CallbackContext):
+    """Admin: /stats [nama_produk] — statistik stok + info per produk."""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    produk     = load_produk()
+    query_name = " ".join(context.args).lower() if context.args else ""
+    text       = "📊 *STATISTIK PRODUK*\n\n"
+    found      = False
+    for pid, item in produk.items():
+        if query_name and query_name not in item["nama"].lower():
+            continue
+        found = True
+        total_stok = 0
+        text += f"🎯 *{item['nama']}*\n"
+        for tid, tipe in item.get("tipe", {}).items():
+            stok_t     = len(tipe.get("akun_list", []))
+            total_stok += stok_t
+            icon        = "🟢" if stok_t > 0 else "🔴"
+            text += f"  {icon} {tipe['nama']}: Rp{tipe.get('harga',0):,} — *{stok_t} stok*\n"
+        text += f"  📦 Total stok: *{total_stok}*\n\n"
+    if not found:
+        text += "_Produk tidak ditemukan._\n\nContoh: /stats netflix"
+    await _send_pe(context.bot, update.effective_chat.id, text)
+
+
+# ─── COMMAND: /addstok — Admin tambah stok via bot ────────────────────────────
+
+async def cmd_addstok(update: Update, context: CallbackContext):
+    """Admin: /addstok <produk_id> <tipe_id> <user:pass> — tambah akun ke stok."""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    args = context.args
+    if len(args) < 3:
+        await update.message.reply_text(
+            "Cara pakai: /addstok <produk_id> <tipe_id> <email:password>\n"
+            "Contoh: /addstok netflix sharing user@gmail.com:pass123"
+        )
+        return
+    pid, tid = args[0], args[1]
+    akun_str = " ".join(args[2:])
+    if ":" not in akun_str:
+        await update.message.reply_text("❌ Format akun harus: email:password")
+        return
+    parts    = akun_str.split(":", 1)
+    username = parts[0].strip()
+    password = parts[1].strip()
+    with produk_lock():
+        produk = load_produk()
+        item   = produk.get(pid)
+        if not item:
+            await update.message.reply_text(f"❌ Produk `{pid}` tidak ditemukan.\nGunakan /stats untuk lihat produk ID.")
+            return
+        if tid not in item.get("tipe", {}):
+            await update.message.reply_text(f"❌ Tipe `{tid}` tidak ada di produk `{pid}`.")
+            return
+        item["tipe"][tid]["akun_list"].append({"username": username, "password": password})
+        item["tipe"][tid]["stok"] = len(item["tipe"][tid]["akun_list"])
+        save_produk(produk)
+    await _send_pe(
+        context.bot, update.effective_chat.id,
+        f"✅ *Stok berhasil ditambahkan!*\n"
+        f"📦 `{pid}` → `{tid}`\n"
+        f"👤 `{username}`\n"
+        f"📊 Total stok sekarang: *{item['tipe'][tid]['stok']}*"
+    )
+
+
+# ─── COMMAND: /voucher — User pakai kode promo ────────────────────────────────
+
+async def cmd_voucher(update: Update, context: CallbackContext):
+    """User: /voucher <kode> — tukarkan voucher/kode promo dengan saldo."""
+    uid  = str(update.effective_user.id)
+    args = context.args
+    if not args:
+        await _send_pe(context.bot, update.effective_chat.id,
+                       "Cara pakai: /voucher <kode>\nContoh: /voucher PROMO2025")
+        return
+    kode   = args[0].upper().strip()
+    result = db_use_voucher(kode, uid)
+    if result == "invalid":
+        await _send_pe(context.bot, update.effective_chat.id,
+                       f"❌ Kode voucher *{kode}* tidak valid atau sudah habis.")
+    elif result == "used":
+        await _send_pe(context.bot, update.effective_chat.id,
+                       f"❌ Kamu sudah pernah menggunakan voucher *{kode}*.")
+    elif isinstance(result, int):
+        db_add_saldo(uid, result)
+        db_add_riwayat(uid, "DEPOSIT", f"Voucher {kode}", result)
+        new_saldo = db_get_saldo(update.effective_user.id)
+        await _send_pe(
+            context.bot, update.effective_chat.id,
+            f"🎉 *Voucher {kode} berhasil digunakan!*\n"
+            f"💰 Saldo bertambah: *Rp{result:,}*\n"
+            f"💳 Saldo kamu sekarang: *Rp{new_saldo:,}*"
+        )
+        await send_main_menu(context, update.effective_chat.id, update.effective_user)
+    else:
+        await _send_pe(context.bot, update.effective_chat.id, "❌ Gagal memproses voucher.")
+
+
+# ─── COMMAND: /addvoucher — Admin buat voucher baru ───────────────────────────
+
+async def cmd_addvoucher(update: Update, context: CallbackContext):
+    """Admin: /addvoucher <kode> <nominal> [max_uses] — buat voucher baru."""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text(
+            "Cara pakai: /addvoucher <kode> <nominal> [max_pakai]\n"
+            "Contoh: /addvoucher PROMO2025 50000 100"
+        )
+        return
+    kode     = args[0].upper().strip()
+    try:
+        nominal  = int(args[1])
+        max_uses = int(args[2]) if len(args) > 2 else 1
+    except ValueError:
+        await update.message.reply_text("❌ Nominal dan max_pakai harus angka.")
+        return
+    ok = db_add_voucher(kode, nominal, max_uses)
+    if ok:
+        await _send_pe(
+            context.bot, update.effective_chat.id,
+            f"✅ *Voucher berhasil dibuat!*\n"
+            f"🎟 Kode  : `{kode}`\n"
+            f"💰 Nilai : Rp{nominal:,}\n"
+            f"♻️ Max pakai: {max_uses}x"
+        )
+    else:
+        await update.message.reply_text(f"❌ Kode `{kode}` sudah ada.")
+
+
+# ─── COMMAND: /rating — Admin lihat rekap rating ─────────────────────────────
+
+async def cmd_rating(update: Update, context: CallbackContext):
+    """Admin: /rating [produk] — rekap rating & ulasan produk."""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    query_name = " ".join(context.args) if context.args else None
+    ratings    = db_get_ratings(produk=query_name, limit=50)
+    if not ratings:
+        await update.message.reply_text("⭐ Belum ada rating masuk.")
+        return
+    avg = sum(r["bintang"] for r in ratings) / len(ratings)
+    dist = {i: sum(1 for r in ratings if r["bintang"] == i) for i in range(1, 6)}
+    text = (
+        f"⭐ *Rekap Rating*\n"
+        f"Total: *{len(ratings)} ulasan*\n"
+        f"Rata-rata: *{avg:.1f} / 5*\n\n"
+        + "".join(f"{'⭐'*i} — {dist[i]}x\n" for i in range(5, 0, -1))
+    )
+    if query_name:
+        text = f"🔍 Filter: _{query_name}_\n\n" + text
+    await _send_pe(context.bot, update.effective_chat.id, text)
+
+
+# ─── GLOBAL ERROR HANDLER ────────────────────────────────────────────────────
+
+async def error_handler(update: object, context: CallbackContext):
+    """Tangkap semua error yang tidak tertangkap — log + beritahu user."""
+    log.error("❌ Unhandled exception", exc_info=context.error)
+    try:
+        if update and hasattr(update, "effective_user") and update.effective_user:
+            await context.bot.send_message(
+                chat_id=update.effective_user.id,
+                text="⚠️ Terjadi kesalahan internal. Silakan coba lagi atau hubungi admin."
+            )
+    except Exception:
+        pass
 
 
 def main():  # Made With love by @govtrashit A.K.A RzkyO
@@ -2993,12 +3478,20 @@ def main():  # Made With love by @govtrashit A.K.A RzkyO
         raise RuntimeError("❌ BOT_TOKEN tidak ditemukan di environment variable!")
 
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start",    start))
-    app.add_handler(CommandHandler("riwayat",  cmd_riwayat))
-    app.add_handler(CommandHandler("rekap",    cmd_rekap))
+    app.add_handler(CommandHandler("start",      start))
+    app.add_handler(CommandHandler("riwayat",    cmd_riwayat))
+    app.add_handler(CommandHandler("rekap",      cmd_rekap))
+    app.add_handler(CommandHandler("dm",         cmd_dm))
+    app.add_handler(CommandHandler("users",      cmd_users))
+    app.add_handler(CommandHandler("stats",      cmd_stats))
+    app.add_handler(CommandHandler("addstok",    cmd_addstok))
+    app.add_handler(CommandHandler("voucher",    cmd_voucher))
+    app.add_handler(CommandHandler("addvoucher", cmd_addvoucher))
+    app.add_handler(CommandHandler("rating",     cmd_rating))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.PHOTO,              handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_error_handler(error_handler)
     print(f"✅ Bot {load_config()['nama_toko']} berjalan...")
     app.run_polling()
 

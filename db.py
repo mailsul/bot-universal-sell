@@ -79,6 +79,34 @@ def init_db():
             nominal INTEGER DEFAULT 0
         )""")
 
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS voucher (
+            kode      TEXT PRIMARY KEY,
+            nominal   INTEGER NOT NULL DEFAULT 0,
+            max_uses  INTEGER NOT NULL DEFAULT 1,
+            used      INTEGER NOT NULL DEFAULT 0,
+            aktif     INTEGER NOT NULL DEFAULT 1,
+            dibuat    TEXT NOT NULL DEFAULT ''
+        )""")
+
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS voucher_log (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            kode      TEXT NOT NULL,
+            user_id   TEXT NOT NULL,
+            waktu     TEXT NOT NULL
+        )""")
+
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS rating (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    TEXT NOT NULL,
+            trx_id     TEXT NOT NULL,
+            produk     TEXT NOT NULL,
+            bintang    INTEGER NOT NULL DEFAULT 5,
+            waktu      TEXT NOT NULL
+        )""")
+
         conn.commit()
         conn.close()
 
@@ -739,3 +767,111 @@ def web_set_force_password_change(telegram_id: int, flag: int = 1) -> None:
         )
         conn.commit()
         conn.close()
+
+
+# ─── VOUCHER ──────────────────────────────────────────────────────────────────
+
+def db_add_voucher(kode: str, nominal: int, max_uses: int = 1) -> bool:
+    """Buat voucher baru. Return False jika kode sudah ada."""
+    with _lock:
+        conn = _get_conn()
+        try:
+            conn.execute(
+                "INSERT INTO voucher (kode, nominal, max_uses, used, aktif, dibuat) VALUES (?,?,?,0,1,?)",
+                (kode.upper(), int(nominal), int(max_uses), datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
+            )
+            conn.commit()
+            return True
+        except Exception:
+            return False
+        finally:
+            conn.close()
+
+
+def db_get_all_vouchers() -> list:
+    """Ambil semua voucher (untuk panel admin)."""
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute("SELECT * FROM voucher ORDER BY rowid DESC").fetchall()
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def db_use_voucher(kode: str, user_id: str) -> str | int:
+    """
+    Pakai voucher. Return:
+      - int (nominal)   → berhasil
+      - "invalid"       → kode tidak ada / tidak aktif / sudah habis
+      - "used"          → user ini sudah pernah pakai kode ini
+    """
+    kode = kode.upper().strip()
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT * FROM voucher WHERE kode=? AND aktif=1", (kode,)
+        ).fetchone()
+        if not row:
+            conn.close()
+            return "invalid"
+        if row["used"] >= row["max_uses"]:
+            conn.close()
+            return "invalid"
+        # Cek apakah user sudah pernah pakai
+        already = conn.execute(
+            "SELECT id FROM voucher_log WHERE kode=? AND user_id=?", (kode, str(user_id))
+        ).fetchone()
+        if already:
+            conn.close()
+            return "used"
+        # Tandai pakai
+        conn.execute("UPDATE voucher SET used=used+1 WHERE kode=?", (kode,))
+        conn.execute(
+            "INSERT INTO voucher_log (kode, user_id, waktu) VALUES (?,?,?)",
+            (kode, str(user_id), datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
+        )
+        conn.commit()
+        nominal = int(row["nominal"])
+        conn.close()
+    return nominal
+
+
+def db_delete_voucher(kode: str) -> bool:
+    """Hapus voucher dari DB."""
+    with _lock:
+        conn = _get_conn()
+        conn.execute("DELETE FROM voucher WHERE kode=?", (kode.upper(),))
+        conn.commit()
+        conn.close()
+    return True
+
+
+# ─── RATING ───────────────────────────────────────────────────────────────────
+
+def db_add_rating(user_id: str, trx_id: str, produk: str, bintang: int) -> None:
+    """Simpan rating dari user setelah pembelian."""
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            "INSERT INTO rating (user_id, trx_id, produk, bintang, waktu) VALUES (?,?,?,?,?)",
+            (str(user_id), str(trx_id), produk, int(bintang),
+             datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
+        )
+        conn.commit()
+        conn.close()
+
+
+def db_get_ratings(produk: str = None, limit: int = 50) -> list:
+    """Ambil rating, bisa filter per produk."""
+    with _lock:
+        conn = _get_conn()
+        if produk:
+            rows = conn.execute(
+                "SELECT * FROM rating WHERE produk LIKE ? ORDER BY id DESC LIMIT ?",
+                (f"%{produk}%", limit)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM rating ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        conn.close()
+    return [dict(r) for r in rows]
