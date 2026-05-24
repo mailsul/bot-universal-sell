@@ -119,6 +119,9 @@ _EID: dict[str, str] = {
     "👤": "5373012449597335010", "📌": "5397782960512444700",
     "⭐": "5229227046290343318", "🌟": "5269721741713745479",
     "🎁": "5199749070830197566",
+    "▶": "5348125953090403204", "▶️": "5348125953090403204",
+    "◀": "5974120159491657171", "◀️": "5974120159491657171",
+    "📢": "5460850689783668519",
 }
 
 
@@ -1353,7 +1356,7 @@ async def handle_confirm_order(update: Update, context: CallbackContext):
         kb.append([_ikb("💳 Bayar via QRIS (Otomatis)", "💳", "primary", callback_data="beli_qris")])
         if saldo_user < total:
             kb.append([_ikb("💰 Top Up Saldo dulu", "💰", "primary", callback_data="deposit")])
-        kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="back_to_produk")])
+        kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="list_produk")])
         await safe_edit(query, context, msg_text, reply_markup=InlineKeyboardMarkup(kb))
     else:
         # QRIS tidak tersedia — langsung proses dengan saldo
