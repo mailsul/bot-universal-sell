@@ -42,20 +42,15 @@
     "tipe": {
       "t1": {
         "nama": "CANVA PRO LIFETIME",
-        "harga": 100000,
+        "harga": 1000,
         "akun_list": [
-          {
-            "username": "canvalife1@mail.com",
-            "password": "life123",
-            "tipe": "Lifetime"
-          },
           {
             "username": "canvalife2@mail.com",
             "password": "life456",
             "tipe": "Lifetime"
           }
         ],
-        "stok": 2,
+        "stok": 1,
         "deskripsi": ""
       },
       "t2": {

@@ -736,6 +736,15 @@ async def safe_edit(query, context, text: str, parse_mode: str = "Markdown",
             await context.bot.send_message(chat_id=query.from_user.id, text=msg, **kw_s)
 
 
+async def _send_pe(bot, chat_id: int, text: str, reply_markup=None, parse_mode: str = "Markdown"):
+    """Kirim pesan baru dengan premium emoji (entities) atau fallback parse_mode."""
+    plain, ents = _pe(text, parse_mode)
+    if ents:
+        await bot.send_message(chat_id=chat_id, text=plain, entities=ents, reply_markup=reply_markup)
+    else:
+        await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+
+
 async def send_main_menu(bot_or_context, chat_id: int, user):
     bot = getattr(bot_or_context, 'bot', bot_or_context)
 
@@ -978,16 +987,21 @@ async def _send_produk_with_tipe(bot, chat_id: int, pid: str, item: dict, contex
         context.user_data["konfirmasi"] = {"produk_id": pid, "tipe_id": tid, "jumlah": 1}
         order_txt = _order_text(item, 1, tipe_obj)
         kb        = _order_keyboard(1)
+        plain, ents = _pe(order_txt, "Markdown")
         if gambar:
             try:
                 base = gambar.lstrip("/")
                 with open(base, "rb") as f:
-                    await bot.send_photo(chat_id=chat_id, photo=InputFile(f),
-                                         caption=order_txt, reply_markup=kb, parse_mode="Markdown")
+                    if ents:
+                        await bot.send_photo(chat_id=chat_id, photo=InputFile(f),
+                                             caption=plain, caption_entities=ents, reply_markup=kb)
+                    else:
+                        await bot.send_photo(chat_id=chat_id, photo=InputFile(f),
+                                             caption=order_txt, reply_markup=kb, parse_mode="Markdown")
                 return
             except Exception:
                 pass
-        await bot.send_message(chat_id=chat_id, text=order_txt, reply_markup=kb, parse_mode="Markdown")
+        await _send_pe(bot, chat_id, order_txt, reply_markup=kb)
         return
 
     # Multiple tipe → tampilkan selector
@@ -999,9 +1013,9 @@ async def _send_produk_with_tipe(bot, chat_id: int, pid: str, item: dict, contex
         icon = "✅" if stok > 0 else "❌"
         lines.append(f"{icon} *{t['nama']}* — Rp{t.get('harga',0):,} ({stok} stok)")
         if stok > 0:
-            btn = _ikb(f"{t['nama']} Rp{t.get('harga',0):,}", "", "primary", callback_data=f"tipe_{pid}_{tid}")
+            btn = _ikb(f"✅ {t['nama']} Rp{t.get('harga',0):,}", "✅", "success", callback_data=f"tipe_{pid}_{tid}")
         else:
-            btn = _ikb(f"❌ {t['nama']} (habis)", "", None, callback_data="ignore")
+            btn = _ikb(f"❌ {t['nama']} (habis)", "❌", None, callback_data="ignore")
         row.append(btn)
         if len(row) == 2:
             kb_rows.append(row)
@@ -1012,17 +1026,25 @@ async def _send_produk_with_tipe(bot, chat_id: int, pid: str, item: dict, contex
 
     text = "\n".join(lines)
     kb   = InlineKeyboardMarkup(kb_rows)
+    plain, ents = _pe(text, "Markdown")
 
     if gambar:
         try:
             base = gambar.lstrip("/")
             with open(base, "rb") as f:
-                await bot.send_photo(chat_id=chat_id, photo=InputFile(f),
-                                     caption=text, reply_markup=kb, parse_mode="Markdown")
+                if ents:
+                    await bot.send_photo(chat_id=chat_id, photo=InputFile(f),
+                                         caption=plain, caption_entities=ents, reply_markup=kb)
+                else:
+                    await bot.send_photo(chat_id=chat_id, photo=InputFile(f),
+                                         caption=text, reply_markup=kb, parse_mode="Markdown")
             return
         except Exception:
             pass
-    await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb, parse_mode="Markdown")
+    if ents:
+        await bot.send_message(chat_id=chat_id, text=plain, entities=ents, reply_markup=kb)
+    else:
+        await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb, parse_mode="Markdown")
 
 
 async def handle_produk_detail(update: Update, context: CallbackContext):
@@ -1066,13 +1088,7 @@ async def handle_tipe_select(update: Update, context: CallbackContext):
     context.user_data["konfirmasi"] = {"produk_id": pid, "tipe_id": tid, "jumlah": 1}
     order_txt = _order_text(item, 1, tipe_obj)
     kb        = _order_keyboard(1)
-    try:
-        await query.edit_message_text(order_txt, reply_markup=kb, parse_mode="Markdown")
-    except Exception:
-        try:
-            await query.edit_message_caption(order_txt, reply_markup=kb, parse_mode="Markdown")
-        except Exception:
-            pass
+    await safe_edit(query, context, order_txt, reply_markup=kb)
 
 
 def _get_tipe_from_info(produk: dict, info: dict):
@@ -1104,13 +1120,7 @@ async def handle_qty_plus(update: Update, context: CallbackContext):
         jumlah += 1
     context.user_data["konfirmasi"]["jumlah"] = jumlah
     txt = _order_text(item, jumlah, tipe_obj)
-    try:
-        await query.edit_message_text(txt, reply_markup=_order_keyboard(jumlah), parse_mode="Markdown")
-    except Exception:
-        try:
-            await query.edit_message_caption(txt, reply_markup=_order_keyboard(jumlah), parse_mode="Markdown")
-        except Exception:
-            pass
+    await safe_edit(query, context, txt, reply_markup=_order_keyboard(jumlah))
 
 
 async def handle_qty_minus(update: Update, context: CallbackContext):
@@ -1131,13 +1141,7 @@ async def handle_qty_minus(update: Update, context: CallbackContext):
         jumlah -= 1
     context.user_data["konfirmasi"]["jumlah"] = jumlah
     txt = _order_text(item, jumlah, tipe_obj)
-    try:
-        await query.edit_message_text(txt, reply_markup=_order_keyboard(jumlah), parse_mode="Markdown")
-    except Exception:
-        try:
-            await query.edit_message_caption(txt, reply_markup=_order_keyboard(jumlah), parse_mode="Markdown")
-        except Exception:
-            pass
+    await safe_edit(query, context, txt, reply_markup=_order_keyboard(jumlah))
 
 
 async def handle_confirm_order(update: Update, context: CallbackContext):
@@ -1193,17 +1197,11 @@ async def handle_confirm_order(update: Update, context: CallbackContext):
                 f"💰 Bayar dengan Saldo (Rp{saldo_user:,})", "💰", "success",
                 callback_data="confirm_saldo"
             )])
-        kb.append([_ikb("💳 Bayar via QRIS (Otomatis)", "", "primary", callback_data="beli_qris")])
+        kb.append([_ikb("💳 Bayar via QRIS (Otomatis)", "💳", "primary", callback_data="beli_qris")])
         if saldo_user < total:
             kb.append([_ikb("💰 Top Up Saldo dulu", "💰", "primary", callback_data="deposit")])
         kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="back_to_produk")])
-        try:
-            await query.edit_message_text(msg_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
-        except Exception:
-            try:
-                await query.edit_message_caption(msg_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
-            except Exception:
-                pass
+        await safe_edit(query, context, msg_text, reply_markup=InlineKeyboardMarkup(kb))
     else:
         # QRIS tidak tersedia — langsung proses dengan saldo
         await _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total, saldo_user)
@@ -1244,23 +1242,11 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
             [_ikb("💰 Deposit Saldo", "💰", "primary", callback_data="deposit")],
         ]
         if _qris_available():
-            kb_rows.append([_ikb("💳 Bayar via QRIS (Otomatis)", "", "primary", callback_data="beli_qris")])
+            kb_rows.append([_ikb("💳 Bayar via QRIS (Otomatis)", "💳", "primary", callback_data="beli_qris")])
         kb_rows.append([_ikb("🔙 Kembali ke Menu", "🔙", "danger", callback_data="back_to_produk")])
-        try:
-            await query.edit_message_text(
-                "❌ *Saldo tidak cukup.*\nSilakan deposit atau bayar langsung via QRIS.",
-                reply_markup=InlineKeyboardMarkup(kb_rows),
-                parse_mode="Markdown"
-            )
-        except Exception:
-            try:
-                await query.edit_message_caption(
-                    "❌ *Saldo tidak cukup.*",
-                    reply_markup=InlineKeyboardMarkup(kb_rows),
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
+        await safe_edit(query, context,
+                        "❌ *Saldo tidak cukup.*\nSilakan deposit atau bayar langsung via QRIS.",
+                        reply_markup=InlineKeyboardMarkup(kb_rows))
         return
 
     async with purchase_lock:
@@ -1320,11 +1306,7 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
             f"─────────────────────\n"
         )
 
-    await context.bot.send_message(
-        chat_id=query.from_user.id,
-        text=text_akun,
-        parse_mode="Markdown"
-    )
+    await _send_pe(context.bot, query.from_user.id, text_akun)
     with open(file_path, "rb") as f:
         await context.bot.send_document(
             chat_id=query.from_user.id,

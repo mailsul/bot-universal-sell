@@ -107,7 +107,16 @@
           <p class="text-muted small mb-2">Akun premium siap pakai</p>
           {% endif %}
         {% elif p.tipe|length > 1 %}
-          <p class="text-muted small mb-2">{{ p.tipe|length }} pilihan tipe tersedia</p>
+          <p class="text-muted small mb-1">{{ p.tipe|length }} pilihan tipe:</p>
+          <div class="mb-2">
+            {% for t in p.tipe %}
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <span class="badge {% if t.stok > 0 %}bg-success{% else %}bg-secondary{% endif %}" style="font-size:.68rem;min-width:24px;text-align:center">{{ t.stok }}</span>
+              <span class="text-muted" style="font-size:.78rem;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ t.nama }}</span>
+              <span class="fw-semibold" style="font-size:.76rem;color:var(--brand-dark)">Rp{{ "{:,}".format(t.harga) }}</span>
+            </div>
+            {% endfor %}
+          </div>
         {% else %}
           <p class="text-muted small mb-2">Akun premium siap pakai</p>
         {% endif %}
