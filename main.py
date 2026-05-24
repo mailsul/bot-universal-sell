@@ -829,21 +829,30 @@ async def send_main_menu(bot_or_context, chat_id: int, user):
 
     markup = InlineKeyboardMarkup(keyboard)
 
+    # Konversi ke premium emoji entities (HTML mode)
+    plain, ents = _pe(text, "HTML")
+
     # Kirim logo jika ada
     logo = _get_logo_path()
     if logo:
         try:
             with open(logo, "rb") as f:
-                await bot.send_photo(
-                    chat_id=chat_id, photo=f,
-                    caption=text, parse_mode="HTML",
-                    reply_markup=markup
-                )
+                send_kw: dict = {"chat_id": chat_id, "photo": f, "reply_markup": markup}
+                if ents:
+                    send_kw["caption"] = plain
+                    send_kw["caption_entities"] = ents
+                else:
+                    send_kw["caption"] = text
+                    send_kw["parse_mode"] = "HTML"
+                await bot.send_photo(**send_kw)
             return
         except Exception:
             pass  # fallback ke send_message biasa
 
-    await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=markup)
+    if ents:
+        await bot.send_message(chat_id=chat_id, text=plain, entities=ents, reply_markup=markup)
+    else:
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=markup)
 
 
 async def send_main_menu_safe(update: Update, context: CallbackContext):
@@ -2250,21 +2259,8 @@ async def handle_info_bot(update: Update, context: CallbackContext):
     kb_rows.append([_ikb("🔥 Kembali ke Menu", "🔥", "danger", callback_data="back_to_produk")])
     markup = InlineKeyboardMarkup(kb_rows)
     await query.answer()
-    try:
-        await query.edit_message_text(text, parse_mode="HTML",
-                                      disable_web_page_preview=True, reply_markup=markup)
-    except Exception:
-        try:
-            await query.edit_message_caption(text, parse_mode="HTML", reply_markup=markup)
-        except Exception:
-            try:
-                await query.message.delete()
-            except Exception:
-                pass
-            await context.bot.send_message(
-                chat_id=query.from_user.id, text=text,
-                parse_mode="HTML", disable_web_page_preview=True, reply_markup=markup
-            )
+    await safe_edit(query, context, text, parse_mode="HTML",
+                    disable_web_page_preview=True, reply_markup=markup)
 
 
 async def handle_ignore(update: Update, context: CallbackContext):
