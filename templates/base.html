@@ -271,7 +271,50 @@
 
     /* navbar user text */
     .nav-user-text { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* ── DARK MODE TABLE ── */
+    [data-theme="dark"] .table thead th { background: #1a1535; color: #9ca3af; }
+    [data-theme="dark"] .table tbody tr { background: #120f24; color: #e5e7eb; }
+    [data-theme="dark"] .table tbody tr:hover { background: #1e1640; }
+    [data-theme="dark"] .table td, [data-theme="dark"] .table th { border-color: #2d2560; }
+    [data-theme="dark"] .table-light, [data-theme="dark"] .table-light th { background: #1a1535 !important; color: #9ca3af !important; }
+    [data-theme="dark"] .table-hover tbody tr:hover td { background: #1e1640 !important; color: #e5e7eb; }
+
+    /* ── DARK MODE CARD/MODAL ── */
+    [data-theme="dark"] .modal-content { background: #120f24 !important; color: #e5e7eb; }
+    [data-theme="dark"] .modal-footer { border-color: #2d2560 !important; }
+    [data-theme="dark"] .stat-card { background: #1a1535 !important; border-color: #2d2560 !important; color: #e5e7eb !important; }
+    [data-theme="dark"] .nav-tabs { border-color: #2d2560 !important; }
+    [data-theme="dark"] #adminTabs .nav-link { color: #9ca3af !important; }
+    [data-theme="dark"] #adminTabs .nav-link.active { background: #120f24 !important; border-color: var(--brand) !important; color: var(--brand) !important; }
+    [data-theme="dark"] .badge.bg-secondary { background: #3a3366 !important; }
+    [data-theme="dark"] .btn-outline-secondary { border-color: #3a3366 !important; color: #9ca3af !important; }
+    [data-theme="dark"] .btn-outline-secondary:hover { background: #2d2560 !important; color: #e5e7eb !important; }
+    [data-theme="dark"] .form-check-input:not(:checked) { background-color: #2d2560; border-color: #4b4690; }
+    [data-theme="dark"] .input-group-text { background: #1e1640 !important; border-color: #2d2560 !important; }
+
+    /* ── DARK MODE SCROLLBAR ── */
+    [data-theme="dark"] ::-webkit-scrollbar-track { background: #1a1535; }
+    [data-theme="dark"] ::-webkit-scrollbar-thumb { background: #4b4690; }
   </style>
+
+  {% if brand %}
+  <style id="brandVars">
+    :root {
+      --brand:       {{ brand.brand }};
+      --brand-dark:  {{ brand.dark }};
+      --brand-light: {{ brand.light }};
+      --brand-mid:   {{ brand.mid }};
+    }
+    [data-theme="dark"] {
+      --brand:       {{ brand.dm_brand }};
+      --brand-dark:  {{ brand.dm_dark }};
+      --brand-light: {{ brand.dm_light }};
+      --brand-mid:   {{ brand.mid }};
+    }
+  </style>
+  {% endif %}
+
   {% block head %}{% endblock %}
 </head>
 <body>

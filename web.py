@@ -217,6 +217,43 @@ def _save_produk_img(pid: str, file) -> str | None:
     file.save(os.path.join(PRODUK_IMG_DIR, fname))
     return f"/static/produk_img/{fname}"
 
+# ─── BRAND COLOR PRESETS ──────────────────────────────────────────────────────
+BRAND_PRESETS: dict[str, dict] = {
+    "purple": {
+        "brand": "#7c3aed", "dark": "#5b21b6", "light": "#ede9fe", "mid": "#8b5cf6",
+        "dm_brand": "#a78bfa", "dm_dark": "#7c3aed", "dm_light": "#2d1d5e",
+    },
+    "blue": {
+        "brand": "#2563eb", "dark": "#1d4ed8", "light": "#dbeafe", "mid": "#3b82f6",
+        "dm_brand": "#60a5fa", "dm_dark": "#2563eb", "dm_light": "#1e2a4a",
+    },
+    "green": {
+        "brand": "#059669", "dark": "#047857", "light": "#d1fae5", "mid": "#10b981",
+        "dm_brand": "#34d399", "dm_dark": "#059669", "dm_light": "#0d2e20",
+    },
+    "red": {
+        "brand": "#dc2626", "dark": "#b91c1c", "light": "#fee2e2", "mid": "#ef4444",
+        "dm_brand": "#f87171", "dm_dark": "#dc2626", "dm_light": "#2d0a0a",
+    },
+    "orange": {
+        "brand": "#ea580c", "dark": "#c2410c", "light": "#ffedd5", "mid": "#f97316",
+        "dm_brand": "#fb923c", "dm_dark": "#ea580c", "dm_light": "#2d1400",
+    },
+    "pink": {
+        "brand": "#db2777", "dark": "#be185d", "light": "#fce7f3", "mid": "#ec4899",
+        "dm_brand": "#f472b6", "dm_dark": "#db2777", "dm_light": "#2d0a1e",
+    },
+    "teal": {
+        "brand": "#0d9488", "dark": "#0f766e", "light": "#ccfbf1", "mid": "#14b8a6",
+        "dm_brand": "#2dd4bf", "dm_dark": "#0d9488", "dm_light": "#0a2525",
+    },
+    "indigo": {
+        "brand": "#4f46e5", "dark": "#4338ca", "light": "#e0e7ff", "mid": "#6366f1",
+        "dm_brand": "#818cf8", "dm_dark": "#4f46e5", "dm_light": "#1a1a45",
+    },
+}
+
+
 def load_config() -> dict:
     try:
         with open("config.json", encoding="utf-8") as f:
@@ -343,12 +380,17 @@ def check_mutation(expected: int) -> bool:
 
 @app.context_processor
 def _ctx():
-    cfg = load_config()
+    cfg          = load_config()
+    preset_name  = cfg.get("brand_color", "purple")
+    brand        = BRAND_PRESETS.get(preset_name, BRAND_PRESETS["purple"])
     return {
         "cfg":           cfg,
         "current_user":  current_user(),
         "current_saldo": db_get_saldo(session["user_tid"]) if "user_tid" in session else 0,
         "logo_url":      get_logo_url(),
+        "brand":         brand,
+        "brand_presets": BRAND_PRESETS,
+        "brand_name":    preset_name,
     }
 
 
@@ -978,14 +1020,17 @@ def deposit_upload():
 @app.route("/admin")
 @admin_required
 def admin():
-    pending   = db_get_all_pending()
-    saldo_all = db_get_all_saldo()
-    stats     = db_get_all_statistik()
+    pending     = db_get_all_pending()
+    saldo_all   = db_get_all_saldo()
+    stats       = db_get_all_statistik()
+    bot_users   = db_get_all_bot_users()
+    bot_uid_map = {str(u["telegram_id"]): u.get("username") for u in bot_users}
     return render_template(
         "admin.html",
         pending=pending, saldo_all=saldo_all, stats=stats,
         users_web=web_get_all_users(), produk=load_produk(),
         total_saldo=sum(saldo_all.values()),
+        bot_uid_map=bot_uid_map,
     )
 
 
@@ -1507,6 +1552,10 @@ def admin_config_save():
     cfg["kontak_admin"] = kontak
     # Toggle Transfer Manual
     cfg["transfer_manual_aktif"] = request.form.get("transfer_manual_aktif") == "on"
+    # Brand color
+    brand_color = request.form.get("brand_color", "").strip()
+    if brand_color in BRAND_PRESETS:
+        cfg["brand_color"] = brand_color
     save_config(cfg)
     flash("✅ Pengaturan berhasil disimpan.", "success")
     return redirect(url_for("admin") + "#tab-config")
@@ -1544,20 +1593,50 @@ def admin_saldo_atur():
 @app.route("/admin/broadcast", methods=["POST"])
 @admin_required
 def admin_broadcast():
-    pesan = request.form.get("pesan","").strip()
+    pesan     = request.form.get("pesan","").strip()
+    convert   = request.form.get("convert_emoji") == "on"
     if not pesan:
         flash("Pesan tidak boleh kosong.", "danger")
         return redirect(url_for("admin") + "#tab-broadcast")
+
+    # Coba convert emoji ke premium jika diminta
+    final_text    = pesan
+    final_ents    = None  # None = pakai parse_mode Markdown
+    if convert:
+        try:
+            from premium_emoji import build_http_entities as _pe_raw_web
+            import json as _json
+            plain, raw = _pe_raw_web(pesan, "Markdown")
+            if raw:
+                final_text = plain
+                final_ents = raw   # list of dicts (raw entity format for HTTP API)
+        except Exception:
+            pass
+
     saldo_all = db_get_all_saldo()
     users_web = web_get_all_users()
-    uids = set(int(k) for k in saldo_all.keys())
+    uids      = set(int(k) for k in saldo_all.keys())
     for u in users_web:
         uids.add(int(u["telegram_id"]))
-    nama_toko = load_config().get("nama_toko","")
-    ok_count = sum(
-        1 for uid in uids
-        if send_telegram(uid, f"📢 *Broadcast {nama_toko}*\n\n{pesan}")
-    )
+
+    ok_count = 0
+    for uid in uids:
+        if final_ents:
+            try:
+                import httpx as _hx
+                r = _hx.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    json={"chat_id": uid, "text": final_text, "entities": final_ents},
+                    timeout=8,
+                )
+                if r.json().get("ok"):
+                    ok_count += 1
+            except Exception:
+                pass
+        else:
+            if send_telegram(uid, final_text):
+                ok_count += 1
+
     flash(f"✅ Broadcast terkirim ke {ok_count}/{len(uids)} user.", "success")
     return redirect(url_for("admin") + "#tab-broadcast")
 

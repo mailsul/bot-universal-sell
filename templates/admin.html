@@ -40,7 +40,6 @@
 <ul class="nav nav-tabs mb-4" id="adminTabs">
   <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-dash"><i class="bi bi-speedometer2 me-1"></i>Dashboard</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-produk"><i class="bi bi-box-seam me-1"></i>Produk</button></li>
-  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-users"><i class="bi bi-people me-1"></i>Data User</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-saldo"><i class="bi bi-wallet2 me-1"></i>Saldo</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-config"><i class="bi bi-gear me-1"></i>Pengaturan</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-broadcast"><i class="bi bi-megaphone me-1"></i>Broadcast</button></li>
@@ -117,17 +116,35 @@
     <div class="row g-4">
       <div class="col-md-6">
         <div class="card">
-          <div class="card-header"><h6 class="mb-0"><i class="bi bi-people me-1"></i>Saldo User (Bot)</h6></div>
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <h6 class="mb-0"><i class="bi bi-people me-1"></i>Saldo User (Bot)</h6>
+            <button class="btn btn-sm btn-outline-secondary py-0 px-2" id="btnHideZero"
+              onclick="toggleHideZero()" title="Sembunyikan Rp0">
+              <i class="bi bi-eye-slash me-1"></i><span id="hideZeroLabel">Sembunyikan Rp0</span>
+            </button>
+          </div>
           <div class="card-body p-0">
             <div class="table-responsive">
-              <table class="table table-sm mb-0">
-                <thead><tr><th>User ID</th><th class="text-end">Saldo</th><th class="text-end">Beli</th></tr></thead>
+              <table class="table table-sm mb-0" id="tblSaldoBot">
+                <thead><tr><th>User</th><th class="text-end">Saldo</th><th class="text-end">Beli</th></tr></thead>
                 <tbody>
                   {% for uid, amt in saldo_all.items() %}
-                  <tr>
-                    <td><code>{{ uid }}</code></td>
-                    <td class="text-end fw-bold small">Rp{{ "{:,}".format(amt) }}</td>
-                    <td class="text-end small text-muted">{% if uid in stats %}{{ stats[uid].jumlah }}x{% else %}—{% endif %}</td>
+                  <tr class="{% if amt == 0 %}row-zero{% endif %}">
+                    <td>
+                      {% set uname = bot_uid_map.get(uid|string) %}
+                      {% if uname %}
+                      <span class="text-brand fw-semibold small">@{{ uname }}</span>
+                      <br><code class="small">{{ uid }}</code>
+                      {% else %}
+                      <code>{{ uid }}</code>
+                      {% endif %}
+                    </td>
+                    <td class="text-end fw-bold small {% if amt > 0 %}text-success{% endif %}">
+                      Rp{{ "{:,}".format(amt) }}
+                    </td>
+                    <td class="text-end small text-muted">
+                      {% if uid in stats %}{{ stats[uid].jumlah }}x{% else %}—{% endif %}
+                    </td>
                   </tr>
                   {% endfor %}
                 </tbody>
@@ -138,17 +155,35 @@
       </div>
       <div class="col-md-6">
         <div class="card">
-          <div class="card-header"><h6 class="mb-0"><i class="bi bi-person-badge me-1"></i>Member Website</h6></div>
+          <div class="card-header"><h6 class="mb-0"><i class="bi bi-person-badge me-1"></i>Member Website ({{ users_web|length }})</h6></div>
           <div class="card-body p-0">
             <div class="table-responsive">
-              <table class="table table-sm mb-0">
-                <thead><tr><th>Telegram ID</th><th>Role</th><th>Terdaftar</th></tr></thead>
+              <table class="table table-sm table-hover mb-0">
+                <thead><tr>
+                  <th>ID / TG</th><th>Username</th><th>Role</th>
+                  <th class="text-end">Saldo</th><th>Terdaftar</th><th class="text-center">PW</th>
+                </tr></thead>
                 <tbody>
                   {% for u in users_web %}
                   <tr>
-                    <td><code>{{ u.telegram_id }}</code></td>
+                    <td>
+                      <code class="small">{{ u.telegram_id }}</code>
+                      {% if u.telegram_username %}<br><span class="small text-muted">@{{ u.telegram_username }}</span>{% endif %}
+                    </td>
+                    <td class="small">{{ u.email or u.phone or '—' }}</td>
                     <td><span class="badge {% if u.role=='admin' %}bg-danger{% else %}bg-secondary{% endif %}">{{ u.role }}</span></td>
-                    <td class="small text-muted">{{ u.created_at }}</td>
+                    <td class="text-end small fw-semibold {% if saldo_all.get(u.telegram_id|string, 0) > 0 %}text-success{% endif %}">
+                      Rp{{ "{:,}".format(saldo_all.get(u.telegram_id|string, 0)) }}
+                    </td>
+                    <td class="small text-muted">{{ u.created_at[:10] if u.created_at else '—' }}</td>
+                    <td class="text-center">
+                      <form method="post" action="/admin/user/{{ u.telegram_id }}/gen-password"
+                        class="d-inline" onsubmit="return confirm('Reset password {{ u.telegram_id }}? Password baru dikirim via Telegram.')">
+                        <button class="btn btn-xs btn-outline-warning btn-sm py-0 px-2" title="Reset & kirim password via Telegram">
+                          <i class="bi bi-key"></i>
+                        </button>
+                      </form>
+                    </td>
                   </tr>
                   {% endfor %}
                 </tbody>
@@ -314,61 +349,6 @@
     </div>
   </div>
 
-  <!-- ── DATA USER ── -->
-  <div class="tab-pane fade" id="tab-users">
-    <div class="card">
-      <div class="card-header d-flex align-items-center justify-content-between">
-        <h6 class="mb-0"><i class="bi bi-people me-1"></i>Semua User Terdaftar ({{ users_web|length }})</h6>
-      </div>
-      <div class="card-body p-0">
-        {% if users_web %}
-        <div class="table-responsive">
-          <table class="table table-sm table-hover mb-0">
-            <thead class="table-light">
-              <tr>
-                <th>Telegram ID</th>
-                <th>Username</th>
-                <th>No. HP</th>
-                <th>Email</th>
-                <th>Role</th>
-                <th>Saldo</th>
-                <th>Terdaftar</th>
-                <th class="text-center">Aksi</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for u in users_web %}
-              <tr>
-                <td><code>{{ u.telegram_id }}</code></td>
-                <td class="small">{{ ('@' + u.telegram_username) if u.telegram_username else '—' }}</td>
-                <td class="small">{{ u.phone or '—' }}</td>
-                <td class="small">{{ u.email or '—' }}</td>
-                <td><span class="badge {% if u.role=='admin' %}bg-danger{% else %}bg-secondary{% endif %}">{{ u.role }}</span></td>
-                <td class="small">Rp{{ "{:,}".format(saldo_all.get(u.telegram_id|string, 0)) }}</td>
-                <td class="small text-muted">{{ u.created_at[:10] if u.created_at else '—' }}</td>
-                <td class="text-center">
-                  <form method="post" action="/admin/user/{{ u.telegram_id }}/gen-password"
-                    class="d-inline" onsubmit="return confirm('Generate password baru untuk user {{ u.telegram_id }}? Password lama tidak bisa dipakai lagi dan akan dikirim via Telegram.')">
-                    <button class="btn btn-xs btn-outline-warning btn-sm py-0 px-2" title="Reset & kirim password baru via Telegram">
-                      <i class="bi bi-key"></i> Reset PW
-                    </button>
-                  </form>
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        {% else %}
-        <div class="text-center py-5 text-muted">
-          <i class="bi bi-people display-3 opacity-25"></i>
-          <p class="mt-3 small">Belum ada user terdaftar.</p>
-        </div>
-        {% endif %}
-      </div>
-    </div>
-  </div>
-
   <!-- ── SALDO ── -->
   <div class="tab-pane fade" id="tab-saldo">
     <div class="row g-4">
@@ -416,12 +396,16 @@
           <div class="card-body p-0">
             <div class="table-responsive">
               <table class="table table-sm mb-0">
-                <thead><tr><th>Telegram ID</th><th class="text-end">Saldo</th><th class="text-end">Total Beli</th></tr></thead>
+                <thead><tr><th>User</th><th class="text-end">Saldo</th><th class="text-end">Total Beli</th></tr></thead>
                 <tbody>
                   {% for uid, amt in saldo_all.items() %}
                   <tr>
                     <td>
-                      <code style="cursor:pointer" onclick="document.querySelector('[name=user_id]').value='{{ uid }}';
+                      {% set uname2 = bot_uid_map.get(uid|string) %}
+                      {% if uname2 %}
+                      <span class="small fw-semibold text-brand">@{{ uname2 }}</span><br>
+                      {% endif %}
+                      <code class="small" style="cursor:pointer" onclick="document.querySelector('[name=user_id]').value='{{ uid }}';
                         document.querySelector('#tab-saldo [type=submit]').scrollIntoView()">{{ uid }}</code>
                     </td>
                     <td class="text-end fw-bold small {% if amt > 0 %}text-success{% endif %}">
@@ -490,6 +474,49 @@
         </div>
       </div>
 
+      <!-- Brand Color Picker -->
+      <div class="col-md-12 col-lg-12 mb-2">
+        <div class="card">
+          <div class="card-header"><h6 class="mb-0"><i class="bi bi-palette me-1"></i>Warna Tema Website</h6></div>
+          <div class="card-body p-4">
+            <p class="text-muted small mb-3">Pilih warna utama website. Berlaku untuk navbar, tombol, dan semua elemen brand.</p>
+            <div class="d-flex gap-3 flex-wrap align-items-center" id="colorSwatches">
+              {% set preset_labels = {
+                'purple':'Ungu','blue':'Biru','green':'Hijau','red':'Merah',
+                'orange':'Oranye','pink':'Pink','teal':'Teal','indigo':'Indigo'
+              } %}
+              {% for pname, pcolors in brand_presets.items() %}
+              <div class="text-center" style="cursor:pointer" onclick="pickColor('{{ pname }}')">
+                <div class="color-swatch-btn {% if brand_name == pname %}active{% endif %}"
+                  id="swatch-{{ pname }}"
+                  style="width:40px;height:40px;border-radius:50%;background:{{ pcolors.brand }};
+                    border:3px solid {% if brand_name == pname %}#fff{% else %}transparent{% endif %};
+                    box-shadow:{% if brand_name == pname %}0 0 0 2px {{pcolors.brand}},0 4px 12px rgba(0,0,0,.3){% else %}0 2px 8px rgba(0,0,0,.2){% endif %};
+                    transition:all .2s;margin:0 auto 4px">
+                </div>
+                <div class="small text-muted" style="font-size:.72rem">{{ preset_labels.get(pname, pname) }}</div>
+              </div>
+              {% endfor %}
+            </div>
+            <div class="mt-3 d-flex align-items-center gap-2">
+              <div id="previewColorDot" style="width:20px;height:20px;border-radius:50%;background:{{ brand.brand }};flex-shrink:0;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.2)"></div>
+              <span class="small fw-semibold" id="previewColorName">{{ preset_labels.get(brand_name, brand_name)|capitalize }}</span>
+              <span class="small text-muted" id="previewColorHex">{{ brand.brand }}</span>
+            </div>
+            <form method="post" action="/admin/config" id="colorForm" class="d-none">
+              <input type="hidden" name="brand_color" id="brandColorVal" value="{{ brand_name }}">
+              <input type="hidden" name="nama_toko" value="{{ cfg.nama_toko }}">
+              <input type="hidden" name="rekening" value="{{ cfg.rekening | join('\n') if cfg.rekening else '' }}">
+              <input type="hidden" name="kontak_admin" value="{{ cfg.kontak_admin }}">
+              {% if cfg.get('transfer_manual_aktif', True) %}<input type="hidden" name="transfer_manual_aktif" value="on">{% endif %}
+            </form>
+            <button class="btn btn-brand btn-sm mt-3 fw-semibold" onclick="submitColor()">
+              <i class="bi bi-check-circle me-1"></i>Terapkan Warna
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Logo Upload -->
       <div class="col-md-5">
         <div class="card">
@@ -530,15 +557,27 @@
             <div class="alert alert-info small mb-4 py-2">
               <i class="bi bi-info-circle me-1"></i>
               Pesan akan dikirim ke <strong>{{ saldo_all|length + users_web|length }} user</strong>
-              (bot + website, deduplikasi otomatis). Hanya user yang belum memblokir bot yang menerima.
+              (bot + website, deduplikasi). Hanya user yang belum blokir bot yang menerima.
             </div>
             <form method="post" action="/admin/broadcast">
-              <div class="mb-4">
+              <div class="mb-3">
                 <label class="form-label">Pesan Broadcast</label>
-                <textarea name="pesan" class="form-control" rows="6"
-                  placeholder="Tulis pesan broadcast kamu di sini...&#10;&#10;Mendukung format Markdown Telegram:&#10;*tebal* _miring_ `kode`"
+                <textarea name="pesan" class="form-control" rows="8"
+                  placeholder="Tulis pesan broadcast...&#10;&#10;Format Markdown Telegram:&#10;*tebal*  _miring_  `kode`  😊 → jadi emoji premium"
                   required></textarea>
-                <div class="form-text">Mendukung Markdown Telegram: *tebal*, _miring_, `kode`</div>
+                <div class="form-text">
+                  Markdown didukung: <strong>*tebal*</strong>, <em>_miring_</em>, <code>`kode`</code>
+                </div>
+              </div>
+              <div class="mb-4">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="convert_emoji" id="chkConvertEmoji" checked>
+                  <label class="form-check-label fw-semibold" for="chkConvertEmoji">
+                    ⚡ Auto-convert emoji biasa → Premium Emoji
+                    <span class="badge bg-success ms-1">Rekomendasi</span>
+                  </label>
+                </div>
+                <div class="form-text">Jika aktif: emoji standar (😊, 🔥, dll.) otomatis diubah ke versi premium animasi. Format bold/italic/code tetap terjaga.</div>
               </div>
               <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold"
                 onclick="return confirm('Kirim broadcast ke semua user?')">
@@ -867,7 +906,6 @@ document.getElementById('renameModal').addEventListener('show.bs.modal', e => {
 // Aktifkan tab dari URL hash
 const hashMap = {
   '#tab-produk':    'tab-produk',
-  '#tab-users':     'tab-users',
   '#tab-saldo':     'tab-saldo',
   '#tab-config':    'tab-config',
   '#tab-broadcast': 'tab-broadcast',
@@ -875,6 +913,63 @@ const hashMap = {
 if (hashMap[location.hash]) {
   const tabEl = document.querySelector(`[data-bs-target="#${hashMap[location.hash]}"]`);
   if (tabEl) new bootstrap.Tab(tabEl).show();
+}
+
+// ── HIDE ZERO SALDO ──────────────────────────────────────────────────────────
+let _hideZero = false;
+function toggleHideZero() {
+  _hideZero = !_hideZero;
+  document.querySelectorAll('#tblSaldoBot .row-zero').forEach(tr => {
+    tr.style.display = _hideZero ? 'none' : '';
+  });
+  const icon  = document.querySelector('#btnHideZero i');
+  const label = document.getElementById('hideZeroLabel');
+  if (_hideZero) {
+    icon.className  = 'bi bi-eye me-1';
+    label.textContent = 'Tampilkan Rp0';
+    document.getElementById('btnHideZero').classList.replace('btn-outline-secondary','btn-outline-warning');
+  } else {
+    icon.className  = 'bi bi-eye-slash me-1';
+    label.textContent = 'Sembunyikan Rp0';
+    document.getElementById('btnHideZero').classList.replace('btn-outline-warning','btn-outline-secondary');
+  }
+}
+
+// ── COLOR PICKER ─────────────────────────────────────────────────────────────
+const _presetColors = {{ brand_presets | tojson }};
+const _presetLabels = {
+  purple:'Ungu', blue:'Biru', green:'Hijau', red:'Merah',
+  orange:'Oranye', pink:'Pink', teal:'Teal', indigo:'Indigo'
+};
+let _pickedColor = document.getElementById('brandColorVal')?.value || 'purple';
+
+function pickColor(name) {
+  _pickedColor = name;
+  // Update all swatches
+  Object.keys(_presetColors).forEach(pname => {
+    const el = document.getElementById('swatch-' + pname);
+    if (!el) return;
+    if (pname === name) {
+      el.style.border = '3px solid #fff';
+      el.style.boxShadow = '0 0 0 2px ' + _presetColors[pname].brand + ',0 4px 12px rgba(0,0,0,.3)';
+    } else {
+      el.style.border = '3px solid transparent';
+      el.style.boxShadow = '0 2px 8px rgba(0,0,0,.2)';
+    }
+  });
+  // Update preview
+  const c = _presetColors[name];
+  if (c) {
+    document.getElementById('previewColorDot').style.background = c.brand;
+    document.getElementById('previewColorName').textContent = (_presetLabels[name] || name);
+    document.getElementById('previewColorHex').textContent = c.brand;
+  }
+  document.getElementById('brandColorVal').value = name;
+}
+
+function submitColor() {
+  if (!_pickedColor) return;
+  document.getElementById('colorForm').submit();
 }
 </script>
 {% endblock %}

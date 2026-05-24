@@ -1718,17 +1718,24 @@ async def handle_admin_panel(update: Update, context: CallbackContext):
         await query.answer("⛔ Akses ditolak", show_alert=True)
         return
 
-    saldo   = db_get_all_saldo()
-    pending = db_get_all_pending()
-    bot_cnt = len(db_get_all_bot_users())
+    saldo       = db_get_all_saldo()
+    pending     = db_get_all_pending()
+    all_bot     = db_get_all_bot_users()
+    bot_cnt     = len(all_bot)
+    uid_uname   = {str(u["telegram_id"]): u.get("username") for u in all_bot}
 
-    text = f"*🛠 ADMIN PANEL*\n\n"
+    text  = f"*🛠 ADMIN PANEL*\n\n"
     text += f"👥 Total user bot: *{bot_cnt}*\n\n"
     text += "*📊 DATA USER (bersaldo):*\n"
-    if saldo:
-        for u, s in saldo.items():
-            text += f"  • `{u}`: Rp{s:,}\n"
-    else:
+    ada_saldo = False
+    for u_id, s in saldo.items():
+        if s <= 0:
+            continue
+        ada_saldo = True
+        uname = uid_uname.get(str(u_id))
+        label = f"@{uname} ({u_id})" if uname else f"`{u_id}`"
+        text += f"  • {label}: Rp{s:,}\n"
+    if not ada_saldo:
         text += "  _Belum ada user bersaldo._\n"
 
     text += "\n*⏳ PENDING DEPOSIT:*\n"
@@ -1931,11 +1938,11 @@ async def handle_admin_settings(update: Update, context: CallbackContext):
     qris_status = "✅ Aktif via env var" if QRIS_BASE64 else ("✅ Ada (gambar)" if os.path.exists(qris_file) else "❌ Belum diatur")
     text += f"\n\n📷 *QRIS*: {qris_status}"
     keyboard = [
-        [_ikb("✏️ Ubah Nama Toko",    "✏",  None,      callback_data="admin_ubah_nama")],
-        [_ikb("🏦 Ubah Rekening",      "🏦", None,      callback_data="admin_ubah_rekening")],
-        [_ikb("📞 Ubah Kontak Admin",  "📞", None,      callback_data="admin_ubah_kontak")],
-        [_ikb("🌐 Ubah Website URL",   "🌐", None,      callback_data="admin_ubah_website")],
-        [_ikb("📷 Upload Gambar QRIS", "📷", None,      callback_data="admin_upload_qris")],
+        [_ikb("✏️ Ubah Nama Toko",    "✏",  "primary", callback_data="admin_ubah_nama")],
+        [_ikb("🏦 Ubah Rekening",      "🏦", "primary", callback_data="admin_ubah_rekening")],
+        [_ikb("📞 Ubah Kontak Admin",  "📞", "primary", callback_data="admin_ubah_kontak")],
+        [_ikb("🌐 Ubah Website URL",   "🌐", "primary", callback_data="admin_ubah_website")],
+        [_ikb("📷 Upload Gambar QRIS", "📷", "success", callback_data="admin_upload_qris")],
         [_ikb("🔙 Kembali",            "🔙", "danger",  callback_data="admin_panel")],
     ]
     await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -2199,12 +2206,14 @@ async def _broadcast_ask_message(query, context: CallbackContext, convert: bool)
     """Helper: minta admin kirim pesan broadcast setelah memilih mode emoji."""
     context.user_data["broadcast_convert"] = convert
     context.user_data["admin_state"]       = "broadcast_msg"
-    mode_str = "⚡ *Auto-convert emoji* aktif" if convert else "💎 *Kirim persis apa adanya* (preserve emoji premium)"
+    if convert:
+        mode_str = "⚡ *Mode Auto-convert*\nKetik markdown: `*bold*` `_italic_` `` `kode` `` — dan emoji biasa (😊🔥⭐) otomatis jadi premium animasi."
+    else:
+        mode_str = "💎 *Mode Preserve*\nGunakan toolbar format Telegram (bold/italic/code) — pesan dikirim persis apa adanya termasuk emoji premium."
     await safe_edit(query, context,
         f"📢 *BROADCAST — Kirim Pesan*\n\n"
         f"{mode_str}\n\n"
-        "Sekarang kirim pesan yang ingin di-broadcast.\n"
-        "Semua format didukung: *bold*, _italic_, `kode`, emoji, dll.\n\n"
+        "Sekarang kirim pesanmu. Bot akan broadcast ke semua user.\n\n"
         "_(Kirim ❌ Batal untuk membatalkan)_"
     )
 
@@ -2502,19 +2511,30 @@ async def handle_text(update: Update, context: CallbackContext):
             src_cid = update.message.chat_id
             src_mid = update.message.message_id
 
-            # Untuk mode convert: siapkan teks dengan premium emoji via _pe()
-            if convert:
-                raw_text = update.message.text or ""
-                entities = update.message.entities or []
-                # Cek apakah ada premium emoji entity sudah ada
-                has_premium = any(e.type == "custom_emoji" for e in entities)
-                if has_premium:
-                    # Sudah ada premium → kirim apa adanya
-                    convert = False
+            # Tentukan strategi pengiriman
+            orig_ents     = list(update.message.entities or [])
+            has_premium   = any(e.type == "custom_emoji" for e in orig_ents)
+            raw_text      = update.message.text or ""
+
+            send_mode     = "copy"       # default: copy_message (preserve segalanya)
+            send_kw: dict = {}           # kwargs untuk send_message
+            mode_label    = "Preserve asli (copy)"
+
+            if convert and not has_premium:
+                # Mode convert: parse markdown + tambah premium emoji
+                pe_text, pe_ents = _pe(raw_text, "Markdown")
+                if pe_ents:
+                    send_mode  = "entities"
+                    send_kw    = {"text": pe_text, "entities": pe_ents}
+                    mode_label = "Auto-convert + Markdown"
                 else:
-                    pe_text, pe_entities = _pe(raw_text, "Markdown")
-                    if not pe_entities:
-                        convert = False   # Tidak ada emoji yang bisa dikonvert
+                    # Tidak ada emoji/markdown → coba parse_mode Markdown minimal
+                    send_mode  = "markdown"
+                    send_kw    = {"text": raw_text, "parse_mode": "Markdown"}
+                    mode_label = "Markdown parse"
+            elif convert and has_premium:
+                # Pesan sudah ada premium emoji → copy preserves them
+                mode_label = "Copy (premium emoji terdeteksi)"
 
             await update.message.reply_text(
                 f"📢 Memulai broadcast ke *{total}* user...",
@@ -2522,17 +2542,16 @@ async def handle_text(update: Update, context: CallbackContext):
             )
             for u in users:
                 try:
-                    if convert:
-                        await context.bot.send_message(
-                            chat_id=u["telegram_id"],
-                            text=pe_text,
-                            entities=pe_entities
-                        )
-                    else:
+                    if send_mode == "copy":
                         await context.bot.copy_message(
                             chat_id=u["telegram_id"],
                             from_chat_id=src_cid,
                             message_id=src_mid
+                        )
+                    else:
+                        await context.bot.send_message(
+                            chat_id=u["telegram_id"],
+                            **send_kw
                         )
                     success += 1
                 except Exception:
@@ -2540,7 +2559,7 @@ async def handle_text(update: Update, context: CallbackContext):
                 await asyncio.sleep(0.05)   # flood control ~20 msg/s
             await update.message.reply_text(
                 f"✅ *Broadcast selesai!*\n\n"
-                f"⚡ Mode   : {'Auto-convert emoji' if convert else 'Kirim persis apa adanya'}\n"
+                f"⚡ Mode    : {mode_label}\n"
                 f"✔️ Terkirim : *{success}*\n"
                 f"❌ Gagal    : *{failed}*\n"
                 f"📊 Total    : *{total}*",
