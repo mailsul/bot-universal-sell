@@ -85,20 +85,15 @@
     "tipe": {
       "t1": {
         "nama": "SPOTIFY PREMIUM 1B STUDENT GP",
-        "harga": 25000,
+        "harga": 1000,
         "akun_list": [
-          {
-            "username": "spotify1@mail.com",
-            "password": "spo123",
-            "tipe": "1 Bulan Student"
-          },
           {
             "username": "spotify2@mail.com",
             "password": "spo456",
             "tipe": "1 Bulan Student"
           }
         ],
-        "stok": 2,
+        "stok": 1,
         "deskripsi": ""
       }
     }

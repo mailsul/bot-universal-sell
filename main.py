@@ -157,23 +157,41 @@ def _pe(text: str, pm: str = "Markdown") -> tuple[str, list]:
         return text, []
 
 
+_STYLE_DOT = {
+    "success":   "🟢 ",
+    "danger":    "🔴 ",
+    "warning":   "🟡 ",
+    "primary":   "🔵 ",
+    "secondary": "⚫ ",
+}
+
 def _ikb(text: str, emoji_char: str = "", style: str = None, **kwargs) -> InlineKeyboardButton:
-    """InlineKeyboardButton dengan premium icon emoji dan warna style.
-    Secara otomatis menghapus emoji dari teks jika emoji_char dipakai sebagai icon,
-    sehingga tidak ada duplikasi emoji (premium icon + emoji di teks)."""
+    """InlineKeyboardButton dengan premium icon emoji dan indikator warna.
+    - Premium emoji dipakai sebagai icon hanya jika teks PUNYA sisa setelah emoji dipotong.
+    - style menambahkan colored-dot prefix di depan teks jika tidak ada emoji_char."""
     kw = dict(kwargs)
-    # `style` hanya penanda semantik internal — JANGAN dikirim ke Telegram API
+    # `style` hanya penanda semantik internal — TIDAK dikirim ke Telegram API
+
     icon_id = _EID.get(emoji_char)
     if icon_id:
-        kw["icon_custom_emoji_id"] = icon_id
-        # Hapus emoji terdepan dari teks agar tidak dobel
+        # Coba strip emoji dari teks
         stripped = text
         if emoji_char:
             while stripped.startswith(emoji_char):
                 stripped = stripped[len(emoji_char):].lstrip()
-        # Jangan kosongkan teks — Telegram tolak tombol dengan teks kosong
         if stripped:
+            # Ada teks selain emoji → pakai premium icon, teks = sisa
+            kw["icon_custom_emoji_id"] = icon_id
             text = stripped
+        # else: teks HANYA emoji (mis. "➕") → JANGAN tambah icon, biarkan emoji di teks
+    else:
+        # Tidak ada premium emoji → tambahkan colored-dot berdasarkan style
+        # Hanya jika emoji_char kosong (tombol tanpa ikon spesifik)
+        if style and not emoji_char:
+            dot = _STYLE_DOT.get(style, "")
+            if dot and not text.startswith(tuple(_STYLE_DOT.values())):
+                text = dot + text
+
     # Pastikan teks tidak kosong atau hanya whitespace
     if not text or not text.strip():
         text = "·"
@@ -688,20 +706,19 @@ async def proses_mutasi(app: Application):
             except Exception:
                 pass
 
-            # Notif stok rendah
-            sisa_tipe_stok = 0
+            # Notif stok rendah — hanya jika tipe_id_p valid DAN stok > 0 (bukan habis)
             if item and tipe_id_p and tipe_id_p in item.get("tipe", {}):
                 sisa_tipe_stok = len(item["tipe"][tipe_id_p].get("akun_list", []))
-            if item and sisa_tipe_stok <= LOW_STOCK_THRESHOLD:
-                for admin_id in ADMIN_IDS:
-                    try:
-                        await app.bot.send_message(
-                            chat_id=admin_id,
-                            text=f"⚠️ *Stok Rendah*\n{item['nama']}{nama_tipe_str} sisa {sisa_tipe_stok}x",
-                            parse_mode="Markdown"
-                        )
-                    except Exception:
-                        pass
+                if 0 < sisa_tipe_stok <= LOW_STOCK_THRESHOLD:
+                    for admin_id in ADMIN_IDS:
+                        try:
+                            await app.bot.send_message(
+                                chat_id=admin_id,
+                                text=f"⚠️ *Stok Rendah*\n{item['nama']}{nama_tipe_str} sisa {sisa_tipe_stok}x",
+                                parse_mode="Markdown"
+                            )
+                        except Exception:
+                            pass
 
 
 async def mutasi_loop(app: Application):
@@ -1489,7 +1506,7 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
     )
 
     sisa_stok = len(tipe_now.get("akun_list", []))
-    if sisa_stok <= LOW_STOCK_THRESHOLD:
+    if 0 < sisa_stok <= LOW_STOCK_THRESHOLD:
         alert_stok = (
             f"⚠️ *STOK RENDAH — Segera Restock!*\n"
             f"📦 {item['nama']} [{nama_tipe}]\n"
