@@ -483,6 +483,21 @@ def init_web_tables():
                 conn.execute(f"ALTER TABLE web_users ADD COLUMN {col} TEXT")
             except Exception:
                 pass
+        # Audit log
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_tid  INTEGER NOT NULL,
+            aksi       TEXT NOT NULL,
+            target     TEXT    DEFAULT '',
+            detail     TEXT    DEFAULT '',
+            waktu      TEXT    NOT NULL
+        )""")
+        # Migrasi: force_password_change flag
+        try:
+            conn.execute("ALTER TABLE web_users ADD COLUMN force_password_change INTEGER DEFAULT 0")
+        except Exception:
+            pass
         conn.commit()
         conn.close()
 
@@ -664,3 +679,63 @@ def web_verify_otp(telegram_id: int, otp_code: str) -> bool:
             conn.commit()
         conn.close()
     return row is not None
+
+
+def db_add_audit_log(admin_tid: int, aksi: str, target: str = "", detail: str = "") -> None:
+    """Catat aksi admin ke audit_log."""
+    now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            "INSERT INTO audit_log (admin_tid, aksi, target, detail, waktu) VALUES (?,?,?,?,?)",
+            (int(admin_tid), aksi, target or "", detail or "", now)
+        )
+        conn.commit()
+        conn.close()
+
+
+def db_get_audit_log(limit: int = 200) -> list:
+    """Ambil daftar audit log terbaru."""
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def db_get_daily_sales(days: int = 30) -> list:
+    """Data penjualan BELI harian N hari terakhir — untuk grafik Chart.js."""
+    from datetime import timedelta as _td
+    result = []
+    now = datetime.now()
+    with _lock:
+        conn = _get_conn()
+        for i in range(days - 1, -1, -1):
+            dt      = now - _td(days=i)
+            day_str = dt.strftime("%d/%m/%Y")
+            row     = conn.execute(
+                "SELECT COUNT(*) AS c, COALESCE(SUM(jumlah), 0) AS s "
+                "FROM riwayat WHERE tipe='BELI' AND waktu LIKE ?",
+                (f"{day_str}%",)
+            ).fetchone()
+            result.append({
+                "tanggal": dt.strftime("%-d %b"),
+                "count":   int(row["c"]),
+                "total":   int(row["s"]),
+            })
+        conn.close()
+    return result
+
+
+def web_set_force_password_change(telegram_id: int, flag: int = 1) -> None:
+    """Aktifkan / nonaktifkan flag paksa ganti password."""
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE web_users SET force_password_change=? WHERE telegram_id=?",
+            (flag, int(telegram_id))
+        )
+        conn.commit()
+        conn.close()

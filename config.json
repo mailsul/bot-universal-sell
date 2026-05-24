@@ -7,6 +7,6 @@
   ],
   "kontak_admin": "@nopal005",
   "transfer_manual_aktif": false,
-  "brand_color": "custom",
-  "custom_hex": "#ffffff"
+  "brand_color": "slate",
+  "web_aktif": true
 }

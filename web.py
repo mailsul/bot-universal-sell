@@ -49,6 +49,8 @@ from db import (
     db_remove_pending_any_by_user, db_add_pending, db_remove_pending_by_id,
     db_get_all_statistik, db_get_all_saldo, db_get_all_bot_users,
     db_get_rekap_penjualan,
+    db_add_audit_log, db_get_audit_log, db_get_daily_sales,
+    web_set_force_password_change,
 )
 from qris_helper import generate_qr_with_amount
 
@@ -59,11 +61,23 @@ WEB_PORT    = int(os.getenv("WEB_PORT", "5000"))
 URL_MUTASI  = os.getenv("URL_MUTASI", "")
 QRIS_BASE64 = os.getenv("QRIS_BASE64", "")
 
-QRIS_EXPIRY_SEC   = 5 * 60   # 5 menit
-RATE_LIMIT_MAX    = 5         # pembelian per window
-RATE_LIMIT_WIN    = 3600      # 1 jam
-LOGIN_FAIL_MAX    = 5         # gagal login per window
-LOGIN_FAIL_WIN    = 900       # 15 menit
+QRIS_EXPIRY_SEC    = 5 * 60   # 5 menit
+RATE_LIMIT_MAX     = 5         # pembelian per window
+RATE_LIMIT_WIN     = 3600      # 1 jam
+LOGIN_FAIL_MAX     = 5         # gagal login per window
+LOGIN_FAIL_WIN     = 900       # 15 menit
+SESSION_INACTIVITY = 1800      # 30 menit idle → logout otomatis
+
+# ─── IMAGE MAGIC BYTES ────────────────────────────────────────────────────────
+def _validate_image_magic(stream) -> bool:
+    """Cek magic bytes file — pastikan ini benar-benar gambar, bukan file berbahaya."""
+    header = stream.read(16)
+    stream.seek(0)
+    if header[:3]  == b'\xff\xd8\xff':           return True   # JPEG
+    if header[:8]  == b'\x89PNG\r\n\x1a\n':      return True   # PNG
+    if header[:4]  in (b'GIF8', b'GIF9'):         return True   # GIF
+    if header[:4]  == b'RIFF' and header[8:12] == b'WEBP': return True  # WEBP
+    return False
 
 _RE_PHONE = re.compile(r'^\+62[0-9]{8,13}$')
 _RE_EMAIL  = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
@@ -144,6 +158,28 @@ def _csrf_ok() -> bool:
 
 app.jinja_env.globals["csrf_token"] = _csrf_token
 app.jinja_env.filters["fmt_waktu"]  = fmt_waktu
+
+
+# ─── MIDDLEWARE ────────────────────────────────────────────────────────────────
+
+@app.before_request
+def _global_middleware():
+    """Session inactivity timeout (30 menit) + maintenance mode."""
+    # 1. Inactivity timeout
+    if "user_tid" in session:
+        last = session.get("_last_active", 0)
+        if time.time() - last > SESSION_INACTIVITY:
+            session.clear()
+            flash("Sesi berakhir karena tidak aktif 30 menit.", "warning")
+            return redirect(url_for("login"))
+        session["_last_active"] = time.time()
+    # 2. Maintenance mode — admin dan endpoint terkait admin tidak terkena
+    ep = request.endpoint or ""
+    if ep and ep != "static" and not ep.startswith("admin"):
+        if session.get("user_role") != "admin":
+            cfg = load_config()
+            if cfg.get("maintenance_mode"):
+                return render_template("maintenance.html", cfg=cfg)
 
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -662,12 +698,57 @@ def login():
         if tid == OWNER_ID and role != "admin":
             web_update_role(tid, "admin")
             role = "admin"
-        session["user_tid"]  = tid
-        session["user_role"] = role
-        session.permanent    = True
+        if role == "admin":
+            # 2FA — kirim OTP ke Telegram sebelum buka admin panel
+            otp  = gen_otp()
+            exp  = (datetime.now() + timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
+            web_save_otp(tid, otp, exp)
+            toko = load_config().get("nama_toko", "Ibra Store")
+            send_telegram(
+                tid,
+                f"🔐 *Login Admin — {toko}*\n\nKode OTP: `{otp}`\nBerlaku 10 menit.\n\n"
+                "⚠️ Jika bukan kamu yang login, segera ganti password!"
+            )
+            session["admin_2fa_tid"]  = tid
+            session["admin_2fa_role"] = role
+            flash("Kode OTP dikirim ke Telegram kamu. Masukkan untuk masuk ke Admin Panel.", "info")
+            return redirect(url_for("admin_verify_otp_page"))
+        # User biasa
+        session["user_tid"]    = tid
+        session["user_role"]   = role
+        session["force_pw"]    = bool(user.get("force_password_change"))
+        session.permanent      = True
+        session["_last_active"] = time.time()
         flash("Selamat datang kembali!", "success")
-        return redirect(url_for("admin") if role == "admin" else url_for("dashboard"))
+        return redirect(url_for("dashboard"))
     return render_template("login.html", prefill=request.args.get("id",""))
+
+
+@app.route("/admin/2fa", methods=["GET","POST"])
+def admin_verify_otp_page():
+    """Halaman verifikasi OTP 2FA untuk admin."""
+    if "user_tid" in session:
+        return redirect(url_for("admin"))
+    if "admin_2fa_tid" not in session:
+        flash("Silakan login terlebih dahulu.", "warning")
+        return redirect(url_for("login"))
+    if request.method == "POST":
+        if not _csrf_ok():
+            abort(403)
+        otp = request.form.get("otp","").strip()
+        tid = session["admin_2fa_tid"]
+        if web_verify_otp(tid, otp):
+            role = session.pop("admin_2fa_role", "admin")
+            session.pop("admin_2fa_tid", None)
+            session["user_tid"]     = tid
+            session["user_role"]    = role
+            session.permanent       = True
+            session["_last_active"] = time.time()
+            flash("✅ Verifikasi berhasil. Selamat datang, Admin!", "success")
+            return redirect(url_for("admin"))
+        flash("Kode OTP salah atau sudah kedaluwarsa.", "danger")
+        return redirect(url_for("admin_verify_otp_page"))
+    return render_template("admin_2fa.html")
 
 
 @app.route("/forgot-password", methods=["GET","POST"])
@@ -1132,6 +1213,9 @@ def deposit_upload():
         return redirect(url_for("deposit"))
 
     f = request.files["bukti"]
+    if not _validate_image_magic(f.stream):
+        flash("File tidak valid. Hanya gambar asli (JPG/PNG/WEBP) yang diperbolehkan.", "danger")
+        return redirect(url_for("deposit"))
     os.makedirs("bukti", exist_ok=True)
     path = f"bukti/web_{tid}_{int(datetime.now().timestamp())}.jpg"
     f.save(path)
@@ -1164,6 +1248,8 @@ def admin():
         total_saldo=sum(saldo_all.values()),
         bot_uid_map=bot_uid_map,
         rekap=db_get_rekap_penjualan(),
+        daily_sales=db_get_daily_sales(30),
+        audit_log=db_get_audit_log(100),
     )
 
 
@@ -1179,6 +1265,7 @@ def admin_confirm(uid):
     db_remove_pending_any_by_user(uid)
     trx_id = db_add_riwayat(uid, "DEPOSIT", "Konfirmasi Admin (Web)", nominal)
     send_telegram(uid, f"✅ Deposit *Rp{nominal:,}* dikonfirmasi!\n🔖 TRX: `{trx_id}`")
+    db_add_audit_log(session["user_tid"], "KONFIRMASI_DEPOSIT", str(uid), f"Rp{nominal:,} | TRX: {trx_id}")
     flash(f"✅ Rp{nominal:,} dikonfirmasi. TRX: {trx_id}", "success")
     return redirect(url_for("admin"))
 
@@ -1188,6 +1275,7 @@ def admin_confirm(uid):
 def admin_reject(uid):
     db_remove_pending_any_by_user(uid)
     send_telegram(uid, "❌ Deposit kamu ditolak admin. Hubungi admin untuk info lebih lanjut.")
+    db_add_audit_log(session["user_tid"], "TOLAK_DEPOSIT", str(uid), "")
     flash("Deposit ditolak.", "warning")
     return redirect(url_for("admin"))
 
@@ -1588,8 +1676,12 @@ def admin_logo_upload():
         old = os.path.join("static", f"logo.{e}")
         if os.path.exists(old):
             os.remove(old)
+    if not _validate_image_magic(file.stream):
+        flash("File tidak valid. Pastikan file adalah gambar asli (JPG/PNG/WEBP).", "danger")
+        return redirect(url_for("admin") + "#tab-config")
     dest = os.path.join("static", f"logo.{ext}")
     file.save(dest)
+    db_add_audit_log(session["user_tid"], "GANTI_LOGO", "", f"logo.{ext}")
     flash("✅ Logo toko berhasil diperbarui.", "success")
     return redirect(url_for("admin") + "#tab-config")
 
@@ -1686,7 +1778,8 @@ def admin_config_save():
     # Toggle Transfer Manual
     cfg["transfer_manual_aktif"] = request.form.get("transfer_manual_aktif") == "on"
     # Toggle Web Aktif untuk user
-    cfg["web_aktif"] = request.form.get("web_aktif") == "on"
+    cfg["web_aktif"]       = request.form.get("web_aktif") == "on"
+    cfg["maintenance_mode"] = request.form.get("maintenance_mode") == "on"
     # Brand color
     brand_color = request.form.get("brand_color", "").strip()
     custom_hex  = request.form.get("custom_hex",  "").strip()
@@ -1721,11 +1814,13 @@ def admin_saldo_atur():
         db_add_saldo(uid, -nominal)
         db_add_riwayat(uid, "KURANGI", "Dikurangi Admin (Web)", nominal)
         send_telegram(uid, f"⚠️ Saldo kamu dikurangi *Rp{nominal:,}* oleh admin.")
+        db_add_audit_log(session["user_tid"], "KURANGI_SALDO", str(uid), f"Rp{nominal:,}")
         flash(f"✅ Saldo {uid} dikurangi Rp{nominal:,}.", "success")
     else:
         db_add_saldo(uid, nominal)
         trx_id = db_add_riwayat(uid, "DEPOSIT", "Tambah Saldo Manual (Admin)", nominal)
         send_telegram(uid, f"✅ Saldo kamu ditambah *Rp{nominal:,}* oleh admin.\n🔖 TRX: `{trx_id}`")
+        db_add_audit_log(session["user_tid"], "TAMBAH_SALDO", str(uid), f"Rp{nominal:,} | TRX: {trx_id}")
         flash(f"✅ Saldo {uid} ditambah Rp{nominal:,}.", "success")
     return redirect(url_for("admin") + "#tab-saldo")
 
@@ -1779,6 +1874,48 @@ def admin_broadcast():
 
     flash(f"✅ Broadcast terkirim ke {ok_count}/{len(uids)} user.", "success")
     return redirect(url_for("admin") + "#tab-broadcast")
+
+
+@app.route("/admin/notifications")
+@admin_required
+def admin_notifications():
+    """Polling endpoint — jumlah pending deposit real-time."""
+    pending = db_get_all_pending()
+    return jsonify({"pending_count": len(pending)})
+
+
+@app.route("/admin/export/rekap.csv")
+@admin_required
+def admin_export_csv():
+    """Export rekap penjualan + deposit ke CSV."""
+    import csv, io
+    rekap   = db_get_rekap_penjualan()
+    output  = io.StringIO()
+    writer  = csv.writer(output)
+    # Header
+    writer.writerow(["Jenis","Waktu","User ID","Keterangan","Jumlah (Rp)"])
+    for r in rekap.get("beli", {}).get("semua", {}).get("rows", []):
+        writer.writerow(["BELI", r.get("waktu",""), r.get("user_id",""), r.get("keterangan",""), r.get("jumlah",0)])
+    for r in rekap.get("deposit", {}).get("semua", {}).get("rows", []):
+        writer.writerow(["DEPOSIT", r.get("waktu",""), r.get("user_id",""), r.get("keterangan",""), r.get("jumlah",0)])
+    db_add_audit_log(session["user_tid"], "EXPORT_CSV", "", "rekap.csv")
+    output.seek(0)
+    return send_file(
+        io.BytesIO(output.getvalue().encode("utf-8-sig")),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=f"rekap_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+    )
+
+
+@app.route("/admin/user/<int:tid>/force-pw", methods=["POST"])
+@admin_required
+def admin_user_force_pw(tid):
+    """Paksa user ganti password di login berikutnya."""
+    web_set_force_password_change(tid, 1)
+    db_add_audit_log(session["user_tid"], "FORCE_PASSWORD_CHANGE", str(tid), "")
+    flash(f"✅ User {tid} akan dipaksa ganti password saat login berikutnya.", "success")
+    return redirect(url_for("admin") + "#tab-saldo")
 
 
 def _parse_akun_lines(raw: str) -> list:

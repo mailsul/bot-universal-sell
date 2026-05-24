@@ -2233,8 +2233,8 @@ async def handle_info_bot(update: Update, context: CallbackContext):
     web_url = _get_website_url()
     web_line = ""
     if web_on and web_url:
-        safe_url = web_url.replace(".", "\\.").replace("-", "\\-").replace("_","\\_ ")
-        web_line = f"\n🌐 *Website*: {web_url}\n"
+        safe_url = web_url.replace("\\","\\\\").replace("_","\\_").replace("*","\\*").replace("[","\\[").replace("]","\\]").replace("(","\\(").replace(")","\\)").replace("~","\\~").replace("`","\\`").replace(">","\\>").replace("#","\\#").replace("+","\\+").replace("-","\\-").replace("=","\\=").replace("|","\\|").replace("{","\\{").replace("}","\\}").replace(".","\\.")
+        web_line = f"\n🌐 *Website*: {safe_url}\n"
     text   = (
         "🆘 *PUSAT BANTUAN*\n\n"
         "Selamat datang\\! Berikut panduan lengkap penggunaan bot kami:\n\n"

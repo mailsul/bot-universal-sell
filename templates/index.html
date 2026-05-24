@@ -63,10 +63,28 @@
 <!-- Products -->
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h5 class="fw-bold mb-0 text-brand"><i class="bi bi-grid-fill me-2"></i>Katalog Produk</h5>
-  <span class="text-muted small">{{ produk|length }} produk tersedia</span>
+  <span class="text-muted small" id="produk-count">{{ produk|length }} produk tersedia</span>
 </div>
 
-<div class="row g-3">
+<!-- Search & Filter -->
+<div class="d-flex gap-2 mb-3 flex-wrap">
+  <div class="input-group" style="max-width:320px">
+    <span class="input-group-text bg-transparent border-end-0"><i class="bi bi-search text-muted"></i></span>
+    <input type="text" class="form-control border-start-0 ps-0" id="produkSearch" placeholder="Cari produk..." autocomplete="off">
+  </div>
+  <select class="form-select" id="produkFilter" style="max-width:160px">
+    <option value="semua">Semua</option>
+    <option value="ada">Ada Stok</option>
+    <option value="habis">Habis</option>
+  </select>
+</div>
+
+<div id="produkEmpty" class="col-12 text-center py-5 text-muted d-none">
+  <i class="bi bi-search display-3 opacity-25"></i>
+  <p class="mt-3 mb-0">Produk tidak ditemukan.</p>
+</div>
+
+<div class="row g-3" id="produkGrid">
   {% set icons = {'youtube':'bi-youtube','canva':'bi-palette-fill','spotify':'bi-music-note-beamed','vpn':'bi-shield-lock-fill','netflix':'bi-play-circle-fill','disney':'bi-star-fill','prime':'bi-box-fill'} %}
 
   {% for p in produk %}
@@ -151,4 +169,46 @@
   </div>
   {% endfor %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function(){
+  var search = document.getElementById('produkSearch');
+  var filter = document.getElementById('produkFilter');
+  var grid   = document.getElementById('produkGrid');
+  var empty  = document.getElementById('produkEmpty');
+  var countEl= document.getElementById('produk-count');
+  if (!search || !grid) return;
+
+  function filterCards() {
+    var q    = search.value.toLowerCase().trim();
+    var mode = filter.value; // semua | ada | habis
+    var cards = grid.querySelectorAll('.col-md-6, .col-lg-4, [data-stok]');
+    var vis  = 0;
+    grid.querySelectorAll('[data-stok]').forEach(function(card){
+      var nama  = (card.dataset.nama || '').toLowerCase();
+      var stok  = parseInt(card.dataset.stok) || 0;
+      var matchQ = !q || nama.includes(q);
+      var matchF = mode === 'semua' || (mode === 'ada' && stok > 0) || (mode === 'habis' && stok === 0);
+      if (matchQ && matchF) { card.style.display = ''; vis++; }
+      else                  { card.style.display = 'none'; }
+    });
+    if (empty)   empty.classList.toggle('d-none', vis > 0);
+    if (countEl) countEl.textContent = vis + ' produk tersedia';
+  }
+
+  search.addEventListener('input', filterCards);
+  filter.addEventListener('change', filterCards);
+
+  // Tambah data attributes ke setiap card
+  grid.querySelectorAll('.col-md-6, .col-lg-4').forEach(function(col){
+    var nameEl = col.querySelector('.fw-bold');
+    var badgeEl = col.querySelector('.badge');
+    if (nameEl) col.dataset.nama = nameEl.textContent.trim();
+    if (badgeEl) col.dataset.stok = badgeEl.textContent.includes('Habis') ? '0' : '1';
+    col.setAttribute('data-stok', col.dataset.stok || '1');
+  });
+})();
+</script>
 {% endblock %}
