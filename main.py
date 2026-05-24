@@ -140,21 +140,19 @@ def _ikb(text: str, emoji_char: str = "", style: str = None, **kwargs) -> Inline
     kw = dict(kwargs)
 
     if emoji_char:
-        # Strip emoji (dan variation selector) dari depan teks
-        stripped = text
-        for variant in (emoji_char, emoji_char.rstrip("\ufe0f").rstrip("\ufe0e")):
-            while stripped.startswith(variant):
-                stripped = stripped[len(variant):].lstrip()
-
-        # Cari ID di peta emojis.txt — coba versi asli dulu, lalu tanpa variation selector
+        base_char = "".join(c for c in emoji_char if ord(c) not in (0xFE0F, 0xFE0E))
         emap = _get_emoji_map()
-        icon_id = emap.get(emoji_char) or emap.get(
-            "".join(c for c in emoji_char if ord(c) not in (0xFE0F, 0xFE0E))
-        )
-        if icon_id and stripped:
-            kw["icon_custom_emoji_id"] = icon_id
-            text = stripped
-        # else: tidak ada di peta → biarkan emoji tetap di teks sebagai fallback
+        icon_id = emap.get(emoji_char) or emap.get(base_char)
+
+        if icon_id:
+            # Hapus semua kemunculan emoji dari teks (depan, belakang, manapun)
+            stripped = text
+            for v in {emoji_char, base_char, emoji_char + "\ufe0f", base_char + "\ufe0f"} - {""}:
+                stripped = stripped.replace(v, "")
+            stripped = stripped.strip()
+            if stripped:
+                kw["icon_custom_emoji_id"] = icon_id
+                text = stripped
 
     if not text or not text.strip():
         text = "·"
