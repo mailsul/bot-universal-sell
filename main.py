@@ -15,7 +15,7 @@ from db import (
     db_get_saldo, db_add_saldo, db_set_saldo, db_get_all_saldo,
     db_get_all_pending, db_get_pending_by_user, db_get_pending_any_by_user,
     db_add_pending, db_remove_pending_by_user, db_remove_pending_any_by_user,
-    db_update_pending_cek_count, db_remove_pending_by_id,
+    db_update_pending_cek_count, db_remove_pending_by_id, db_update_pending_msg_id,
     db_add_riwayat, db_get_riwayat,
     db_update_statistik, db_get_statistik_user, db_get_all_statistik,
     web_get_user_by_tid, web_create_user,
@@ -215,6 +215,7 @@ LOG_GROUP_ID       = int(os.getenv("LOG_GROUP_ID", "0"))  # ID grup log admin
 ANOMALY_THRESHOLD  = 5_000_000   # Rp5 juta → alert admin jika nominal lebih
 ANTI_SPAM_INTERVAL = 1.5          # detik minimum antar klik tombol (anti-spam)
 _ANTI_SPAM: dict   = {}           # {user_id: monotonic_time} throttle state
+_pending_file_offers: dict = {}   # {user_id: {file_path, item_name, msg_id, chat_id, job_name}}
 
 
 # ─── HELPER: CONFIG ──────────────────────────────────────────────────────────
@@ -422,30 +423,45 @@ def _qris_available() -> bool:
 
 
 async def _send_qris_photo(bot, chat_id: int, nominal: int, kode: int, caption: str,
-                           reply_markup=None):
+                           reply_markup=None, caption_entities=None):
     """Generate QR dinamis dan kirim ke user. Fallback ke file statis jika perlu.
     Mengembalikan objek Message yang terkirim."""
+    def _photo_kw():
+        if caption_entities:
+            return {"caption": caption, "caption_entities": caption_entities, "reply_markup": reply_markup}
+        return {"caption": caption, "parse_mode": "Markdown", "reply_markup": reply_markup}
+
     if QRIS_BASE64:
         img_bytes, _ = generate_qr_with_amount(QRIS_BASE64, nominal, kode)
         if img_bytes:
             return await bot.send_photo(
                 chat_id=chat_id,
                 photo=InputFile(img_bytes, filename="qris.png"),
-                caption=caption,
-                parse_mode="Markdown",
-                reply_markup=reply_markup
+                **_photo_kw()
             )
-    # Fallback ke file statis
     if os.path.exists(qris_file):
         with open(qris_file, "rb") as f:
             return await bot.send_photo(
                 chat_id=chat_id,
                 photo=InputFile(f),
-                caption=caption,
-                parse_mode="Markdown",
-                reply_markup=reply_markup
+                **_photo_kw()
             )
     return None
+
+
+def _fmt_akun(akun: dict, i: int, markup: bool = True) -> str:
+    """Format satu akun untuk pesan (markup=True) atau file txt (markup=False)."""
+    q = "`" if markup else ""
+    sep = "─────────────────────" if markup else "---------------------------"
+    lines = [
+        f"Akun #{i}",
+        f"Username : {q}{akun.get('username','')}{q}",
+        f"Password : {q}{akun.get('password','')}{q}",
+    ]
+    if akun.get("extra"):
+        lines.append(f"Info     : {q}{akun['extra']}{q}")
+    lines.append(sep)
+    return "\n".join(lines) + "\n"
 
 
 # ─── QRIS: CEK MUTASI OTOMATIS ───────────────────────────────────────────────
@@ -506,11 +522,18 @@ async def proses_mutasi(app: Application):
                                 t_r["stok"]      = len(t_r["akun_list"])
                                 save_produk(produk_r)
                             log.info(f"↩️ Stok dikembalikan: {len(reserved_akun)} akun → {p.get('produk_id')}/{s_tipe_id}")
+                # Hapus pesan QRIS yang sudah expired
+                qris_mid = p.get("qris_msg_id", 0)
+                if qris_mid:
+                    try:
+                        await app.bot.delete_message(chat_id=p["user_id"], message_id=qris_mid)
+                    except Exception:
+                        pass
                 try:
-                    await app.bot.send_message(
-                        chat_id=p["user_id"],
-                        text="⏰ *Pembayaran QRIS kedaluwarsa.*\nSilakan buat permintaan baru.",
-                        parse_mode="Markdown"
+                    await _send_pe(
+                        app.bot, p["user_id"],
+                        "⏰ *Waktu pembayaran QRIS habis.*\n\n"
+                        "Pesanan otomatis *dibatalkan*. Silakan buat pesanan baru jika masih ingin berbelanja."
                     )
                 except Exception:
                     pass
@@ -622,52 +645,49 @@ async def proses_mutasi(app: Application):
                 trx_id = db_add_riwayat(uid, "BELI", f"{item['nama']}{nama_tipe_str} x{jumlah} (QRIS)", nominal)
                 log.info(f"🛒 BELI QRIS dikonfirmasi: user={uid} produk={item['nama']} x{jumlah} Rp{nominal:,} trx={trx_id}")
 
+                # Buat file txt (simpan dulu, tawarkan ke user)
                 os.makedirs("akun_dikirim", exist_ok=True)
                 stamp     = int(time.time())
                 file_path = f"akun_dikirim/{uid}_{produk_id}_x{jumlah}_{stamp}.txt"
                 with open(file_path, "w", encoding="utf-8") as f:
                     for i, akun in enumerate(akun_terpakai, start=1):
-                        f.write(
-                            f"Akun #{i}\n"
-                            f"Username : {akun['username']}\n"
-                            f"Password : {akun['password']}\n"
-                            f"Tipe     : {akun['tipe']}\n"
-                            "---------------------------\n"
-                        )
+                        f.write(_fmt_akun(akun, i, markup=False))
 
-            # Teks detail akun — dikirim sebagai pesan teks PLUS file backup
+                # Ambil deskripsi tipe
+                tipe_desc = ""
+                if tipe_id_p and tipe_id_p in item.get("tipe", {}):
+                    tipe_desc = item["tipe"][tipe_id_p].get("deskripsi", "").strip()
+
+            # Hapus pesan QRIS sekarang pembayaran berhasil
+            qris_mid = p.get("qris_msg_id", 0)
+            if qris_mid:
+                try:
+                    await app.bot.delete_message(chat_id=p["user_id"], message_id=qris_mid)
+                except Exception:
+                    pass
+
+            # Teks detail akun
             waktu_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
             text_akun = (
                 f"✅ *Pembelian QRIS Berhasil!*\n\n"
-                f"📦 {item['nama']} x{jumlah}\n"
+                f"📦 {item['nama']}{nama_tipe_str} x{jumlah}\n"
                 f"💸 Dibayar: Rp{nominal:,}\n"
                 f"🔖 ID Transaksi: `{trx_id}`\n"
                 f"📅 {waktu_str}\n"
                 f"─────────────────────\n"
             )
             for i, akun in enumerate(akun_terpakai, start=1):
-                text_akun += (
-                    f"Akun #{i}\n"
-                    f"Username : `{akun['username']}`\n"
-                    f"Password : `{akun['password']}`\n"
-                    f"─────────────────────\n"
-                )
+                text_akun += _fmt_akun(akun, i, markup=True)
+            if tipe_desc:
+                text_akun += f"\n📋 *Catatan:*\n{tipe_desc}\n"
 
             try:
-                await app.bot.send_message(
-                    chat_id=p["user_id"],
-                    text=text_akun,
-                    parse_mode="Markdown",
-                    reply_markup=ReplyKeyboardRemove()
-                )
+                await _send_pe(app.bot, p["user_id"], text_akun,
+                               reply_markup=ReplyKeyboardRemove())
+                # Tawarkan file .txt (opsional)
                 if file_path and os.path.exists(file_path):
-                    with open(file_path, "rb") as f:
-                        await app.bot.send_document(
-                            chat_id=p["user_id"],
-                            document=InputFile(f, filename=f"akun_{item['nama'].replace(' ','_')}.txt"),
-                            caption="📎 File backup akun kamu.",
-                        )
-                    os.remove(file_path)
+                    await _send_file_offer(app.bot, p["user_id"], file_path,
+                                           item['nama'], app.job_queue)
             except Exception:
                 pass
 
@@ -1409,14 +1429,12 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
         file_path = f"akun_dikirim/{uid}_{produk_id}_x{jumlah}_{stamp}.txt"
         with open(file_path, "w", encoding="utf-8") as f:
             for i, akun in enumerate(akun_terpakai, start=1):
-                f.write(
-                    f"Akun #{i}\n"
-                    f"Username : {akun['username']}\n"
-                    f"Password : {akun['password']}\n"
-                    "---------------------------\n"
-                )
+                f.write(_fmt_akun(akun, i, markup=False))
 
-    # Teks detail akun — dikirim sebagai pesan teks PLUS file backup
+    # Ambil deskripsi tipe
+    tipe_desc = tipe_obj.get("deskripsi", "").strip()
+
+    # Teks detail akun
     waktu_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     text_akun = (
         f"✅ *Pembelian Berhasil!*\n\n"
@@ -1428,12 +1446,9 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
         f"─────────────────────\n"
     )
     for i, akun in enumerate(akun_terpakai, start=1):
-        text_akun += (
-            f"Akun #{i}\n"
-            f"Username : `{akun['username']}`\n"
-            f"Password : `{akun['password']}`\n"
-            f"─────────────────────\n"
-        )
+        text_akun += _fmt_akun(akun, i, markup=True)
+    if tipe_desc:
+        text_akun += f"\n📋 *Catatan:*\n{tipe_desc}\n"
 
     # Kirim akun + pin pesan agar tidak tenggelam
     plain_akun, ents_akun = _pe(text_akun, "Markdown")
@@ -1450,16 +1465,9 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
     except Exception:
         pass
 
-    with open(file_path, "rb") as f:
-        await context.bot.send_document(
-            chat_id=query.from_user.id,
-            document=InputFile(f, filename=f"akun_{item['nama'].replace(' ', '_')}.txt"),
-            caption="📎 File backup akun kamu.",
-        )
-    try:
-        os.remove(file_path)
-    except OSError:
-        pass
+    # Tawarkan file .txt (opsional — tidak otomatis dikirim)
+    await _send_file_offer(context.bot, query.from_user.id, file_path,
+                           item['nama'], context.application.job_queue)
 
     # Log ke grup admin
     await _notify_group(
@@ -1499,6 +1507,123 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
             pass
 
     await send_main_menu(context, query.from_user.id, query.from_user)
+
+
+# ─── FILE OFFER ──────────────────────────────────────────────────────────────
+
+async def _send_file_offer(bot, user_id: int, file_path: str, item_name: str, job_queue):
+    """Tawari user file .txt — jika tidak dijawab 15 menit dianggap tidak mau."""
+    job_name = f"file_offer_{user_id}"
+
+    # Cancel job lama jika ada
+    if job_queue:
+        for j in job_queue.get_jobs_by_name(job_name):
+            j.schedule_removal()
+
+    kb = InlineKeyboardMarkup([[
+        _ikb("✅ Ya, kirim file .txt", "✅", "success", callback_data="file_txt_ya"),
+        _ikb("❌ Tidak", "❌", "danger", callback_data="file_txt_tidak"),
+    ]])
+    try:
+        sent = await bot.send_message(
+            chat_id=user_id,
+            text="📎 *Mau file backup akun dalam format .txt?*\n_(Pilih dalam 15 menit, jika tidak dijawab dianggap tidak mau)_",
+            parse_mode="Markdown",
+            reply_markup=kb
+        )
+        _pending_file_offers[user_id] = {
+            "file_path": file_path,
+            "item_name": item_name,
+            "msg_id": sent.message_id,
+            "chat_id": user_id,
+            "job_name": job_name,
+        }
+        if job_queue:
+            job_queue.run_once(
+                _expire_file_offer,
+                when=900,
+                data={"user_id": user_id},
+                name=job_name
+            )
+    except Exception:
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+
+
+async def _expire_file_offer(context):
+    """Job: 15 menit habis tanpa jawaban → hapus file offer."""
+    user_id = context.job.data.get("user_id")
+    offer   = _pending_file_offers.pop(user_id, None)
+    if not offer:
+        return
+    if offer.get("file_path") and os.path.exists(offer["file_path"]):
+        try:
+            os.remove(offer["file_path"])
+        except OSError:
+            pass
+    try:
+        await context.bot.delete_message(chat_id=offer["chat_id"], message_id=offer["msg_id"])
+    except Exception:
+        pass
+
+
+async def handle_file_txt_ya(update: Update, context: CallbackContext):
+    """User mau file .txt backup."""
+    query   = update.callback_query
+    uid     = query.from_user.id
+    offer   = _pending_file_offers.pop(uid, None)
+
+    # Cancel expiry job
+    for j in context.application.job_queue.get_jobs_by_name(offer["job_name"] if offer else f"file_offer_{uid}"):
+        j.schedule_removal()
+
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+    if not offer or not os.path.exists(offer.get("file_path", "")):
+        await query.answer("❌ File tidak tersedia lagi.", show_alert=True)
+        return
+
+    fname = f"akun_{offer['item_name'].replace(' ', '_')}.txt"
+    try:
+        with open(offer["file_path"], "rb") as f:
+            await context.bot.send_document(
+                chat_id=uid,
+                document=InputFile(f, filename=fname),
+                caption="📎 File backup akun kamu."
+            )
+    except Exception:
+        await query.answer("❌ Gagal kirim file.", show_alert=True)
+    finally:
+        try:
+            os.remove(offer["file_path"])
+        except OSError:
+            pass
+
+
+async def handle_file_txt_tidak(update: Update, context: CallbackContext):
+    """User tidak mau file .txt backup."""
+    query = update.callback_query
+    uid   = query.from_user.id
+    offer = _pending_file_offers.pop(uid, None)
+
+    for j in context.application.job_queue.get_jobs_by_name(offer["job_name"] if offer else f"file_offer_{uid}"):
+        j.schedule_removal()
+
+    if offer and os.path.exists(offer.get("file_path", "")):
+        try:
+            os.remove(offer["file_path"])
+        except OSError:
+            pass
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
 
 
 # ─── DEPOSIT ─────────────────────────────────────────────────────────────────
@@ -1713,7 +1838,14 @@ async def _show_qris_deposit(user, nominal: int, context, delete_msg=None):
     kb = InlineKeyboardMarkup([[
         _ikb("🔄 Cek Sekarang (3x tersisa)", "", "primary", callback_data="cek_mutasi")
     ]])
-    await _send_qris_photo(context.bot, user.id, nominal, kode, caption, reply_markup=kb)
+    plain_c, ents_c = _pe(caption, "Markdown")
+    msg = await _send_qris_photo(
+        context.bot, user.id, nominal, kode,
+        caption=plain_c, reply_markup=kb,
+        caption_entities=ents_c if ents_c else None
+    )
+    if msg:
+        db_update_pending_msg_id(user.id, msg.message_id)
 
 
 async def handle_beli_qris(update: Update, context: CallbackContext):
@@ -1792,7 +1924,14 @@ async def handle_beli_qris(update: Update, context: CallbackContext):
     kb = InlineKeyboardMarkup([[
         _ikb("🔄 Cek Sekarang (3x tersisa)", "", "primary", callback_data="cek_mutasi")
     ]])
-    await _send_qris_photo(context.bot, query.from_user.id, nominal, kode, caption, reply_markup=kb)
+    plain_c, ents_c = _pe(caption, "Markdown")
+    msg = await _send_qris_photo(
+        context.bot, query.from_user.id, nominal, kode,
+        caption=plain_c, reply_markup=kb,
+        caption_entities=ents_c if ents_c else None
+    )
+    if msg:
+        db_update_pending_msg_id(query.from_user.id, msg.message_id)
 
 
 # ─── QRIS: CEK SEKARANG (manual trigger) ─────────────────────────────────────
@@ -1978,12 +2117,88 @@ async def handle_admin_kelola_produk(update: Update, context: CallbackContext):
         lines.append(f"  {icon} `{pid}` — {item['nama']} ({total_stok} stok)")
     text    = f"*📦 KELOLA PRODUK*\n\n" + ("\n".join(lines) or "_Belum ada produk._")
     keyboard = [
-        [_ikb("➕ Tambah Produk",  "➕", "success", callback_data="admin_add_produk")],
-        [_ikb("📦 Restock",         "📦", "primary", callback_data="admin_restock_produk")],
-        [_ikb("🗑 Hapus Produk",    "🗑", "danger",  callback_data="admin_hapus_produk")],
-        [_ikb("🔙 Kembali",         "🔙", "danger",  callback_data="admin_panel")],
+        [_ikb("➕ Tambah Produk",     "➕", "success", callback_data="admin_add_produk")],
+        [_ikb("📦 Restock",            "📦", "primary", callback_data="admin_restock_produk")],
+        [_ikb("📝 Deskripsi Tipe",     "📝", "primary", callback_data="admin_edit_tipe_desc")],
+        [_ikb("🗑 Hapus Produk",       "🗑", "danger",  callback_data="admin_hapus_produk")],
+        [_ikb("🔙 Kembali",            "🔙", "danger",  callback_data="admin_panel")],
     ]
     await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+# ─── ADMIN: DESKRIPSI TIPE ───────────────────────────────────────────────────
+
+async def handle_admin_edit_tipe_desc(update: Update, context: CallbackContext):
+    """Pilih produk untuk edit deskripsi tipe."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    produk = load_produk()
+    if not produk:
+        await query.answer("Belum ada produk!", show_alert=True)
+        return
+    kb_rows = []
+    for pid, item in produk.items():
+        total_stok = sum(len(t.get("akun_list",[])) for t in item.get("tipe",{}).values())
+        em = "🟢" if total_stok > 0 else "🔴"
+        kb_rows.append([_ikb(f"{em} {item['nama']}", em, "primary", callback_data=f"edesc_p_{pid}")])
+    kb_rows.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="admin_kelola_produk")])
+    await safe_edit(query, context, "📝 *Edit Deskripsi Tipe*\n\nPilih produk:", reply_markup=InlineKeyboardMarkup(kb_rows))
+
+
+async def handle_edesc_produk_sel(update: Update, context: CallbackContext):
+    """Pilih tipe dari produk yang dipilih."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    pid   = query.data.replace("edesc_p_", "")
+    produk = load_produk()
+    if pid not in produk:
+        await query.answer("Produk tidak ditemukan!", show_alert=True)
+        return
+    item = produk[pid]
+    kb_rows = []
+    for tid, t in item.get("tipe", {}).items():
+        desc_preview = f" — {t['deskripsi'][:20]}…" if t.get("deskripsi") else " — (kosong)"
+        kb_rows.append([_ikb(f"{t['nama']}{desc_preview}", "", "primary", callback_data=f"edesc_t_{pid}_{tid}")])
+    kb_rows.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="admin_edit_tipe_desc")])
+    await safe_edit(query, context, f"📝 *{item['nama']}*\n\nPilih tipe:", reply_markup=InlineKeyboardMarkup(kb_rows))
+
+
+async def handle_edesc_tipe_sel(update: Update, context: CallbackContext):
+    """Tampilkan deskripsi tipe saat ini dan minta input baru."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    parts = query.data.replace("edesc_t_", "").split("_", 1)
+    if len(parts) != 2:
+        await query.answer("Data tidak valid", show_alert=True)
+        return
+    pid, tid = parts
+    produk = load_produk()
+    if pid not in produk or tid not in produk[pid].get("tipe", {}):
+        await query.answer("Tipe tidak ditemukan!", show_alert=True)
+        return
+    tipe_obj   = produk[pid]["tipe"][tid]
+    current_d  = tipe_obj.get("deskripsi", "").strip() or "_(kosong)_"
+    context.user_data["edit_tipe_desc"] = {"pid": pid, "tid": tid}
+    context.user_data["admin_state"]    = "edit_tipe_desc_input"
+    await query.message.delete()
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text=(
+            f"📝 *Edit Deskripsi Tipe*\n\n"
+            f"Produk : *{produk[pid]['nama']}*\n"
+            f"Tipe   : *{tipe_obj['nama']}*\n\n"
+            f"Deskripsi saat ini:\n{current_d}\n\n"
+            "Ketik deskripsi baru, atau ketik `-` untuk menghapus deskripsi:"
+        ),
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
+    )
 
 
 # ─── ADMIN: TAMBAH PRODUK ────────────────────────────────────────────────────
@@ -2555,6 +2770,9 @@ CALLBACK_MAP = {
     "riwayat_beli":           handle_riwayat_beli,
     "riwayat_deposit":        handle_riwayat_deposit,
     "ignore":                 handle_ignore,
+    "file_txt_ya":            handle_file_txt_ya,
+    "file_txt_tidak":         handle_file_txt_tidak,
+    "admin_edit_tipe_desc":   handle_admin_edit_tipe_desc,
 }
 
 
@@ -2587,6 +2805,10 @@ async def button_callback(update: Update, context: CallbackContext):
         await handle_restock_sel(update, context)
     elif data.startswith("restock_tipe_"):
         await handle_restock_tipe_sel(update, context)
+    elif data.startswith("edesc_p_"):
+        await handle_edesc_produk_sel(update, context)
+    elif data.startswith("edesc_t_"):
+        await handle_edesc_tipe_sel(update, context)
     elif data.startswith("dep_manual_") or data.startswith("dep_qris_"):
         await handle_dep_metode(update, context)
     elif data.startswith("qris_dep_"):
@@ -2760,11 +2982,14 @@ async def handle_text(update: Update, context: CallbackContext):
             akun_list = []
             errors    = []
             for i, line in enumerate(lines, 1):
-                parts = line.split("|")
-                if len(parts) != 3:
-                    errors.append(f"Baris {i}: format salah (harus `email|password|tipe`)")
+                parts = [p.strip() for p in line.split("|", 2)]
+                if len(parts) < 2 or not parts[0] or not parts[1]:
+                    errors.append(f"Baris {i}: format salah (minimal `username|password`)")
                     continue
-                akun_list.append({"username": parts[0].strip(), "password": parts[1].strip(), "tipe": parts[2].strip()})
+                akun = {"username": parts[0], "password": parts[1]}
+                if len(parts) == 3 and parts[2]:
+                    akun["extra"] = parts[2]
+                akun_list.append(akun)
 
             if errors:
                 await update.message.reply_text("❌ Ada format yang salah:\n" + "\n".join(errors) + "\n\nCoba lagi:")
@@ -2855,6 +3080,28 @@ async def handle_text(update: Update, context: CallbackContext):
             await send_main_menu_safe(update, context)
             return
 
+        if admin_state == "edit_tipe_desc_input":
+            meta = context.user_data.pop("edit_tipe_desc", {})
+            context.user_data.pop("admin_state", None)
+            pid = meta.get("pid")
+            tid = meta.get("tid")
+            produk = load_produk()
+            if not pid or not tid or pid not in produk or tid not in produk[pid].get("tipe", {}):
+                await update.message.reply_text("❌ Sesi tidak valid. Mulai ulang.",
+                                                reply_markup=ReplyKeyboardRemove())
+                return
+            new_desc = "" if text.strip() == "-" else text.strip()
+            produk[pid]["tipe"][tid]["deskripsi"] = new_desc
+            save_produk(produk)
+            label = f'"{new_desc}"' if new_desc else "_(dihapus)_"
+            await update.message.reply_text(
+                f"✅ Deskripsi tipe *{produk[pid]['tipe'][tid]['nama']}* diperbarui: {label}",
+                parse_mode="Markdown",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await send_main_menu_safe(update, context)
+            return
+
         if admin_state == "restock_akun":
             pid     = context.user_data.get("restock_pid")
             tipe_id = context.user_data.get("restock_tipe_id")
@@ -2869,13 +3116,16 @@ async def handle_text(update: Update, context: CallbackContext):
             akun_baru = []
             errors    = []
             for i, line in enumerate(lines_in, 1):
-                parts = [p.strip() for p in line.split("|")]
-                if len(parts) == 2:
-                    akun_baru.append({"username": parts[0], "password": parts[1]})
+                parts = [p.strip() for p in line.split("|", 2)]
+                if len(parts) >= 2 and parts[0] and parts[1]:
+                    akun = {"username": parts[0], "password": parts[1]}
+                    if len(parts) == 3 and parts[2]:
+                        akun["extra"] = parts[2]
+                    akun_baru.append(akun)
                 elif len(parts) == 1 and parts[0]:
                     akun_baru.append({"username": parts[0], "password": ""})
                 else:
-                    errors.append(f"Baris {i}: format salah (gunakan `akun|password`)")
+                    errors.append(f"Baris {i}: format salah (gunakan `username|password` atau `username|password|info tambahan`)")
 
             if errors:
                 await update.message.reply_text(

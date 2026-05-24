@@ -24,17 +24,39 @@
     "tipe": {
       "t1": {
         "nama": "NETFLIX PRIVATE 1 BULAN",
-        "harga": 55000,
-        "akun_list": [],
-        "stok": 0,
+        "harga": 1500,
+        "akun_list": [
+          {
+            "username": "test1",
+            "password": "dsad1a56",
+            "tipe": ""
+          },
+          {
+            "username": "test2",
+            "password": "dsad1a56",
+            "tipe": ""
+          }
+        ],
+        "stok": 2,
         "deskripsi": ""
       },
       "t2": {
         "nama": "NETFLIX SHARING 1 BULAN",
-        "harga": 30000,
+        "harga": 2000,
         "deskripsi": "",
-        "akun_list": [],
-        "stok": 0
+        "akun_list": [
+          {
+            "username": "test3",
+            "password": "dsadas123",
+            "tipe": ""
+          },
+          {
+            "username": "test4",
+            "password": "dsadas123",
+            "tipe": ""
+          }
+        ],
+        "stok": 2
       }
     }
   },
@@ -87,14 +109,8 @@
       "t1": {
         "nama": "SPOTIFY PREMIUM 1B STUDENT GP",
         "harga": 1000,
-        "akun_list": [
-          {
-            "username": "spotify2@mail.com",
-            "password": "spo456",
-            "tipe": "1 Bulan Student"
-          }
-        ],
-        "stok": 1,
+        "akun_list": [],
+        "stok": 0,
         "deskripsi": ""
       }
     }

@@ -107,6 +107,16 @@ def init_db():
             waktu      TEXT NOT NULL
         )""")
 
+        # Migrasi kolom baru jika belum ada
+        for col_sql in [
+            "ALTER TABLE pending ADD COLUMN tipe_id TEXT",
+            "ALTER TABLE pending ADD COLUMN qris_msg_id INTEGER DEFAULT 0",
+        ]:
+            try:
+                conn.execute(col_sql)
+            except Exception:
+                pass
+
         conn.commit()
         conn.close()
 
@@ -326,14 +336,15 @@ def db_add_pending(data: dict) -> int:
         cur   = conn.execute("""
         INSERT INTO pending
           (user_id,username,metode,nominal,expected_amount,kode_unik,
-           waktu,cek_count,produk_id,jumlah,reserved_akun,bukti_path,total_transfer)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           waktu,cek_count,produk_id,tipe_id,jumlah,reserved_akun,bukti_path,total_transfer)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             data.get("user_id"), data.get("username"),
             data.get("metode","manual"), data.get("nominal",0),
             data.get("expected_amount",0), data.get("kode_unik",0),
             data.get("waktu", datetime.now().strftime("%d/%m/%Y %H:%M:%S")),
-            data.get("cek_count",3), data.get("produk_id"), data.get("jumlah",1),
+            data.get("cek_count",3), data.get("produk_id"), data.get("tipe_id"),
+            data.get("jumlah",1),
             json.dumps(data.get("reserved_akun",[])),
             data.get("bukti_path"), data.get("total_transfer",0)
         ))
@@ -341,6 +352,18 @@ def db_add_pending(data: dict) -> int:
         new_id = cur.lastrowid
         conn.close()
     return new_id
+
+
+def db_update_pending_msg_id(uid, msg_id: int):
+    """Simpan message_id pesan QRIS untuk dihapus nanti."""
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE pending SET qris_msg_id=? WHERE user_id=? AND metode LIKE 'qris%'",
+            (msg_id, int(uid))
+        )
+        conn.commit()
+        conn.close()
 
 
 def db_remove_pending_by_user(uid):
