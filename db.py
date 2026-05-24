@@ -423,6 +423,38 @@ def db_get_all_statistik() -> dict:
 
 # ─── WEB AUTH ─────────────────────────────────────────────────────────────────
 
+def db_add_bot_user(telegram_id: int, username: str = None):
+    """Simpan/update user yang sudah start bot."""
+    with _lock:
+        conn = _get_conn()
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS bot_users (
+            telegram_id INTEGER PRIMARY KEY,
+            username    TEXT,
+            first_seen  TEXT NOT NULL
+        )""")
+        now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        conn.execute("""
+        INSERT INTO bot_users (telegram_id, username, first_seen)
+        VALUES (?,?,?)
+        ON CONFLICT(telegram_id) DO UPDATE SET username=excluded.username
+        """, (int(telegram_id), username, now))
+        conn.commit()
+        conn.close()
+
+
+def db_get_all_bot_users() -> list[dict]:
+    """Ambil semua user yang sudah start bot."""
+    with _lock:
+        conn = _get_conn()
+        try:
+            rows = conn.execute("SELECT telegram_id, username FROM bot_users").fetchall()
+        except Exception:
+            rows = []
+        conn.close()
+    return [dict(r) for r in rows]
+
+
 def init_web_tables():
     with _lock:
         conn = _get_conn()

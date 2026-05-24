@@ -19,6 +19,7 @@ from db import (
     db_update_statistik, db_get_statistik_user, db_get_all_statistik,
     web_get_user_by_tid, web_create_user,
     web_get_user_by_email, web_get_user_by_phone, web_update_profile,
+    db_add_bot_user, db_get_all_bot_users,
 )
 
 import sys
@@ -117,13 +118,22 @@ def _pe(text: str, pm: str = "Markdown") -> tuple[str, list]:
 
 
 def _ikb(text: str, emoji_char: str = "", style: str = None, **kwargs) -> InlineKeyboardButton:
-    """InlineKeyboardButton dengan premium icon emoji dan warna style."""
+    """InlineKeyboardButton dengan premium icon emoji dan warna style.
+    Secara otomatis menghapus emoji dari teks jika emoji_char dipakai sebagai icon,
+    sehingga tidak ada duplikasi emoji (premium icon + emoji di teks)."""
     kw = dict(kwargs)
     if style:
         kw["style"] = style
     icon_id = _EID.get(emoji_char)
     if icon_id:
         kw["icon_custom_emoji_id"] = icon_id
+        # Hapus emoji terdepan dari teks agar tidak dobel
+        stripped = text
+        if emoji_char:
+            # Hapus semua kemunculan emoji_char di awal (termasuk jika ada spasi/duplikat)
+            while stripped.startswith(emoji_char):
+                stripped = stripped[len(emoji_char):].lstrip()
+        text = stripped
     return InlineKeyboardButton(text=text, **kw)
 
 # ─── KONFIGURASI ────────────────────────────────────────────────────────────
@@ -853,8 +863,8 @@ async def handle_list_produk(update: Update, context: CallbackContext):
                 ic = "🟢" if stok_t > 0 else "🔴"
                 msg += f"  {ic} {t['nama']}: Rp {t.get('harga',0):,} ({stok_t} unit)\n"
 
-        # Tombol inline: premium icon + nomor, tanpa duplikat emoji di teks
-        btn_style = "primary" if total_stok > 0 else None
+        # Tombol inline: hijau=ada stok, merah=habis
+        btn_style = "success" if total_stok > 0 else "danger"
         btn_row.append(_ikb(f"{nomor}", em, btn_style, callback_data=pid))
         if len(btn_row) == 5:
             kb_rows.append(btn_row)
@@ -865,7 +875,7 @@ async def handle_list_produk(update: Update, context: CallbackContext):
 
     if btn_row:
         kb_rows.append(btn_row)
-    kb_rows.append([_ikb("🔥 Kembali ke Menu Utama", "🔥", "danger", callback_data="back_to_produk")])
+    kb_rows.append([_ikb("🔥 Kembali ke Menu Utama", "🔥", "primary", callback_data="back_to_produk")])
 
     markup = InlineKeyboardMarkup(kb_rows)
     await safe_edit(query, context, msg, reply_markup=markup)
@@ -2328,6 +2338,40 @@ async def handle_text(update: Update, context: CallbackContext):
             await send_main_menu_safe(update, context)
             return
 
+        if admin_state == "broadcast_msg":
+            context.user_data.pop("admin_state", None)
+            users   = db_get_all_bot_users()
+            total   = len(users)
+            success = 0
+            failed  = 0
+            src_cid = update.message.chat_id
+            src_mid = update.message.message_id
+            await update.message.reply_text(
+                f"📢 Memulai broadcast ke *{total}* user...",
+                parse_mode="Markdown",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            for u in users:
+                try:
+                    await context.bot.copy_message(
+                        chat_id=u["telegram_id"],
+                        from_chat_id=src_cid,
+                        message_id=src_mid
+                    )
+                    success += 1
+                except Exception:
+                    failed += 1
+                await asyncio.sleep(0.05)   # flood control ~20 msg/s
+            await update.message.reply_text(
+                f"✅ *Broadcast selesai!*\n\n"
+                f"✔️ Terkirim : *{success}*\n"
+                f"❌ Gagal    : *{failed}*\n"
+                f"📊 Total    : *{total}*",
+                parse_mode="Markdown"
+            )
+            await send_main_menu_safe(update, context)
+            return
+
         if admin_state == "restock_pid":
             pid    = text.split(" - ")[0].strip()
             produk = load_produk()
@@ -2678,8 +2722,29 @@ async def handle_photo(update: Update, context: CallbackContext):
 
 # ─── ENTRY POINT ─────────────────────────────────────────────────────────────
 
+async def cmd_broadcast(update: Update, context: CallbackContext):
+    """Admin command: /broadcast — broadcast pesan ke semua user yang sudah /start."""
+    uid = update.effective_user.id
+    if not is_admin(uid):
+        await update.message.reply_text("⛔ Akses ditolak.")
+        return
+    context.user_data["admin_state"] = "broadcast_msg"
+    users = db_get_all_bot_users()
+    await update.message.reply_text(
+        f"📢 *BROADCAST*\n\n"
+        f"Total penerima: *{len(users)} user*\n\n"
+        "Kirim pesan yang ingin di-broadcast.\n"
+        "Semua format didukung: *bold*, _italic_, kode, emoji premium, dll.\n\n"
+        "_(Kirim ❌ Batal untuk membatalkan)_",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
+    )
+
+
 async def start(update: Update, context: CallbackContext):
     user = update.effective_user
+    # Catat user yang sudah start bot
+    db_add_bot_user(user.id, user.username)
     # Cek apakah user sudah punya akun web
     existing = web_get_user_by_tid(user.id)
     if not existing:
@@ -2706,8 +2771,9 @@ def main():  # Made With love by @govtrashit A.K.A RzkyO
         raise RuntimeError("❌ BOT_TOKEN tidak ditemukan di environment variable!")
 
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start",    start))
+    app.add_handler(CommandHandler("start",     start))
     app.add_handler(CommandHandler("riwayat",  cmd_riwayat))
+    app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.PHOTO,              handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
