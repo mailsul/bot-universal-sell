@@ -100,8 +100,8 @@
 
     /* ── NAVBAR ── */
     .navbar {
-      background: linear-gradient(135deg, var(--brand-dark) 0%, #7c3aed 60%, #8b5cf6 100%) !important;
-      box-shadow: 0 2px 20px rgba(91,33,182,.35);
+      background: linear-gradient(135deg, var(--brand-dark) 0%, var(--brand) 60%, var(--brand-mid) 100%) !important;
+      box-shadow: 0 2px 20px rgba(0,0,0,.22);
       padding: 12px 0;
     }
     .navbar-brand {
@@ -152,7 +152,7 @@
 
     /* ── BUTTONS ── */
     .btn-brand {
-      background: linear-gradient(135deg, var(--brand-dark), #7c3aed);
+      background: linear-gradient(135deg, var(--brand-dark), var(--brand));
       color: #fff; border: none; border-radius: 10px; font-weight: 600;
       transition: opacity .15s, transform .1s;
     }
@@ -175,7 +175,7 @@
     }
     .form-control:focus, .form-select:focus {
       border-color: var(--brand);
-      box-shadow: 0 0 0 3px rgba(124,58,237,.15);
+      box-shadow: 0 0 0 3px var(--brand-glow);
       background: var(--input-bg) !important;
     }
     .form-control::placeholder { color: var(--text-muted); opacity: .75; }
@@ -204,7 +204,7 @@
 
     /* ── SALDO BOX ── */
     .saldo-box {
-      background: linear-gradient(135deg, var(--brand-dark) 0%, #7c3aed 70%, #a855f7 100%);
+      background: linear-gradient(135deg, var(--brand-dark) 0%, var(--brand) 70%, var(--brand-mid) 100%);
       color: #fff; border-radius: 16px; padding: 24px;
     }
     .saldo-box .label { font-size: .82rem; opacity: .8; font-weight: 500; margin-bottom: 4px; }
@@ -239,7 +239,7 @@
 
     /* ── FOOTER ── */
     footer {
-      background: linear-gradient(135deg, var(--brand-dark), #7c3aed);
+      background: linear-gradient(135deg, var(--brand-dark), var(--brand));
       color: var(--footer-text); padding: 20px 0; font-size: .85rem;
     }
     footer a { color: #fde68a; text-decoration: none; }
@@ -305,12 +305,20 @@
       --brand-dark:  {{ brand.dark }};
       --brand-light: {{ brand.light }};
       --brand-mid:   {{ brand.mid }};
+      --brand-glow:  {{ brand.glow }};
+      --brand-glow-h:{{ brand.glow_h }};
+      --card-shadow:  0 1px 3px rgba(0,0,0,.06), 0 4px 16px {{ brand.glow }};
+      --card-shadow-h:0 8px 32px {{ brand.glow_h }};
     }
     [data-theme="dark"] {
       --brand:       {{ brand.dm_brand }};
       --brand-dark:  {{ brand.dm_dark }};
       --brand-light: {{ brand.dm_light }};
       --brand-mid:   {{ brand.mid }};
+      --brand-glow:  {{ brand.glow }};
+      --brand-glow-h:{{ brand.glow_h }};
+      --card-shadow:  0 1px 4px rgba(0,0,0,.4), 0 4px 20px {{ brand.glow }};
+      --card-shadow-h:0 8px 36px {{ brand.glow_h }};
     }
   </style>
   {% endif %}

@@ -220,36 +220,44 @@ def _save_produk_img(pid: str, file) -> str | None:
 # ─── BRAND COLOR PRESETS ──────────────────────────────────────────────────────
 BRAND_PRESETS: dict[str, dict] = {
     "purple": {
-        "brand": "#7c3aed", "dark": "#5b21b6", "light": "#ede9fe", "mid": "#8b5cf6",
+        "brand": "#7c3aed", "dark": "#5b21b6", "light": "#ede9fe", "mid": "#a78bfa",
         "dm_brand": "#a78bfa", "dm_dark": "#7c3aed", "dm_light": "#2d1d5e",
+        "glow": "rgba(124,58,237,.13)", "glow_h": "rgba(124,58,237,.30)",
     },
     "blue": {
-        "brand": "#2563eb", "dark": "#1d4ed8", "light": "#dbeafe", "mid": "#3b82f6",
+        "brand": "#2563eb", "dark": "#1d4ed8", "light": "#dbeafe", "mid": "#60a5fa",
         "dm_brand": "#60a5fa", "dm_dark": "#2563eb", "dm_light": "#1e2a4a",
+        "glow": "rgba(37,99,235,.13)", "glow_h": "rgba(37,99,235,.30)",
     },
     "green": {
-        "brand": "#059669", "dark": "#047857", "light": "#d1fae5", "mid": "#10b981",
+        "brand": "#059669", "dark": "#047857", "light": "#d1fae5", "mid": "#34d399",
         "dm_brand": "#34d399", "dm_dark": "#059669", "dm_light": "#0d2e20",
+        "glow": "rgba(5,150,105,.13)", "glow_h": "rgba(5,150,105,.30)",
     },
     "red": {
-        "brand": "#dc2626", "dark": "#b91c1c", "light": "#fee2e2", "mid": "#ef4444",
+        "brand": "#dc2626", "dark": "#b91c1c", "light": "#fee2e2", "mid": "#f87171",
         "dm_brand": "#f87171", "dm_dark": "#dc2626", "dm_light": "#2d0a0a",
+        "glow": "rgba(220,38,38,.13)", "glow_h": "rgba(220,38,38,.30)",
     },
     "orange": {
-        "brand": "#ea580c", "dark": "#c2410c", "light": "#ffedd5", "mid": "#f97316",
+        "brand": "#ea580c", "dark": "#c2410c", "light": "#ffedd5", "mid": "#fb923c",
         "dm_brand": "#fb923c", "dm_dark": "#ea580c", "dm_light": "#2d1400",
+        "glow": "rgba(234,88,12,.13)", "glow_h": "rgba(234,88,12,.30)",
     },
     "pink": {
-        "brand": "#db2777", "dark": "#be185d", "light": "#fce7f3", "mid": "#ec4899",
+        "brand": "#db2777", "dark": "#be185d", "light": "#fce7f3", "mid": "#f472b6",
         "dm_brand": "#f472b6", "dm_dark": "#db2777", "dm_light": "#2d0a1e",
+        "glow": "rgba(219,39,119,.13)", "glow_h": "rgba(219,39,119,.30)",
     },
     "teal": {
-        "brand": "#0d9488", "dark": "#0f766e", "light": "#ccfbf1", "mid": "#14b8a6",
+        "brand": "#0d9488", "dark": "#0f766e", "light": "#ccfbf1", "mid": "#2dd4bf",
         "dm_brand": "#2dd4bf", "dm_dark": "#0d9488", "dm_light": "#0a2525",
+        "glow": "rgba(13,148,136,.13)", "glow_h": "rgba(13,148,136,.30)",
     },
     "indigo": {
-        "brand": "#4f46e5", "dark": "#4338ca", "light": "#e0e7ff", "mid": "#6366f1",
+        "brand": "#4f46e5", "dark": "#4338ca", "light": "#e0e7ff", "mid": "#818cf8",
         "dm_brand": "#818cf8", "dm_dark": "#4f46e5", "dm_light": "#1a1a45",
+        "glow": "rgba(79,70,229,.13)", "glow_h": "rgba(79,70,229,.30)",
     },
 }
 

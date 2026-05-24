@@ -130,10 +130,14 @@ def _ikb(text: str, emoji_char: str = "", style: str = None, **kwargs) -> Inline
         # Hapus emoji terdepan dari teks agar tidak dobel
         stripped = text
         if emoji_char:
-            # Hapus semua kemunculan emoji_char di awal (termasuk jika ada spasi/duplikat)
             while stripped.startswith(emoji_char):
                 stripped = stripped[len(emoji_char):].lstrip()
-        text = stripped
+        # Jangan kosongkan teks — Telegram tolak tombol dengan teks kosong
+        if stripped:
+            text = stripped
+    # Pastikan teks tidak kosong atau hanya whitespace
+    if not text or not text.strip():
+        text = "·"
     return InlineKeyboardButton(text=text, **kw)
 
 # ─── KONFIGURASI ────────────────────────────────────────────────────────────

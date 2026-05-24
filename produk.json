@@ -19,19 +19,26 @@
     "gambar": "/static/produk_img/1.png"
   },
   "2": {
-    "nama": "CANVA PRO 12 BULAN",
+    "nama": "NETFLIX",
     "tipe": {
       "t1": {
-        "nama": "CANVA PRO 12 BULAN",
+        "nama": "NETFLIX PRIVATE 1 BULAN",
         "harga": 55000,
         "akun_list": [],
         "stok": 0,
         "deskripsi": ""
+      },
+      "t2": {
+        "nama": "NETFLIX SHARING 1 BULAN",
+        "harga": 30000,
+        "deskripsi": "",
+        "akun_list": [],
+        "stok": 0
       }
     }
   },
   "3": {
-    "nama": "CANVA PRO LIFETIME",
+    "nama": "CANVA",
     "tipe": {
       "t1": {
         "nama": "CANVA PRO LIFETIME",
@@ -50,11 +57,18 @@
         ],
         "stok": 2,
         "deskripsi": ""
+      },
+      "t2": {
+        "nama": "CANVA PRO 12 BULAN",
+        "harga": 15000,
+        "deskripsi": "",
+        "akun_list": [],
+        "stok": 0
       }
     }
   },
   "4": {
-    "nama": "EXPRESS VPN 30 HARI",
+    "nama": "EXPRESS",
     "tipe": {
       "t1": {
         "nama": "EXPRESS VPN 30 HARI",
@@ -72,7 +86,7 @@
     }
   },
   "5": {
-    "nama": "SPOTIFY PREMIUM 1B STUDENT GP",
+    "nama": "SPOTIFY",
     "tipe": {
       "t1": {
         "nama": "SPOTIFY PREMIUM 1B STUDENT GP",
@@ -91,25 +105,6 @@
         ],
         "stok": 2,
         "deskripsi": ""
-      }
-    }
-  },
-  "6": {
-    "nama": "Netflix",
-    "tipe": {
-      "t1": {
-        "nama": "Private 1 bulan",
-        "harga": 30000,
-        "deskripsi": "Garansi 1 Bulan",
-        "akun_list": [],
-        "stok": 0
-      },
-      "t2": {
-        "nama": "Sharing",
-        "harga": 10000,
-        "deskripsi": "Garansi 1 Bulan",
-        "akun_list": [],
-        "stok": 0
       }
     }
   }
