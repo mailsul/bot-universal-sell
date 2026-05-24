@@ -140,18 +140,17 @@ def _ikb(text: str, emoji_char: str = "", style: str = None, **kwargs) -> Inline
     kw = dict(kwargs)
 
     if emoji_char:
-        # Strip emoji (dan variation selector) dari awal DAN akhir teks
+        # Strip emoji (dan variation selector) dari depan teks
         stripped = text
-        base_char = "".join(c for c in emoji_char if ord(c) not in (0xFE0F, 0xFE0E))
-        for variant in {emoji_char, base_char} - {""}:
+        for variant in (emoji_char, emoji_char.rstrip("\ufe0f").rstrip("\ufe0e")):
             while stripped.startswith(variant):
                 stripped = stripped[len(variant):].lstrip()
-            while stripped.endswith(variant):
-                stripped = stripped[:-len(variant)].rstrip()
 
         # Cari ID di peta emojis.txt — coba versi asli dulu, lalu tanpa variation selector
         emap = _get_emoji_map()
-        icon_id = emap.get(emoji_char) or emap.get(base_char)
+        icon_id = emap.get(emoji_char) or emap.get(
+            "".join(c for c in emoji_char if ord(c) not in (0xFE0F, 0xFE0E))
+        )
         if icon_id and stripped:
             kw["icon_custom_emoji_id"] = icon_id
             text = stripped
@@ -1010,7 +1009,7 @@ async def handle_list_produk(update: Update, context: CallbackContext):
     if nav_row:
         kb_rows.append(nav_row)
 
-    kb_rows.append([_ikb("🔥 Kembali ke Menu Utama", "🔥", "primary", callback_data="back_to_produk")])
+    kb_rows.append([_ikb("🔥 Kembali ke Menu Utama", "🔥", "primary", callback_data="back_to_menu")])
 
     markup = InlineKeyboardMarkup(kb_rows)
     await safe_edit(query, context, msg, reply_markup=markup)
@@ -1511,7 +1510,7 @@ async def handle_deposit(update: Update, context: CallbackContext):
     qris_tersedia = _qris_available()
     keyboard      = [[_ikb(f"Rp{n:,}", "", "primary", callback_data=f"deposit_{n}") for n in DEPOSIT_NOMINALS]]
     keyboard.append([_ikb("🔧 Custom Nominal", "🔧", "primary", callback_data="deposit_custom")])
-    keyboard.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="back_to_produk")])
+    keyboard.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="back_to_menu")])
     qris_note = "\n✅ _QRIS tersedia — pilih nominal lalu pilih metode!_" if qris_tersedia else ""
     text = (
         f"💰 *Pilih nominal deposit:*\n"
@@ -1895,7 +1894,7 @@ async def _show_riwayat(update: Update, context: CallbackContext, filter_tipe: s
             _ikb("🛒 Pembelian", "🛒", "success" if filter_tipe == "beli"    else "danger", callback_data="riwayat_beli"),
             _ikb("💰 Deposit",   "💰", "primary" if filter_tipe == "deposit" else "danger", callback_data="riwayat_deposit"),
         ],
-        [_ikb("🔙 Kembali ke Menu", "🔙", "danger", callback_data="back_to_produk")],
+        [_ikb("🔙 Kembali ke Menu", "🔙", "danger", callback_data="back_to_menu")],
     ])
 
     if update.callback_query:
@@ -1962,7 +1961,7 @@ async def handle_admin_panel(update: Update, context: CallbackContext):
         [_ikb("📦 Kelola Produk",   "📦", "success", callback_data="admin_kelola_produk")],
         [_ikb("⚙️ Pengaturan Bot",  "⚙",  "primary", callback_data="admin_settings")],
         [_ikb("📢 Broadcast",        "📢", "primary", callback_data="admin_broadcast")],
-        [_ikb("🔙 Kembali ke Menu",  "🔙", "danger",  callback_data="back_to_produk")],
+        [_ikb("🔙 Kembali ke Menu",  "🔙", "danger",  callback_data="back_to_menu")],
     ]
     await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -2349,6 +2348,16 @@ async def handle_back(update: Update, context: CallbackContext):
 
 
 async def handle_back_to_produk(update: Update, context: CallbackContext):
+    """Kembali ke daftar produk (halaman 1)."""
+    try:
+        await update.callback_query.answer()
+    except Exception:
+        pass
+    await handle_list_produk(update, context)
+
+
+async def handle_back_to_menu(update: Update, context: CallbackContext):
+    """Kembali ke menu utama."""
     query = update.callback_query
     try:
         await query.message.delete()
@@ -2387,7 +2396,7 @@ async def handle_info_bot(update: Update, context: CallbackContext):
     if kontak:
         tg = kontak.lstrip("@")
         kb_rows.append([_ikb("👤 Hubungi Admin ↗", "👤", "primary", url=f"https://t.me/{tg}")])
-    kb_rows.append([_ikb("🔥 Kembali ke Menu", "🔥", "danger", callback_data="back_to_produk")])
+    kb_rows.append([_ikb("🔥 Kembali ke Menu", "🔥", "danger", callback_data="back_to_menu")])
     markup = InlineKeyboardMarkup(kb_rows)
     await query.answer()
     await safe_edit(query, context, text, parse_mode="HTML",
@@ -2543,6 +2552,7 @@ CALLBACK_MAP = {
     "confirm_saldo":          handle_confirm_saldo,
     "back":                   handle_back,
     "back_to_produk":         handle_back_to_produk,
+    "back_to_menu":           handle_back_to_menu,
     "riwayat_user":           handle_riwayat_user,
     "riwayat_beli":           handle_riwayat_beli,
     "riwayat_deposit":        handle_riwayat_deposit,
