@@ -51,7 +51,7 @@ from db import (
     db_get_rekap_penjualan,
     db_add_audit_log, db_get_audit_log, db_get_daily_sales,
     web_set_force_password_change,
-    db_add_voucher, db_get_all_vouchers, db_use_voucher, db_delete_voucher, db_toggle_voucher,
+    db_add_voucher, db_get_all_vouchers, db_use_voucher, db_check_voucher, db_delete_voucher, db_toggle_voucher,
     web_session_create, web_session_list, web_session_update_seen,
     web_session_deactivate, web_session_deactivate_all,
     db_ticket_create, db_ticket_list, db_ticket_list_by_user,
@@ -1121,6 +1121,7 @@ def beli_saldo(pid):
     tg_kirim     = request.form.get("telegram_id","").strip()
     form_tid     = request.form.get("tid","").strip()
     voucher_kode = request.form.get("voucher_kode","").strip().upper()
+    jumlah       = max(1, min(10, int(request.form.get("jumlah","1") or 1)))
     is_first     = db_is_first_purchase(user_tid)
 
     with _purchase_lock, produk_lock():
@@ -1136,12 +1137,12 @@ def beli_saldo(pid):
             return redirect(url_for("beli", pid=pid))
         tipe = tipe_dict[tid]
         akun_list = tipe.get("akun_list", [])
-        if not akun_list:
-            flash("Stok habis.", "danger")
+        if len(akun_list) < jumlah:
+            flash(f"Stok tidak cukup (tersisa {len(akun_list)} unit).", "danger")
             return redirect(url_for("beli", pid=pid))
         harga = tipe["harga"]
 
-        # Terapkan voucher
+        # Terapkan voucher (diskon hanya untuk satuan pertama)
         diskon = 0
         if voucher_kode:
             cfg_v = load_config()
@@ -1156,12 +1157,12 @@ def beli_saldo(pid):
                     flash("Kode voucher tidak valid atau sudah habis.", "danger")
                     return redirect(url_for("beli", pid=pid))
 
-        harga_bayar = max(0, harga - diskon)
+        harga_bayar = max(0, harga - diskon) * jumlah
         saldo = db_get_saldo(user_tid)
         if saldo < harga_bayar:
             flash(f"Saldo tidak cukup (Rp{saldo:,} < Rp{harga_bayar:,}). Top up dulu.", "danger")
             return redirect(url_for("beli", pid=pid))
-        akun = akun_list.pop(0)
+        akun_list_beli = [akun_list.pop(0) for _ in range(jumlah)]
         tipe["akun_list"] = akun_list
         tipe["stok"]      = len(akun_list)
         prod["tipe"][tid] = tipe
@@ -1173,20 +1174,24 @@ def beli_saldo(pid):
     db_add_saldo(user_tid, -harga_bayar)
     ket_vc = f" [Voucher -{diskon:,}]" if diskon else ""
     trx_id = db_add_riwayat(user_tid, "BELI",
-                             f"{prod['nama']} [{nama_tipe}] x1 (Web/Saldo){ket_vc}", harga_bayar)
+                             f"{prod['nama']} [{nama_tipe}] x{jumlah} (Web/Saldo){ket_vc}", harga_bayar)
 
     tg_sent = False
     if tg_kirim:
         try:
+            akun_lines = ""
+            for i, ak in enumerate(akun_list_beli, start=1):
+                akun_lines += f"\n{'─'*20}\n🔢 Akun {i}\n👤 `{ak.get('username','')}`\n🔑 `{ak.get('password','')}`"
+                if ak.get("extra"): akun_lines += f"\nℹ️ {ak['extra']}"
             tg_sent = send_telegram(
                 int(tg_kirim),
                 f"✅ *Pembelian Berhasil!*\n\n"
                 f"🛍 *{prod['nama']}*\n"
-                f"📦 Tipe: {nama_tipe}\n"
-                f"👤 `{akun.get('username','')}`\n"
-                f"🔑 `{akun.get('password','')}`\n"
+                f"📦 Tipe: {nama_tipe} x{jumlah}\n"
                 + (f"🏷 Diskon: Rp{diskon:,}\n" if diskon else "")
-                + f"\n🔖 TRX: `{trx_id}`"
+                + f"💸 Total: Rp{harga_bayar:,}\n"
+                + akun_lines
+                + f"\n\n🔖 TRX: `{trx_id}`"
             )
         except Exception:
             pass
@@ -1195,7 +1200,7 @@ def beli_saldo(pid):
     _log_group(
         f"🛒 *Pembelian (Web/Saldo)*\n"
         f"👤 `{user_tid}`\n"
-        f"📦 {prod['nama']} [{nama_tipe}] x1\n"
+        f"📦 {prod['nama']} [{nama_tipe}] x{jumlah}\n"
         f"💸 Rp{harga_bayar:,}" + (f" (diskon Rp{diskon:,})" if diskon else "") +
         f"\n🔖 TRX: `{trx_id}`"
     )
@@ -1226,9 +1231,9 @@ def beli_saldo(pid):
 
     deskripsi = tipe.get("deskripsi", "").strip()
     item = {"nama": prod["nama"], "harga": harga, "harga_bayar": harga_bayar,
-            "diskon": diskon, "tipe": nama_tipe}
+            "diskon": diskon, "tipe": nama_tipe, "jumlah": jumlah}
     return render_template(
-        "beli_sukses.html", akun=akun, item=item,
+        "beli_sukses.html", akun_list=akun_list_beli, item=item,
         trx_id=trx_id, tg_sent=tg_sent, tg_kirim=tg_kirim, metode="Saldo",
         deskripsi=deskripsi,
     )
@@ -1247,8 +1252,10 @@ def beli_qris(pid):
         flash("QRIS belum dikonfigurasi.", "danger")
         return redirect(url_for("beli", pid=pid))
 
-    tg_kirim = request.form.get("telegram_id","").strip()
-    form_tid = request.form.get("tid","").strip()
+    tg_kirim     = request.form.get("telegram_id","").strip()
+    form_tid     = request.form.get("tid","").strip()
+    voucher_kode = request.form.get("voucher_kode","").strip().upper()
+    jumlah       = max(1, min(10, int(request.form.get("jumlah","1") or 1)))
 
     with _purchase_lock, produk_lock():
         raw  = load_produk_raw()
@@ -1262,18 +1269,30 @@ def beli_qris(pid):
             flash("Tidak ada tipe tersedia.", "danger")
             return redirect(url_for("beli", pid=pid))
         tipe = tipe_dict[tid]
-        if not tipe.get("akun_list"):
-            flash("Stok habis.", "danger")
+        if len(tipe.get("akun_list", [])) < jumlah:
+            flash(f"Stok tidak cukup (tersisa {len(tipe.get('akun_list',[]))} unit).", "danger")
             return redirect(url_for("beli", pid=pid))
-        akun = tipe["akun_list"].pop(0)
+        reserved_akun = [tipe["akun_list"].pop(0) for _ in range(jumlah)]
         tipe["stok"]      = len(tipe["akun_list"])
         prod["tipe"][tid] = tipe
         raw[pid] = prod
         save_produk_raw(raw)
 
-    harga     = tipe["harga"]
-    kode_unik = _generate_kode_unik_web(harga)
-    total     = harga + kode_unik
+    harga  = tipe["harga"]
+    # Validasi voucher tanpa konsumsi (dikonsumsi saat pembayaran terkonfirmasi)
+    diskon_vc = 0
+    vc_valid  = ""
+    if voucher_kode:
+        cfg_v = load_config()
+        if cfg_v.get("voucher_aktif", True):
+            chk = db_check_voucher(voucher_kode, str(session.get("user_tid", "")))
+            if isinstance(chk, int):
+                diskon_vc = min(chk, harga)
+                vc_valid  = voucher_kode
+
+    nominal   = max(0, harga - diskon_vc) * jumlah
+    kode_unik = _generate_kode_unik_web(nominal)
+    total     = nominal + kode_unik
 
     if "user_tid" in session:
         buyer_uid = session["user_tid"]
@@ -1290,24 +1309,27 @@ def beli_qris(pid):
     db_add_pending({
         "user_id":         buyer_uid,
         "metode":          "qris_beli_web",
-        "nominal":         harga,
+        "nominal":         nominal,
         "expected_amount": total,
         "kode_unik":       kode_unik,
         "waktu":           datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
         "produk_id":       pid,
-        "jumlah":          1,
-        "reserved_akun":   [akun],
+        "jumlah":          jumlah,
+        "reserved_akun":   reserved_akun,
         "total_transfer":  total,
+        "voucher_kode":    vc_valid,
+        "diskon_vc":       diskon_vc,
     })
 
-    session["bq_uid"]   = buyer_uid
-    session["bq_pid"]   = pid
-    session["bq_tid"]   = tid
-    session["bq_total"] = total
-    session["bq_nama"]  = f"{prod['nama']} [{tipe.get('nama','')}]"
-    session["bq_harga"] = harga
-    session["bq_tg"]    = tg_kirim
-    session["bq_start"] = int(time.time())
+    session["bq_uid"]    = buyer_uid
+    session["bq_pid"]    = pid
+    session["bq_tid"]    = tid
+    session["bq_total"]  = total
+    session["bq_nama"]   = f"{prod['nama']} [{tipe.get('nama','')}]"
+    session["bq_harga"]  = harga
+    session["bq_jumlah"] = jumlah
+    session["bq_tg"]     = tg_kirim
+    session["bq_start"]  = int(time.time())
 
     return redirect(url_for("beli_waiting"))
 
@@ -1414,28 +1436,41 @@ def api_beli_check():
     pid      = session.get("bq_pid")
     nama     = session.get("bq_nama", "Produk")
     harga    = session.get("bq_harga", total)
+    jumlah_s = session.get("bq_jumlah", len(reserved) or 1)
     tg_kirim = session.get("bq_tg", "")
+    vc_kode  = pending.get("voucher_kode", "")
+    diskon_p = pending.get("diskon_vc", 0)
+    nominal_p = pending.get("nominal", total)
 
     db_remove_pending_by_id(pending["id"])
 
+    # Konsumsi voucher
+    if vc_kode:
+        db_use_voucher(vc_kode, str(session.get("user_tid", uid)))
+
+    ket_vc = f" [Voucher -{diskon_p:,}]" if diskon_p else ""
     if "user_tid" in session:
-        trx_id = db_add_riwayat(session["user_tid"], "BELI", f"{nama} x1 (Web/QRIS)", harga)
+        trx_id = db_add_riwayat(session["user_tid"], "BELI", f"{nama} x{jumlah_s} (Web/QRIS){ket_vc}", nominal_p)
     else:
         trx_id = gen_trx_id()
 
-    akun = reserved[0] if reserved else {}
+    akun_list_r = reserved if reserved else [{}]
 
     tg_sent = False
     if tg_kirim:
         try:
+            akun_lines = ""
+            for i, ak in enumerate(akun_list_r, start=1):
+                akun_lines += f"\n{'─'*20}\n🔢 Akun {i}\n👤 `{ak.get('username','')}`\n🔑 `{ak.get('password','')}`"
+                if ak.get("extra"): akun_lines += f"\nℹ️ {ak['extra']}"
             tg_sent = send_telegram(
                 int(tg_kirim),
                 f"✅ *Pembelian Berhasil! (QRIS)*\n\n"
-                f"🛍 *{nama}*\n"
-                f"👤 `{akun.get('username','')}`\n"
-                f"🔑 `{akun.get('password','')}`\n"
-                + (f"ℹ️ {akun.get('tipe','')}\n" if akun.get('tipe') else "")
-                + f"\n🔖 TRX: `{trx_id}`"
+                f"🛍 *{nama}* x{jumlah_s}\n"
+                + (f"🏷 Diskon: Rp{diskon_p:,}\n" if diskon_p else "")
+                + f"💸 Total: Rp{nominal_p:,}\n"
+                + akun_lines
+                + f"\n\n🔖 TRX: `{trx_id}`"
             )
         except Exception:
             pass
@@ -1443,9 +1478,9 @@ def api_beli_check():
     _log_group(
         f"🛒 *Pembelian (Web/QRIS)*\n"
         f"👤 `{session.get('user_tid','Guest')}`\n"
-        f"📦 {nama} x1\n"
-        f"💸 Rp{harga:,}\n"
-        f"🔖 TRX: `{trx_id}`"
+        f"📦 {nama} x{jumlah_s}\n"
+        f"💸 Rp{nominal_p:,}" + (f" (diskon Rp{diskon_p:,})" if diskon_p else "") +
+        f"\n🔖 TRX: `{trx_id}`"
     )
 
     # Ambil deskripsi tipe dari produk
@@ -1458,15 +1493,15 @@ def api_beli_check():
     except Exception:
         pass
 
-    session["bs_akun"]    = akun
-    session["bs_trx"]     = trx_id
-    session["bs_item"]    = {"nama": nama, "harga": harga}
+    session["bs_akun_list"] = akun_list_r
+    session["bs_trx"]       = trx_id
+    session["bs_item"]    = {"nama": nama, "harga": harga, "jumlah": jumlah_s}
     session["bs_tg_sent"] = tg_sent
     session["bs_tg"]      = tg_kirim
     session["bs_metode"]  = "QRIS"
     session["bs_desc"]    = _bq_desc
 
-    for k in ["bq_uid","bq_pid","bq_total","bq_nama","bq_harga","bq_tg","bq_start"]:
+    for k in ["bq_uid","bq_pid","bq_total","bq_nama","bq_harga","bq_jumlah","bq_tg","bq_start"]:
         session.pop(k, None)
 
     return jsonify({"status": "success", "redirect": url_for("beli_sukses")})
@@ -1474,17 +1509,20 @@ def api_beli_check():
 
 @app.route("/beli/sukses")
 def beli_sukses():
-    akun      = session.pop("bs_akun", {})
+    akun_list = session.pop("bs_akun_list", None)
+    # backward compat: jika ada single akun (dari saldo langsung)
+    if akun_list is None:
+        akun_list = []
     trx_id    = session.pop("bs_trx", "-")
     item      = session.pop("bs_item", {})
     tg_sent   = session.pop("bs_tg_sent", False)
     tg_kirim  = session.pop("bs_tg", "")
     metode    = session.pop("bs_metode", "")
     deskripsi = session.pop("bs_desc", "")
-    if not akun:
+    if not akun_list:
         return redirect(url_for("index"))
     return render_template(
-        "beli_sukses.html", akun=akun, item=item,
+        "beli_sukses.html", akun_list=akun_list, item=item,
         trx_id=trx_id, tg_sent=tg_sent, tg_kirim=tg_kirim, metode=metode,
         deskripsi=deskripsi,
     )

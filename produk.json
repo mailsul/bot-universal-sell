@@ -21,17 +21,12 @@
         "harga": 1500,
         "akun_list": [
           {
-            "username": "test1",
-            "password": "dsad1a56",
-            "tipe": ""
-          },
-          {
             "username": "test2",
             "password": "dsad1a56",
             "tipe": ""
           }
         ],
-        "stok": 2,
+        "stok": 1,
         "deskripsi": ""
       },
       "t2": {

@@ -3,7 +3,7 @@
 {% block head %}
 <style>
   .sukses-card {
-    max-width: 520px;
+    max-width: 560px;
     margin: 0 auto;
   }
   .check-icon {
@@ -16,17 +16,25 @@
     color: #fff;
     box-shadow: 0 8px 24px rgba(34,197,94,.3);
   }
-  .akun-box {
+  .akun-block {
     background: var(--brand-light);
     border: 1.5px solid var(--border);
     border-radius: 12px;
-    padding: 16px 20px;
+    padding: 14px 18px;
+    margin-bottom: 10px;
+  }
+  .akun-block-header {
+    font-size: .75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 8px;
   }
   .akun-row {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 8px 0;
+    padding: 6px 0;
     border-bottom: 1px solid var(--border);
   }
   .akun-row:last-child { border-bottom: none; }
@@ -55,22 +63,29 @@
       <!-- Produk -->
       <div class="d-flex justify-content-between mb-1">
         <span class="text-muted small">Produk</span>
-        <span class="fw-semibold small">{{ item.get('nama','') }}</span>
+        <span class="fw-semibold small">{{ item.get('nama','') }}{% if item.get('jumlah',1) > 1 %} × {{ item.get('jumlah') }}{% endif %}</span>
       </div>
       <div class="d-flex justify-content-between mb-3">
-        <span class="text-muted small">Harga</span>
-        <span class="fw-semibold small">Rp{{ "{:,}".format(item.get('harga',0)) }}</span>
+        <span class="text-muted small">Total Bayar</span>
+        <span class="fw-semibold small">Rp{{ "{:,}".format(item.get('harga_bayar', item.get('harga',0))) }}</span>
       </div>
 
       <!-- Akun -->
-      <p class="fw-bold mb-2" style="font-size:.85rem;text-transform:uppercase;color:#6b7280">Detail Akun</p>
-      <div class="akun-box mb-3">
+      <p class="fw-bold mb-2" style="font-size:.85rem;text-transform:uppercase;color:#6b7280">
+        Detail Akun{% if akun_list|length > 1 %} ({{ akun_list|length }} unit){% endif %}
+      </p>
+
+      {% for akun in akun_list %}
+      <div class="akun-block">
+        {% if akun_list|length > 1 %}
+        <div class="akun-block-header">Akun {{ loop.index }}</div>
+        {% endif %}
         {% if akun.get('username') %}
         <div class="akun-row">
           <span class="akun-key">Username / Email</span>
           <div class="d-flex align-items-center gap-1">
-            <span class="akun-val" id="val-user">{{ akun.username }}</span>
-            <button class="copy-btn" onclick="copyText('val-user', this)" title="Salin">
+            <span class="akun-val" id="val-user-{{ loop.index0 }}">{{ akun.username }}</span>
+            <button class="copy-btn" onclick="copyText('val-user-{{ loop.index0 }}', this)" title="Salin">
               <i class="bi bi-clipboard"></i>
             </button>
           </div>
@@ -80,8 +95,8 @@
         <div class="akun-row">
           <span class="akun-key">Password</span>
           <div class="d-flex align-items-center gap-1">
-            <span class="akun-val" id="val-pass">{{ akun.password }}</span>
-            <button class="copy-btn" onclick="copyText('val-pass', this)" title="Salin">
+            <span class="akun-val" id="val-pass-{{ loop.index0 }}">{{ akun.password }}</span>
+            <button class="copy-btn" onclick="copyText('val-pass-{{ loop.index0 }}', this)" title="Salin">
               <i class="bi bi-clipboard"></i>
             </button>
           </div>
@@ -91,14 +106,15 @@
         <div class="akun-row">
           <span class="akun-key">Info Tambahan</span>
           <div class="d-flex align-items-center gap-1">
-            <span class="akun-val" id="val-extra">{{ akun.extra }}</span>
-            <button class="copy-btn" onclick="copyText('val-extra', this)" title="Salin">
+            <span class="akun-val" id="val-extra-{{ loop.index0 }}">{{ akun.extra }}</span>
+            <button class="copy-btn" onclick="copyText('val-extra-{{ loop.index0 }}', this)" title="Salin">
               <i class="bi bi-clipboard"></i>
             </button>
           </div>
         </div>
         {% endif %}
       </div>
+      {% endfor %}
 
       {% if deskripsi %}
       <!-- Panduan Penggunaan -->
@@ -147,6 +163,12 @@
 
 {% block scripts %}
 <script>
+const _akunList = {{ akun_list | tojson }};
+const _itemNama  = {{ item.get('nama','') | tojson }};
+const _itemHarga = {{ item.get('harga_bayar', item.get('harga',0)) }};
+const _metode    = {{ metode | tojson }};
+const _deskripsi = {{ (deskripsi or '') | tojson }};
+
 function copyText(id, btn) {
   const text = document.getElementById(id).textContent.trim();
   navigator.clipboard.writeText(text).then(() => {
@@ -155,27 +177,22 @@ function copyText(id, btn) {
   });
 }
 function downloadTxt() {
-  const nama       = {{ item.get('nama','') | tojson }};
-  const harga      = {{ item.get('harga',0) }};
-  const trxId      = document.getElementById('val-trx').textContent.trim();
-  const user       = (document.getElementById('val-user')  || {textContent:''}).textContent.trim();
-  const pass_      = (document.getElementById('val-pass')  || {textContent:''}).textContent.trim();
-  const extra      = (document.getElementById('val-extra') || {textContent:''}).textContent.trim();
-  const metode     = {{ metode | tojson }};
-  const deskripsi  = {{ (deskripsi or '') | tojson }};
+  const trxId = document.getElementById('val-trx').textContent.trim();
   let txt = `=== DETAIL PEMBELIAN ===\n`;
   txt += `ID Transaksi : ${trxId}\n`;
-  txt += `Produk       : ${nama}\n`;
-  txt += `Harga        : Rp${harga.toLocaleString('id-ID')}\n`;
-  txt += `Metode       : ${metode}\n`;
-  txt += `Waktu        : ${new Date().toLocaleString('id-ID')}\n\n`;
-  txt += `=== DETAIL AKUN ===\n`;
-  if (user)  txt += `Username      : ${user}\n`;
-  if (pass_) txt += `Password      : ${pass_}\n`;
-  if (extra) txt += `Info Tambahan : ${extra}\n`;
-  if (deskripsi) {
+  txt += `Produk       : ${_itemNama}\n`;
+  txt += `Total Bayar  : Rp${_itemHarga.toLocaleString('id-ID')}\n`;
+  txt += `Metode       : ${_metode}\n`;
+  txt += `Waktu        : ${new Date().toLocaleString('id-ID')}\n`;
+  _akunList.forEach((akun, i) => {
+    txt += `\n=== AKUN ${_akunList.length > 1 ? i + 1 : ''} ===\n`;
+    if (akun.username) txt += `Username : ${akun.username}\n`;
+    if (akun.password) txt += `Password : ${akun.password}\n`;
+    if (akun.extra)    txt += `Extra    : ${akun.extra}\n`;
+  });
+  if (_deskripsi) {
     txt += `\n=== PANDUAN PENGGUNAAN ===\n`;
-    txt += deskripsi + '\n';
+    txt += _deskripsi + '\n';
   }
   txt += `\n⚠️ Simpan file ini. Jangan bagikan ke siapapun.`;
   const blob = new Blob([txt], {type:'text/plain'});

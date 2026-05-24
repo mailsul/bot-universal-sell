@@ -118,6 +118,19 @@
     </div>
     {% endif %}
 
+    <!-- Jumlah -->
+    <div class="card mb-3" id="qty-card">
+      <div class="card-header"><h6 class="mb-0"><i class="bi bi-hash me-2"></i>Jumlah Akun</h6></div>
+      <div class="card-body p-3">
+        <div class="d-flex align-items-center gap-3">
+          <button type="button" class="btn btn-outline-secondary btn-sm px-3" onclick="changeQty(-1)">−</button>
+          <span id="qty-display" class="fw-bold fs-5">1</span>
+          <button type="button" class="btn btn-outline-secondary btn-sm px-3" onclick="changeQty(1)">+</button>
+          <span class="text-muted small ms-2">Maks. <span id="qty-max-label">{{ item.tipe[0].stok if item.tipe else 0 }}</span> unit</span>
+        </div>
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-header"><h6><i class="bi bi-cart3 me-2"></i>Pilih Metode Pembayaran</h6></div>
       <div class="card-body p-4">
@@ -212,6 +225,7 @@
           <input type="hidden" name="telegram_id" id="tg_saldo">
           <input type="hidden" name="tid" id="tid_saldo" value="{{ item.tipe[0].id if item.tipe else '' }}">
           <input type="hidden" name="voucher_kode" id="vc_saldo">
+          <input type="hidden" name="jumlah" id="qty_saldo" value="1">
           <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold"
             {% if not current_user %}disabled{% endif %}
             id="btn-saldo">
@@ -222,6 +236,8 @@
         <form id="form-qris" action="/beli/{{ pid }}/qris" method="post" class="d-none">
           <input type="hidden" name="telegram_id" id="tg_qris">
           <input type="hidden" name="tid" id="tid_qris" value="{{ item.tipe[0].id if item.tipe else '' }}">
+          <input type="hidden" name="voucher_kode" id="vc_qris">
+          <input type="hidden" name="jumlah" id="qty_qris" value="1">
           <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold">
             <i class="bi bi-qr-code me-1"></i>Lanjut Bayar QRIS — <span id="harga-qris">Rp{{ "{:,}".format(selected_harga) }}</span>
           </button>
@@ -248,26 +264,51 @@ const tipeData = {
 let selectedTipeId   = '{{ item.tipe[0].id if item.tipe else "" }}';
 let selectedHarga    = {{ selected_harga }};
 const currentSaldo   = {{ current_saldo or 0 }};
+let selectedQty      = 1;
+let _voucherNominal  = 0;
+
+function _updateHargaDisplay() {
+  const diskon = _voucherNominal || 0;
+  const netSatuan = Math.max(0, selectedHarga - diskon);
+  const total = netSatuan * selectedQty;
+  const fmt = 'Rp' + total.toLocaleString('id-ID');
+  const hs = document.getElementById('harga-saldo');
+  const hq = document.getElementById('harga-qris');
+  if (hs) hs.textContent = fmt;
+  if (hq) hq.textContent = fmt;
+  const hargaTotal = selectedHarga * selectedQty;
+  const warn = document.getElementById('saldo-warning');
+  const lbl  = document.getElementById('saldo-label');
+  if (warn) warn.classList.toggle('d-none', currentSaldo >= total);
+  if (lbl)  lbl.className = 'fw-bold ' + (currentSaldo >= total ? 'text-success' : 'text-danger');
+}
+
+function changeQty(delta) {
+  const tipe = tipeData[selectedTipeId];
+  const maxQty = tipe ? Math.min(tipe.stok, 10) : 1;
+  selectedQty = Math.max(1, Math.min(maxQty, selectedQty + delta));
+  document.getElementById('qty-display').textContent = selectedQty;
+  document.getElementById('qty_saldo').value = selectedQty;
+  document.getElementById('qty_qris').value  = selectedQty;
+  _updateHargaDisplay();
+}
 
 function selectTipe(tid, harga, stok, el) {
   document.querySelectorAll('.tipe-card').forEach(c => c.classList.remove('selected'));
   el.classList.add('selected');
   selectedTipeId = tid;
   selectedHarga  = harga;
+  // Reset qty jika melebihi stok tipe baru
+  const maxQty = Math.min(stok, 10);
+  if (selectedQty > maxQty) { selectedQty = Math.max(1, maxQty); }
+  document.getElementById('qty-display').textContent = selectedQty;
+  document.getElementById('qty_saldo').value = selectedQty;
+  document.getElementById('qty_qris').value  = selectedQty;
+  document.getElementById('qty-max-label').textContent = stok;
   // Update hidden tid fields
   document.getElementById('tid_saldo').value = tid;
   document.getElementById('tid_qris').value  = tid;
-  // Update harga display in buttons
-  const fmt = 'Rp' + harga.toLocaleString('id-ID');
-  const hs = document.getElementById('harga-saldo');
-  const hq = document.getElementById('harga-qris');
-  if (hs) hs.textContent = fmt;
-  if (hq) hq.textContent = fmt;
-  // Update saldo warning
-  const warn = document.getElementById('saldo-warning');
-  const lbl  = document.getElementById('saldo-label');
-  if (warn) warn.classList.toggle('d-none', currentSaldo >= harga);
-  if (lbl)  lbl.className = 'fw-bold ' + (currentSaldo >= harga ? 'text-success' : 'text-danger');
+  _updateHargaDisplay();
   // Disable saldo button jika stok habis
   const btnSaldo = document.getElementById('btn-saldo');
   if (btnSaldo) btnSaldo.disabled = (stok <= 0 || !{{ 'true' if current_user else 'false' }});
@@ -310,16 +351,17 @@ function checkVoucher() {
       if (d.valid) {
         st.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>' + d.pesan + '</span>';
         appliedVoucher = kode;
+        _voucherNominal = d.nominal;
         document.getElementById('vc_saldo').value = kode;
-        // update tombol bayar
-        const net = Math.max(0, selectedHarga - d.nominal);
-        const fmt = 'Rp' + net.toLocaleString('id-ID');
-        const hs = document.getElementById('harga-saldo');
-        if (hs) hs.textContent = fmt;
+        document.getElementById('vc_qris').value  = kode;
+        _updateHargaDisplay();
       } else {
         st.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle me-1"></i>' + d.pesan + '</span>';
-        appliedVoucher = '';
+        appliedVoucher  = '';
+        _voucherNominal = 0;
         document.getElementById('vc_saldo').value = '';
+        document.getElementById('vc_qris').value  = '';
+        _updateHargaDisplay();
       }
     })
     .catch(() => { st.innerHTML = '<span class="text-danger">Gagal cek voucher.</span>'; });

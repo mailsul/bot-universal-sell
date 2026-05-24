@@ -652,7 +652,12 @@ async def proses_mutasi(app: Application):
                     save_produk(produk)
 
                 nama_tipe_str = f" [{nama_tipe}]" if nama_tipe else ""
-                trx_id = db_add_riwayat(uid, "BELI", f"{item['nama']}{nama_tipe_str} x{jumlah} (QRIS)", nominal)
+                # Konsumsi voucher jika ada
+                vc_kode_p = p.get("voucher_kode", "")
+                if vc_kode_p:
+                    db_use_voucher(vc_kode_p, uid)
+                vc_note = f" [Voucher -{p.get('diskon_vc',0):,}]" if vc_kode_p and p.get("diskon_vc") else ""
+                trx_id = db_add_riwayat(uid, "BELI", f"{item['nama']}{nama_tipe_str} x{jumlah} (QRIS){vc_note}", nominal)
                 log.info(f"🛒 BELI QRIS dikonfirmasi: user={uid} produk={item['nama']} x{jumlah} Rp{nominal:,} trx={trx_id}")
 
                 # Buat file txt (simpan dulu, tawarkan ke user)
@@ -1938,10 +1943,22 @@ async def handle_beli_qris(update: Update, context: CallbackContext):
             save_produk(produk)
             log.info(f"🔒 Stok direservasi: {len(reserved_akun)} akun {item['nama']} untuk user {query.from_user.id}")
 
-    nama_tipe = tipe_obj.get("nama", "")
-    nominal   = jumlah * tipe_obj.get("harga", 0)
-    kode      = _generate_kode_unik(nominal)
-    expected  = nominal + kode
+    nama_tipe    = tipe_obj.get("nama", "")
+    harga_satuan = tipe_obj.get("harga", 0)
+
+    # Ambil & validasi voucher (dikonsumsi saat pembayaran terkonfirmasi)
+    voucher_kode = context.user_data.pop("voucher_kode", "")
+    diskon_vc    = context.user_data.pop("voucher_diskon", 0)
+    if voucher_kode and diskon_vc:
+        vc_chk = db_check_voucher(voucher_kode, str(query.from_user.id))
+        if not isinstance(vc_chk, int):
+            voucher_kode = ""
+            diskon_vc    = 0
+
+    nominal_asli = jumlah * harga_satuan
+    nominal      = max(0, nominal_asli - diskon_vc)
+    kode         = _generate_kode_unik(nominal)
+    expected     = nominal + kode
     log.info(f"🛒 QRIS Beli: user={query.from_user.id} produk={item['nama']} [{nama_tipe}] x{jumlah} nominal=Rp{nominal:,} expected=Rp{expected:,}")
 
     db_remove_pending_by_user(query.from_user.id)
@@ -1958,13 +1975,16 @@ async def handle_beli_qris(update: Update, context: CallbackContext):
         "waktu":           datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
         "cek_count":       3,
         "reserved_akun":   reserved_akun,
+        "voucher_kode":    voucher_kode,
+        "diskon_vc":       diskon_vc,
     })
     context.user_data.pop("konfirmasi", None)
 
+    vc_line = f"\n🏷 Voucher `-Rp{diskon_vc:,}` (dari Rp{nominal_asli:,})" if diskon_vc else ""
     caption = (
         f"💳 *Bayar via QRIS*\n\n"
         f"📦 {item['nama']} [{nama_tipe}] x{jumlah}\n"
-        f"💰 Total: Rp{nominal:,}\n"
+        f"💰 Total: Rp{nominal:,}" + vc_line + f"\n"
         f"🔢 Transfer tepat *Rp{expected:,}*\n"
         f"_(nominal + kode unik Rp{kode})_\n\n"
         f"⏰ Batas waktu: {QRIS_EXPIRY_MINUTES} menit\n"
@@ -1976,9 +1996,10 @@ async def handle_beli_qris(update: Update, context: CallbackContext):
     except Exception:
         pass
 
-    kb = InlineKeyboardMarkup([[
-        _ikb("🔄 Cek Sekarang (3x tersisa)", "", "primary", callback_data="cek_mutasi")
-    ]])
+    kb = InlineKeyboardMarkup([
+        [_ikb("🔄 Cek Sekarang (3x tersisa)", "", "primary", callback_data="cek_mutasi")],
+        [_ikb("❌ Batalkan Pesanan", "❌", "danger", callback_data="cancel_beli_qris")],
+    ])
     plain_c, ents_c = _pe(caption, "Markdown")
     msg = await _send_qris_photo(
         context.bot, query.from_user.id, nominal, kode,
@@ -1987,6 +2008,46 @@ async def handle_beli_qris(update: Update, context: CallbackContext):
     )
     if msg:
         db_update_pending_msg_id(query.from_user.id, msg.message_id)
+
+
+# ─── QRIS: BATALKAN PESANAN ───────────────────────────────────────────────────
+
+async def handle_cancel_beli_qris(update: Update, context: CallbackContext):
+    """User membatalkan pembelian QRIS — kembalikan stok dan hapus pending."""
+    query = update.callback_query
+    uid   = query.from_user.id
+
+    pending = db_get_pending_by_user(uid)
+    if not pending or pending.get("metode") != "qris_beli":
+        await query.answer("Tidak ada pembelian QRIS aktif.", show_alert=True)
+        return
+
+    reserved  = pending.get("reserved_akun", [])
+    produk_id = pending.get("produk_id")
+    tipe_id   = pending.get("tipe_id")
+
+    db_remove_pending_by_id(pending["id"])
+
+    if reserved and produk_id and tipe_id:
+        async with purchase_lock:
+            with produk_lock():
+                produk = load_produk()
+                item_r = produk.get(produk_id)
+                if item_r and tipe_id in item_r.get("tipe", {}):
+                    t_r = item_r["tipe"][tipe_id]
+                    t_r["akun_list"] = reserved + t_r.get("akun_list", [])
+                    t_r["stok"]      = len(t_r["akun_list"])
+                    save_produk(produk)
+                    log.info(f"↩️ Batal QRIS: {len(reserved)} akun dikembalikan → {produk_id}/{tipe_id}")
+
+    batal_text = "✅ *Pesanan dibatalkan.*\n\nStok telah dikembalikan. Ketik /start untuk kembali ke menu."
+    try:
+        await query.edit_message_caption(batal_text, parse_mode="Markdown")
+    except Exception:
+        try:
+            await query.edit_message_text(batal_text, parse_mode="Markdown")
+        except Exception:
+            pass
 
 
 # ─── QRIS: CEK SEKARANG (manual trigger) ─────────────────────────────────────
@@ -3266,6 +3327,7 @@ CALLBACK_MAP = {
     "admin_rename_tipe":        handle_admin_rename_tipe,
     "admin_hapus_akun":         handle_admin_hapus_akun,
     "admin_toggle_maintenance": handle_admin_toggle_maintenance,
+    "cancel_beli_qris":         handle_cancel_beli_qris,
 }
 
 
