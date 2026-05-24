@@ -1003,7 +1003,7 @@ async def handle_list_produk(update: Update, context: CallbackContext):
     # Navigasi halaman
     nav_row = []
     if page > 1:
-        nav_row.append(_ikb("👉 Sebelumnya", "👉", "primary", callback_data=f"list_produk_p{page-1}"))
+        nav_row.append(_ikb("👈 Sebelumnya", "👈", "primary", callback_data=f"list_produk_p{page-1}"))
     if page < total_pages:
         nav_row.append(_ikb("Berikutnya 👉", "👉", "primary", callback_data=f"list_produk_p{page+1}"))
     if nav_row:
