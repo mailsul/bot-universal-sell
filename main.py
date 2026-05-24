@@ -474,6 +474,70 @@ async def proses_mutasi(app: Application):
     if not URL_MUTASI:
         return
 
+    pending = db_get_all_pending()
+    now     = datetime.now()
+
+    # ── Tahap 1: Bersihkan pending yang sudah expired (HARUS dilakukan sebelum cek mutasi) ──
+    expired_ids = []
+    for p in pending:
+        metode = p.get("metode", "manual")
+        if not metode.startswith("qris"):
+            continue
+        try:
+            waktu = datetime.strptime(p["waktu"], "%d/%m/%Y %H:%M:%S")
+            if (now - waktu).total_seconds() <= QRIS_EXPIRY_MINUTES * 60:
+                continue  # belum expired, skip
+        except Exception:
+            continue
+
+        log.info(f"⏰ Pending QRIS user {p['user_id']} kedaluwarsa, dihapus.")
+        expired_ids.append(p["id"])
+
+        # Kembalikan stok yang direservasi
+        reserved_akun = p.get("reserved_akun", [])
+        if reserved_akun:
+            async with purchase_lock:
+                with produk_lock():
+                    produk_r  = load_produk()
+                    item_r    = produk_r.get(p.get("produk_id"))
+                    s_tipe_id = p.get("tipe_id")
+                    if item_r and s_tipe_id and s_tipe_id in item_r.get("tipe", {}):
+                        t_r = item_r["tipe"][s_tipe_id]
+                        t_r["akun_list"] = reserved_akun + t_r.get("akun_list", [])
+                        t_r["stok"]      = len(t_r["akun_list"])
+                        save_produk(produk_r)
+                    log.info(f"↩️ Stok dikembalikan: {len(reserved_akun)} akun → {p.get('produk_id')}/{s_tipe_id}")
+
+        # Hapus pesan QRIS yang sudah expired
+        qris_mid = p.get("qris_msg_id", 0)
+        if qris_mid:
+            try:
+                await app.bot.delete_message(chat_id=p["user_id"], message_id=qris_mid)
+            except Exception:
+                pass
+
+        # Kirim notifikasi pembatalan
+        try:
+            if metode == "qris_beli":
+                await _send_pe(
+                    app.bot, p["user_id"],
+                    "⏰ *Waktu pembayaran QRIS habis.*\n\n"
+                    "Pembelian otomatis *dibatalkan* karena tidak ada pembayaran yang valid dalam 5 menit.\n"
+                    "Stok telah dikembalikan. Silakan buat pesanan baru jika masih ingin berbelanja."
+                )
+            else:
+                await _send_pe(
+                    app.bot, p["user_id"],
+                    "⏰ *Waktu pembayaran QRIS habis.*\n\n"
+                    "Transaksi otomatis *dibatalkan* karena tidak ada pembayaran yang valid dalam 5 menit."
+                )
+        except Exception:
+            pass
+
+    for eid in expired_ids:
+        db_remove_pending_by_id(eid)
+
+    # ── Tahap 2: Cek mutasi untuk pending yang masih aktif ──
     log.info("🔍 Cek mutasi ke URL_MUTASI...")
     raw = None
     for attempt in range(1, 4):  # max 3 percobaan
@@ -495,6 +559,7 @@ async def proses_mutasi(app: Application):
     if not mutation_amounts:
         return
 
+    # Reload pending (sudah dikurangi yang expired)
     pending    = db_get_all_pending()
     now        = datetime.now()
     to_confirm = []
@@ -505,49 +570,10 @@ async def proses_mutasi(app: Application):
         if not metode.startswith("qris"):
             continue
 
-        # Cek kedaluwarsa
+        # Lewati yang expired (sudah ditangani di Tahap 1)
         try:
             waktu = datetime.strptime(p["waktu"], "%d/%m/%Y %H:%M:%S")
             if (now - waktu).total_seconds() > QRIS_EXPIRY_MINUTES * 60:
-                log.info(f"⏰ Pending QRIS user {p['user_id']} kedaluwarsa, dihapus.")
-                to_delete.append(p["id"])
-                # Kembalikan stok yang direservasi
-                reserved_akun = p.get("reserved_akun", [])
-                if reserved_akun:
-                    async with purchase_lock:
-                        with produk_lock():
-                            produk_r  = load_produk()
-                            item_r    = produk_r.get(p.get("produk_id"))
-                            s_tipe_id = p.get("tipe_id")
-                            if item_r and s_tipe_id and s_tipe_id in item_r.get("tipe", {}):
-                                t_r = item_r["tipe"][s_tipe_id]
-                                t_r["akun_list"] = reserved_akun + t_r.get("akun_list", [])
-                                t_r["stok"]      = len(t_r["akun_list"])
-                                save_produk(produk_r)
-                            log.info(f"↩️ Stok dikembalikan: {len(reserved_akun)} akun → {p.get('produk_id')}/{s_tipe_id}")
-                # Hapus pesan QRIS yang sudah expired
-                qris_mid = p.get("qris_msg_id", 0)
-                if qris_mid:
-                    try:
-                        await app.bot.delete_message(chat_id=p["user_id"], message_id=qris_mid)
-                    except Exception:
-                        pass
-                try:
-                    if metode == "qris_beli":
-                        await _send_pe(
-                            app.bot, p["user_id"],
-                            "⏰ *Waktu pembayaran QRIS habis.*\n\n"
-                            "Pembelian otomatis *dibatalkan* karena tidak ada pembayaran yang valid dalam 5 menit.\n"
-                            "Stok telah dikembalikan. Silakan buat pesanan baru jika masih ingin berbelanja."
-                        )
-                    else:
-                        await _send_pe(
-                            app.bot, p["user_id"],
-                            "⏰ *Waktu pembayaran QRIS habis.*\n\n"
-                            "Transaksi otomatis *dibatalkan* karena tidak ada pembayaran yang valid dalam 5 menit."
-                        )
-                except Exception:
-                    pass
                 continue
         except Exception:
             pass
@@ -739,21 +765,19 @@ async def proses_mutasi(app: Application):
 
 
 async def mutasi_loop(app: Application):
-    """Background task — polling setiap 30 detik, aktif hanya saat ada pending QRIS < 5 menit."""
+    """Background task — polling setiap 30 detik, aktif saat ada pending QRIS (aktif maupun expired)."""
     await asyncio.sleep(10)
     while True:
-        # Cek apakah ada pending QRIS yang masih aktif (< 5 menit)
+        # Cek apakah ada pending QRIS apapun (aktif atau expired — keduanya perlu diproses)
         try:
             pending = db_get_all_pending()
-            now = datetime.now()
-            has_active = any(
-                p.get("metode", "").startswith("qris") and
-                (now - datetime.strptime(p["waktu"], "%d/%m/%Y %H:%M:%S")).total_seconds() < 300
+            has_qris = any(
+                p.get("metode", "").startswith("qris")
                 for p in pending
-                if "waktu" in p and p.get("metode", "").startswith("qris")
+                if "waktu" in p
             )
-            if has_active:
-                log.info("🔄 Auto-poll: ada pending QRIS aktif, cek mutasi...")
+            if has_qris:
+                log.info("🔄 Auto-poll: ada pending QRIS, cek mutasi dan expired...")
                 await proses_mutasi(app)
         except Exception as e:
             log.warning(f"⚠️ Error di mutasi_loop: {e}")
