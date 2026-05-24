@@ -853,9 +853,9 @@ async def handle_list_produk(update: Update, context: CallbackContext):
                 ic = "🟢" if stok_t > 0 else "🔴"
                 msg += f"  {ic} {t['nama']}: Rp {t.get('harga',0):,} ({stok_t} unit)\n"
 
-        # Tombol inline: emoji + nomor, warna primary jika ada stok
+        # Tombol inline: premium icon + nomor, tanpa duplikat emoji di teks
         btn_style = "primary" if total_stok > 0 else None
-        btn_row.append(_ikb(f"{em}{nomor}", em, btn_style, callback_data=pid))
+        btn_row.append(_ikb(f"{nomor}", em, btn_style, callback_data=pid))
         if len(btn_row) == 5:
             kb_rows.append(btn_row)
             btn_row = []
@@ -1778,9 +1778,10 @@ async def handle_admin_restock_produk(update: Update, context: CallbackContext):
     keyboard = [[KeyboardButton(f"{pid} - {item['nama']}")] for pid, item in produk.items()]
     keyboard.append([KeyboardButton("❌ Batal")])
     await query.message.delete()
+    lines = [f"  `{pid}` — {item['nama']} (stok: {sum(len(t.get('akun_list',[])) for t in item.get('tipe',{}).values())})" for pid, item in produk.items()]
     await context.bot.send_message(
         chat_id=query.from_user.id,
-        text="📦 *RESTOCK PRODUK*\n\nPilih ID produk yang ingin direstock:",
+        text="📦 *RESTOCK PRODUK*\n\n" + "\n".join(lines) + "\n\nPilih produk dari keyboard:",
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
@@ -2144,7 +2145,7 @@ async def handle_text(update: Update, context: CallbackContext):
     if text == "❌ Batal" or text == "❌ Batalkan Deposit":
         db_remove_pending_any_by_user(uid)
         for key in ["awaiting_custom", "awaiting_qris_custom", "nominal_asli", "total_transfer",
-                    "admin_state", "new_produk", "restock_pid", "konfirmasi",
+                    "admin_state", "new_produk", "restock_pid", "restock_tipe_id", "konfirmasi",
                     "reg_state", "reg_phone", "reg_email"]:
             context.user_data.pop(key, None)
         await update.message.reply_text("✅ Dibatalkan.", reply_markup=ReplyKeyboardRemove())
@@ -2328,50 +2329,111 @@ async def handle_text(update: Update, context: CallbackContext):
             return
 
         if admin_state == "restock_pid":
-            pid = text.split(" - ")[0].strip()
+            pid    = text.split(" - ")[0].strip()
             produk = load_produk()
             if pid not in produk:
                 await update.message.reply_text("❌ ID produk tidak valid. Coba lagi:")
                 return
-            context.user_data["restock_pid"]  = pid
-            context.user_data["admin_state"] = "restock_akun"
-            await update.message.reply_text(
-                f"📦 Restock: *{produk[pid]['nama']}* (stok saat ini: {produk[pid]['stok']}x)\n\n"
-                "Kirim akun baru (satu per baris):\n`email|password|tipe`",
-                parse_mode="Markdown"
-            )
+            tipe_dict = produk[pid].get("tipe", {})
+            context.user_data["restock_pid"] = pid
+            if len(tipe_dict) == 1:
+                # Hanya 1 tipe → langsung ke input akun
+                tipe_id = list(tipe_dict.keys())[0]
+                tipe_nm = tipe_dict[tipe_id]["nama"]
+                stok_saat = len(tipe_dict[tipe_id].get("akun_list", []))
+                context.user_data["restock_tipe_id"] = tipe_id
+                context.user_data["admin_state"]     = "restock_akun"
+                await update.message.reply_text(
+                    f"📦 *Restock: {produk[pid]['nama']}*\n"
+                    f"Tipe: *{tipe_nm}* (stok saat ini: {stok_saat})\n\n"
+                    "Kirim akun baru, *satu per baris*:\n"
+                    "`email|password`\n\n"
+                    "_Contoh:_\n`user@gmail.com|Pass123!`",
+                    parse_mode="Markdown"
+                )
+            else:
+                # Multi tipe → tampilkan pilihan tipe
+                context.user_data["admin_state"] = "restock_tipe"
+                kb = [[KeyboardButton(f"{tid} - {t['nama']} (stok: {len(t.get('akun_list',[]))})")] for tid, t in tipe_dict.items()]
+                kb.append([KeyboardButton("❌ Batal")])
+                await update.message.reply_text(
+                    f"📦 *{produk[pid]['nama']}* — pilih tipe yang ingin direstock:",
+                    parse_mode="Markdown",
+                    reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
+                )
             return
 
-        if admin_state == "restock_akun":
+        if admin_state == "restock_tipe":
             pid    = context.user_data.get("restock_pid")
             produk = load_produk()
             if not pid or pid not in produk:
                 await update.message.reply_text("❌ Produk tidak ditemukan. Ulangi dari awal.")
-                context.user_data.pop("admin_state", None)
+                for k in ["admin_state","restock_pid","restock_tipe_id"]: context.user_data.pop(k, None)
+                return
+            tipe_id = text.split(" - ")[0].strip()
+            tipe_dict = produk[pid].get("tipe", {})
+            if tipe_id not in tipe_dict:
+                await update.message.reply_text("❌ Tipe tidak valid. Pilih dari keyboard:")
+                return
+            tipe_nm   = tipe_dict[tipe_id]["nama"]
+            stok_saat = len(tipe_dict[tipe_id].get("akun_list", []))
+            context.user_data["restock_tipe_id"] = tipe_id
+            context.user_data["admin_state"]     = "restock_akun"
+            await update.message.reply_text(
+                f"📦 *Restock: {produk[pid]['nama']}*\n"
+                f"Tipe: *{tipe_nm}* (stok saat ini: {stok_saat})\n\n"
+                "Kirim akun baru, *satu per baris*:\n"
+                "`email|password`\n\n"
+                "_Contoh:_\n`user@gmail.com|Pass123!`",
+                parse_mode="Markdown",
+                reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
+            )
+            return
+
+        if admin_state == "restock_akun":
+            pid     = context.user_data.get("restock_pid")
+            tipe_id = context.user_data.get("restock_tipe_id")
+            produk  = load_produk()
+            if not pid or pid not in produk or not tipe_id or tipe_id not in produk[pid].get("tipe",{}):
+                await update.message.reply_text("❌ Sesi restock tidak valid. Ulangi dari awal.")
+                for k in ["admin_state","restock_pid","restock_tipe_id"]: context.user_data.pop(k, None)
                 return
 
-            lines     = [l.strip() for l in text.strip().splitlines() if l.strip()]
+            tipe_obj  = produk[pid]["tipe"][tipe_id]
+            lines_in  = [l.strip() for l in text.strip().splitlines() if l.strip()]
             akun_baru = []
             errors    = []
-            for i, line in enumerate(lines, 1):
-                parts = line.split("|")
-                if len(parts) != 3:
-                    errors.append(f"Baris {i}: format salah")
-                    continue
-                akun_baru.append({"username": parts[0].strip(), "password": parts[1].strip(), "tipe": parts[2].strip()})
+            for i, line in enumerate(lines_in, 1):
+                parts = [p.strip() for p in line.split("|")]
+                if len(parts) == 2:
+                    akun_baru.append({"username": parts[0], "password": parts[1]})
+                elif len(parts) == 1 and parts[0]:
+                    akun_baru.append({"username": parts[0], "password": ""})
+                else:
+                    errors.append(f"Baris {i}: format salah (gunakan `akun|password`)")
 
             if errors:
-                await update.message.reply_text("❌ Format salah:\n" + "\n".join(errors) + "\n\nCoba lagi:")
+                await update.message.reply_text(
+                    "❌ Ada format yang salah:\n" + "\n".join(errors) +
+                    "\n\nPerbaiki dan kirim ulang semua akun:",
+                    parse_mode="Markdown"
+                )
                 return
 
-            produk[pid]["akun_list"].extend(akun_baru)
+            tipe_obj.setdefault("akun_list", []).extend(akun_baru)
+            tipe_obj["stok"] = len(tipe_obj["akun_list"])
             save_produk(produk)
-            for key in ["admin_state", "restock_pid"]:
-                context.user_data.pop(key, None)
+
+            total_stok = sum(len(t.get("akun_list",[])) for t in produk[pid]["tipe"].values())
+            for k in ["admin_state","restock_pid","restock_tipe_id"]: context.user_data.pop(k, None)
 
             await update.message.reply_text(
-                f"✅ Berhasil tambah {len(akun_baru)} akun ke *{produk[pid]['nama']}*\n"
-                f"Stok sekarang: {produk[pid]['stok']}x",
+                f"✅ *Restock berhasil!*\n\n"
+                f"Produk : *{produk[pid]['nama']}*\n"
+                f"Tipe   : *{tipe_obj['nama']}*\n"
+                f"Ditambah : *{len(akun_baru)} akun*\n"
+                f"Stok tipe : *{tipe_obj['stok']}*\n"
+                f"Total stok produk : *{total_stok}*",
                 parse_mode="Markdown",
                 reply_markup=ReplyKeyboardRemove()
             )
