@@ -1,6 +1,7 @@
 import json  # Made With love by @govtrashit A.K.A RzkyO
 import os    # DON'T CHANGE AUTHOR NAME!
 import re
+import html as _html
 import asyncio
 import shutil
 import time
@@ -797,23 +798,23 @@ async def send_main_menu(bot_or_context, chat_id: int, user):
     total_penjualan = sum((v.get("jumlah", 0) if isinstance(v, dict) else 0) for v in all_stats.values())
     total_pengguna  = len(all_saldo)
 
-    nama_toko = load_config()["nama_toko"]
-    uname = f"@{user.username}" if user.username else user.full_name
+    cfg_full = load_config()
+    nama_toko = cfg_full["nama_toko"]
+    uname = f"@{user.username}" if user.username else _html.escape(user.full_name)
     text = (
-        f"🎯 *Selamat Datang di {nama_toko}!*\n\n"
-        f"🔵 *Sekilas Info Toko*\n"
-        f"✅ Total Produk: *{total_produk}* jenis\n"
-        f"✅ Total Penjualan: *{total_penjualan}* transaksi\n"
-        f"✅ Total Pengguna: *{total_pengguna}* user\n\n"
-        f"👑 *Profil Anda*\n"
+        f"🎯 <b>Selamat Datang di {_html.escape(nama_toko)}!</b>\n\n"
+        f"🔵 <b>Sekilas Info Toko</b>\n"
+        f"✅ Total Produk: <b>{total_produk}</b> jenis\n"
+        f"✅ Total Penjualan: <b>{total_penjualan}</b> transaksi\n"
+        f"✅ Total Pengguna: <b>{total_pengguna}</b> user\n\n"
+        f"👑 <b>Profil Anda</b>\n"
         f"✅ Username: {uname}\n"
-        f"✅ User ID: `{user.id}`\n"
-        f"✅ Saldo: *Rp{s:,}*\n"
-        f"✅ Total Beli: *{jumlah}* transaksi\n\n"
-        f"🔴 _Pilih menu di bawah untuk melanjutkan._"
+        f"✅ User ID: <code>{user.id}</code>\n"
+        f"✅ Saldo: <b>Rp{s:,}</b>\n"
+        f"✅ Total Beli: <b>{jumlah}</b> transaksi\n\n"
+        f"🔴 <i>Pilih menu di bawah untuk melanjutkan.</i>"
     )
 
-    cfg_full = load_config()
     keyboard = [
         [_ikb("🛍 List Produk",   "🛍", "success",  callback_data="list_produk"),
          _ikb("🆘 Bantuan",        "🆘", "danger",   callback_data="info_bot")],
@@ -828,30 +829,21 @@ async def send_main_menu(bot_or_context, chat_id: int, user):
 
     markup = InlineKeyboardMarkup(keyboard)
 
-    # Siapkan teks dengan premium emoji
-    plain, ents = _pe(text, "Markdown")
-
     # Kirim logo jika ada
     logo = _get_logo_path()
     if logo:
         try:
             with open(logo, "rb") as f:
-                send_kw: dict = {"chat_id": chat_id, "photo": f, "reply_markup": markup}
-                if ents:
-                    send_kw["caption"] = plain
-                    send_kw["caption_entities"] = ents
-                else:
-                    send_kw["caption"] = text
-                    send_kw["parse_mode"] = "Markdown"
-                await bot.send_photo(**send_kw)
+                await bot.send_photo(
+                    chat_id=chat_id, photo=f,
+                    caption=text, parse_mode="HTML",
+                    reply_markup=markup
+                )
             return
         except Exception:
             pass  # fallback ke send_message biasa
 
-    if ents:
-        await bot.send_message(chat_id=chat_id, text=plain, entities=ents, reply_markup=markup)
-    else:
-        await bot.send_message(chat_id=chat_id, text=text, reply_markup=markup, parse_mode="Markdown")
+    await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=markup)
 
 
 async def send_main_menu_safe(update: Update, context: CallbackContext):
@@ -2233,17 +2225,16 @@ async def handle_info_bot(update: Update, context: CallbackContext):
     web_url = _get_website_url()
     web_line = ""
     if web_on and web_url:
-        safe_url = web_url.replace("\\","\\\\").replace("_","\\_").replace("*","\\*").replace("[","\\[").replace("]","\\]").replace("(","\\(").replace(")","\\)").replace("~","\\~").replace("`","\\`").replace(">","\\>").replace("#","\\#").replace("+","\\+").replace("-","\\-").replace("=","\\=").replace("|","\\|").replace("{","\\{").replace("}","\\}").replace(".","\\.")
-        web_line = f"\n🌐 *Website*: {safe_url}\n"
-    text   = (
-        "🆘 *PUSAT BANTUAN*\n\n"
-        "Selamat datang\\! Berikut panduan lengkap penggunaan bot kami:\n\n"
-        "💡 *Panduan Pembelian:*\n"
+        web_line = f"\n🌐 <b>Website</b>: {_html.escape(web_url)}\n"
+    text = (
+        "🆘 <b>PUSAT BANTUAN</b>\n\n"
+        "Selamat datang! Berikut panduan lengkap penggunaan bot kami:\n\n"
+        "💡 <b>Panduan Pembelian:</b>\n"
         "◉ Lihat Katalog — Tekan tombol \"List Produk\"\n"
         "◉ Pilih Produk — Pilih produk yang diinginkan\n"
         "◉ Tentukan Jumlah — Atur jumlah pembelian\n"
-        "◉ Bayar & Terima — Lakukan pembayaran & terima akun\n\n"
-        "📋 *FAQ:*\n"
+        "◉ Bayar &amp; Terima — Lakukan pembayaran &amp; terima akun\n\n"
+        "📋 <b>FAQ:</b>\n"
         "◉ Pembayaran otomatis dikonfirmasi sistem\n"
         "◉ Akun dikirim instan setelah pembayaran\n"
         "◉ Pesan berisi akun akan disematkan\n"
@@ -2258,12 +2249,13 @@ async def handle_info_bot(update: Update, context: CallbackContext):
         kb_rows.append([_ikb("👤 Hubungi Admin ↗", "👤", "primary", url=f"https://t.me/{tg}")])
     kb_rows.append([_ikb("🔥 Kembali ke Menu", "🔥", "danger", callback_data="back_to_produk")])
     markup = InlineKeyboardMarkup(kb_rows)
+    await query.answer()
     try:
-        await query.edit_message_text(text, parse_mode="MarkdownV2",
+        await query.edit_message_text(text, parse_mode="HTML",
                                       disable_web_page_preview=True, reply_markup=markup)
     except Exception:
         try:
-            await query.edit_message_caption(text, parse_mode="MarkdownV2", reply_markup=markup)
+            await query.edit_message_caption(text, parse_mode="HTML", reply_markup=markup)
         except Exception:
             try:
                 await query.message.delete()
@@ -2271,7 +2263,7 @@ async def handle_info_bot(update: Update, context: CallbackContext):
                 pass
             await context.bot.send_message(
                 chat_id=query.from_user.id, text=text,
-                parse_mode="MarkdownV2", disable_web_page_preview=True, reply_markup=markup
+                parse_mode="HTML", disable_web_page_preview=True, reply_markup=markup
             )
 
 
