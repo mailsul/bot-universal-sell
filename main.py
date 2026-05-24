@@ -162,8 +162,7 @@ def _ikb(text: str, emoji_char: str = "", style: str = None, **kwargs) -> Inline
     Secara otomatis menghapus emoji dari teks jika emoji_char dipakai sebagai icon,
     sehingga tidak ada duplikasi emoji (premium icon + emoji di teks)."""
     kw = dict(kwargs)
-    if style:
-        kw["style"] = style
+    # `style` hanya penanda semantik internal — JANGAN dikirim ke Telegram API
     icon_id = _EID.get(emoji_char)
     if icon_id:
         kw["icon_custom_emoji_id"] = icon_id
