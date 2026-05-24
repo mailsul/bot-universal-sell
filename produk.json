@@ -36,7 +36,7 @@
       },
       "t2": {
         "nama": "NETFLIX SHARING 1 BULAN",
-        "harga": 2000,
+        "harga": 5000,
         "deskripsi": "",
         "akun_list": [
           {
@@ -60,14 +60,8 @@
       "t1": {
         "nama": "CANVA PRO LIFETIME",
         "harga": 1000,
-        "akun_list": [
-          {
-            "username": "canvalife2@mail.com",
-            "password": "life456",
-            "tipe": "Lifetime"
-          }
-        ],
-        "stok": 1,
+        "akun_list": [],
+        "stok": 0,
         "deskripsi": ""
       },
       "t2": {
