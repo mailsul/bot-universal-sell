@@ -158,41 +158,34 @@ def _pe(text: str, pm: str = "Markdown") -> tuple[str, list]:
 
 
 _STYLE_DOT = {
-    "success":   "🟢 ",
-    "danger":    "🔴 ",
-    "warning":   "🟡 ",
-    "primary":   "🔵 ",
-    "secondary": "⚫ ",
+    "success":   "🟢",
+    "danger":    "🔴",
+    "warning":   "🟡",
+    "primary":   "🔵",
+    "secondary": "",   # netral — tanpa dot
 }
 
 def _ikb(text: str, emoji_char: str = "", style: str = None, **kwargs) -> InlineKeyboardButton:
-    """InlineKeyboardButton dengan premium icon emoji dan indikator warna.
-    - Premium emoji dipakai sebagai icon hanya jika teks PUNYA sisa setelah emoji dipotong.
-    - style menambahkan colored-dot prefix di depan teks jika tidak ada emoji_char."""
+    """InlineKeyboardButton dengan indikator warna via colored-dot prefix.
+    - Dot ditambahkan ke depan teks berdasarkan style (SELALU, selama tombol bukan icon-only).
+    - Tombol icon-only (teks = emoji saja, mis. '➕') tidak diberi dot."""
     kw = dict(kwargs)
-    # `style` hanya penanda semantik internal — TIDAK dikirim ke Telegram API
+    # `style` TIDAK dikirim ke Telegram API — hanya dipakai untuk dot prefix
 
-    icon_id = _EID.get(emoji_char)
-    if icon_id:
-        # Coba strip emoji dari teks
-        stripped = text
-        if emoji_char:
-            while stripped.startswith(emoji_char):
-                stripped = stripped[len(emoji_char):].lstrip()
-        if stripped:
-            # Ada teks selain emoji → pakai premium icon, teks = sisa
-            kw["icon_custom_emoji_id"] = icon_id
-            text = stripped
-        # else: teks HANYA emoji (mis. "➕") → JANGAN tambah icon, biarkan emoji di teks
-    else:
-        # Tidak ada premium emoji → tambahkan colored-dot berdasarkan style
-        # Hanya jika emoji_char kosong (tombol tanpa ikon spesifik)
-        if style and not emoji_char:
-            dot = _STYLE_DOT.get(style, "")
-            if dot and not text.startswith(tuple(_STYLE_DOT.values())):
-                text = dot + text
+    # Cek apakah teks hanya berisi emoji_char saja (mis. tombol "➕")
+    stripped = text
+    if emoji_char:
+        while stripped.startswith(emoji_char):
+            stripped = stripped[len(emoji_char):].lstrip()
+    is_icon_only = bool(emoji_char and not stripped)
 
-    # Pastikan teks tidak kosong atau hanya whitespace
+    # Tambahkan colored-dot prefix jika: ada style, bukan icon-only, belum ada dot
+    if style and not is_icon_only:
+        dot = _STYLE_DOT.get(style, "")
+        if dot and not text.startswith(dot):
+            text = dot + " " + text
+
+    # Pastikan teks tidak kosong
     if not text or not text.strip():
         text = "·"
     return InlineKeyboardButton(text=text, **kw)
@@ -909,7 +902,7 @@ async def send_main_menu(bot_or_context, chat_id: int, user):
         [_ikb("🛍 List Produk",   "🛍", "success",  callback_data="list_produk"),
          _ikb("🆘 Bantuan",        "🆘", "danger",   callback_data="info_bot")],
         [_ikb("💰 Deposit Saldo",  "💰", "primary",  callback_data="deposit")],
-        [_ikb("📜 Riwayat",         "📜",  None,      callback_data="riwayat_user")],
+        [_ikb("📜 Riwayat",         "📜", "warning",  callback_data="riwayat_user")],
     ]
     if is_admin(user.id):
         keyboard.append([_ikb("🛠 Admin Panel", "🛠", "danger", callback_data="admin_panel")])
