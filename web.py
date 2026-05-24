@@ -1672,7 +1672,7 @@ def deposit_upload():
 @app.route("/admin")
 @admin_required
 def admin():
-    pending     = db_get_all_pending()
+    pending     = [p for p in db_get_all_pending() if not p.get("metode","").startswith("qris")]
     saldo_all   = db_get_all_saldo()
     stats       = db_get_all_statistik()
     bot_users   = db_get_all_bot_users()
@@ -2504,8 +2504,8 @@ def admin_broadcast():
 @app.route("/admin/notifications")
 @admin_required
 def admin_notifications():
-    """Polling endpoint — jumlah pending deposit real-time."""
-    pending = db_get_all_pending()
+    """Polling endpoint — jumlah pending deposit manual real-time."""
+    pending = [p for p in db_get_all_pending() if not p.get("metode","").startswith("qris")]
     return jsonify({"pending_count": len(pending)})
 
 

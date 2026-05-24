@@ -533,11 +533,19 @@ async def proses_mutasi(app: Application):
                     except Exception:
                         pass
                 try:
-                    await _send_pe(
-                        app.bot, p["user_id"],
-                        "⏰ *Waktu pembayaran QRIS habis.*\n\n"
-                        "Pesanan otomatis *dibatalkan*. Silakan buat pesanan baru jika masih ingin berbelanja."
-                    )
+                    if metode == "qris_beli":
+                        await _send_pe(
+                            app.bot, p["user_id"],
+                            "⏰ *Waktu pembayaran QRIS habis.*\n\n"
+                            "Pembelian otomatis *dibatalkan* karena tidak ada pembayaran yang valid dalam 5 menit.\n"
+                            "Stok telah dikembalikan. Silakan buat pesanan baru jika masih ingin berbelanja."
+                        )
+                    else:
+                        await _send_pe(
+                            app.bot, p["user_id"],
+                            "⏰ *Waktu pembayaran QRIS habis.*\n\n"
+                            "Transaksi otomatis *dibatalkan* karena tidak ada pembayaran yang valid dalam 5 menit."
+                        )
                 except Exception:
                     pass
                 continue

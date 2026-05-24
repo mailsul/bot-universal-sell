@@ -19,14 +19,8 @@
       "t1": {
         "nama": "NETFLIX PRIVATE 1 BULAN",
         "harga": 1500,
-        "akun_list": [
-          {
-            "username": "test2",
-            "password": "dsad1a56",
-            "tipe": ""
-          }
-        ],
-        "stok": 1,
+        "akun_list": [],
+        "stok": 0,
         "deskripsi": ""
       },
       "t2": {
