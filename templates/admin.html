@@ -13,18 +13,16 @@
   }
   #adminTabs .nav-link.active {
     color: var(--brand-dark) !important;
-    background: #fff;
+    background: var(--bg2);
     border-bottom: 3px solid var(--brand);
   }
   #adminTabs .nav-link:hover:not(.active) { color: var(--brand) !important; }
-  .nav-tabs { border-bottom: 2px solid #e5e7eb; }
+  .nav-tabs { border-bottom: 2px solid var(--border); }
   .tab-content { background: transparent; }
-  .stat-card { border-radius: 14px; padding: 20px; background: #fff; border: 1.5px solid #f3f4f6; }
+  .stat-card { border-radius: 14px; padding: 20px; background: var(--bg2); border: 1.5px solid var(--border); color: var(--text); }
   .table-action-btns { white-space: nowrap; }
   .form-section { background: var(--brand-light); border-radius: 14px; padding: 20px; }
-  [data-theme="dark"] .stat-card { background: var(--card-bg,#1e2130); border-color: #2d3150; }
-  .chart-card { background: #fff; border-radius: 14px; border: 1.5px solid #f3f4f6; padding: 20px; }
-  [data-theme="dark"] .chart-card { background: var(--card-bg,#1e2130); border-color: #2d3150; }
+  .chart-card { background: var(--bg2); border-radius: 14px; border: 1.5px solid var(--border); padding: 20px; }
   #pendingBadge { transition: all .3s; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
@@ -46,6 +44,9 @@
   <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-dash"><i class="bi bi-speedometer2 me-1"></i>Dashboard</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-produk"><i class="bi bi-box-seam me-1"></i>Produk</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-saldo"><i class="bi bi-wallet2 me-1"></i>Saldo</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-voucher"><i class="bi bi-ticket-perforated me-1"></i>Voucher</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-referral"><i class="bi bi-gift me-1"></i>Referral</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-tiket"><i class="bi bi-headset me-1"></i>Tiket <span id="tiket-badge" class="badge bg-danger ms-1" style="font-size:.7rem;{{ 'display:none' if not tiket_list }}">{{ tiket_list|selectattr('status','equalto','open')|list|length }}</span></button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-config"><i class="bi bi-gear me-1"></i>Pengaturan</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-broadcast"><i class="bi bi-megaphone me-1"></i>Broadcast</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-audit"><i class="bi bi-journal-text me-1"></i>Audit Log</button></li>
@@ -413,6 +414,13 @@
                       data-pid="{{ p.id }}" data-tid="{{ t.id }}" data-nama="{{ t.nama }}" data-harga="{{ t.harga }}">
                       <i class="bi bi-pencil"></i> Harga
                     </button>
+                    <!-- Edit Deskripsi Tipe -->
+                    <button class="btn btn-xs btn-outline-warning btn-sm py-0 px-2 ms-1" data-bs-toggle="modal"
+                      data-bs-target="#deskripsiTipeModal"
+                      data-pid="{{ p.id }}" data-tid="{{ t.id }}" data-nama="{{ t.nama }}"
+                      data-deskripsi="{{ t.get('deskripsi','') | e }}">
+                      <i class="bi bi-card-text"></i> Deskripsi
+                    </button>
                     <!-- Hapus Tipe -->
                     <form method="post" action="/admin/produk/{{ p.id }}/tipe/{{ t.id }}/hapus" class="d-inline ms-1">
                       <button class="btn btn-xs btn-outline-danger btn-sm py-0 px-2"
@@ -518,6 +526,197 @@
     </div>
   </div>
 
+  <!-- ── VOUCHER ── -->
+  <div class="tab-pane fade" id="tab-voucher">
+    <div class="row g-4">
+      <div class="col-md-5">
+        <div class="card">
+          <div class="card-header"><h6 class="mb-0"><i class="bi bi-plus-circle me-1"></i>Tambah Voucher</h6></div>
+          <div class="card-body p-4">
+            <form method="post" action="/admin/voucher/tambah">
+              <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+              <div class="mb-3">
+                <label class="form-label">Kode Voucher</label>
+                <input type="text" name="kode" class="form-control text-uppercase fw-bold"
+                       placeholder="PROMO2025" maxlength="32" required
+                       oninput="this.value=this.value.toUpperCase()">
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Nilai Diskon (Rp)</label>
+                <input type="number" name="nominal" class="form-control"
+                       placeholder="50000" min="1" required>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Maks Pemakaian</label>
+                <input type="number" name="max_uses" class="form-control"
+                       value="1" min="1" required>
+                <div class="form-text">Berapa kali voucher bisa dipakai (total semua user)</div>
+              </div>
+              <button type="submit" class="btn btn-brand w-100 fw-semibold">
+                <i class="bi bi-plus-circle me-1"></i>Tambah Voucher
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-7">
+        <div class="card">
+          <div class="card-header"><h6 class="mb-0"><i class="bi bi-list-ul me-1"></i>Daftar Voucher</h6></div>
+          <div class="card-body p-0">
+            {% if vouchers %}
+            <div class="table-responsive">
+              <table class="table table-hover mb-0">
+                <thead class="table-light">
+                  <tr><th>Kode</th><th>Nilai</th><th>Pakai/Maks</th><th>Status</th><th>Aksi</th></tr>
+                </thead>
+                <tbody>
+                {% for v in vouchers %}
+                <tr>
+                  <td><code class="fw-bold">{{ v.kode }}</code></td>
+                  <td>Rp{{ "{:,}".format(v.nominal) }}</td>
+                  <td>{{ v.used }}/{{ v.max_uses }}</td>
+                  <td>
+                    {% if v.aktif %}<span class="badge bg-success">Aktif</span>
+                    {% else %}<span class="badge bg-secondary">Nonaktif</span>{% endif %}
+                  </td>
+                  <td class="table-action-btns">
+                    <form method="post" action="/admin/voucher/toggle/{{ v.kode }}" class="d-inline">
+                      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+                      <button type="submit" class="btn btn-xs btn-outline-secondary btn-sm py-0 px-2">
+                        {% if v.aktif %}Nonaktifkan{% else %}Aktifkan{% endif %}
+                      </button>
+                    </form>
+                    <form method="post" action="/admin/voucher/hapus/{{ v.kode }}" class="d-inline"
+                          onsubmit="return confirm('Hapus voucher {{ v.kode }}?')">
+                      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+                      <button type="submit" class="btn btn-xs btn-outline-danger btn-sm py-0 px-2">Hapus</button>
+                    </form>
+                  </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% else %}
+            <div class="text-center py-4 text-muted small">Belum ada voucher.</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── REFERRAL ── -->
+  <div class="tab-pane fade" id="tab-referral">
+    <div class="row g-4">
+      <div class="col-12">
+        <div class="alert alert-info small py-2">
+          <i class="bi bi-info-circle me-1"></i>
+          Pengaturan referral (aktif/nonaktif, nominal bonus, konfirmasi) ada di tab <strong>Pengaturan</strong>.
+        </div>
+      </div>
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header"><h6 class="mb-0"><i class="bi bi-hourglass-split me-1"></i>Referral Menunggu Konfirmasi</h6></div>
+          <div class="card-body p-0">
+            {% if ref_pending %}
+            <div class="table-responsive">
+              <table class="table table-hover mb-0">
+                <thead class="table-light">
+                  <tr><th>#</th><th>Referrer</th><th>User Baru</th><th>Bonus</th><th>Aksi</th></tr>
+                </thead>
+                <tbody>
+                {% for r in ref_pending %}
+                <tr>
+                  <td>{{ r.id }}</td>
+                  <td><code>{{ r.referrer_tid }}</code></td>
+                  <td><code>{{ r.referred_tid }}</code></td>
+                  <td>Rp{{ "{:,}".format(r.bonus) }}</td>
+                  <td class="table-action-btns">
+                    <form method="post" action="/admin/referral/approve/{{ r.id }}" class="d-inline">
+                      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+                      <button type="submit" class="btn btn-sm btn-success py-0 px-2">✅ Setujui</button>
+                    </form>
+                    <form method="post" action="/admin/referral/reject/{{ r.id }}" class="d-inline"
+                          onsubmit="return confirm('Tolak referral ini?')">
+                      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+                      <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2">❌ Tolak</button>
+                    </form>
+                  </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% else %}
+            <div class="text-center py-4 text-muted small">Tidak ada referral yang menunggu konfirmasi.</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── TIKET ── -->
+  <div class="tab-pane fade" id="tab-tiket">
+    <div class="card">
+      <div class="card-header"><h6 class="mb-0"><i class="bi bi-headset me-1"></i>Tiket Support</h6></div>
+      <div class="card-body p-0">
+        {% if tiket_list %}
+        <div class="table-responsive">
+          <table class="table table-hover mb-0">
+            <thead class="table-light">
+              <tr><th>#</th><th>User</th><th>Pesan</th><th>Balasan</th><th>Status</th><th>Waktu</th><th>Aksi</th></tr>
+            </thead>
+            <tbody>
+            {% for t in tiket_list %}
+            <tr>
+              <td>{{ t.id }}</td>
+              <td><code>{{ t.user_tid }}</code></td>
+              <td class="small" style="max-width:200px;word-break:break-word">{{ t.pesan[:100] }}</td>
+              <td class="small text-muted" style="max-width:160px">{{ t.balasan[:80] if t.balasan else '—' }}</td>
+              <td>
+                {% if t.status == 'open' %}<span class="badge bg-warning text-dark">Terbuka</span>
+                {% elif t.status == 'replied' %}<span class="badge bg-info text-dark">Dibalas</span>
+                {% else %}<span class="badge bg-secondary">Ditutup</span>{% endif %}
+              </td>
+              <td class="small text-muted">{{ t.created_at[:16] if t.created_at else '' }}</td>
+              <td class="table-action-btns">
+                {% if t.status != 'closed' %}
+                <button class="btn btn-sm btn-outline-primary py-0 px-2"
+                        data-bs-toggle="collapse" data-bs-target="#reply-{{ t.id }}">
+                  Balas
+                </button>
+                <form method="post" action="/admin/tiket/tutup/{{ t.id }}" class="d-inline">
+                  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+                  <button type="submit" class="btn btn-sm btn-outline-secondary py-0 px-2">Tutup</button>
+                </form>
+                {% endif %}
+              </td>
+            </tr>
+            {% if t.status != 'closed' %}
+            <tr class="collapse" id="reply-{{ t.id }}">
+              <td colspan="7" class="bg-light">
+                <form method="post" action="/admin/tiket/reply/{{ t.id }}" class="d-flex gap-2 p-2">
+                  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+                  <input type="text" name="reply" class="form-control form-control-sm"
+                         placeholder="Tulis balasan..." required>
+                  <button type="submit" class="btn btn-sm btn-brand">Kirim</button>
+                </form>
+              </td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="text-center py-4 text-muted small">Belum ada tiket support.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
   <!-- ── PENGATURAN ── -->
   <div class="tab-pane fade" id="tab-config">
     <div class="row g-4">
@@ -594,6 +793,71 @@
                 </div>
                 <div class="form-text">Jika aktif, halaman publik (katalog, beli, deposit) akan menampilkan halaman maintenance. Admin tetap bisa akses panel ini.</div>
               </div>
+
+              <hr>
+              <h6 class="fw-bold mb-3"><i class="bi bi-bell me-1"></i>Notifikasi Stok Rendah</h6>
+              <div class="mb-3">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="stok_alert_aktif" id="chkStokAlert"
+                    {% if cfg.get('stok_alert_aktif') %}checked{% endif %}>
+                  <label class="form-check-label" for="chkStokAlert">
+                    Kirim notifikasi ke admin saat stok produk rendah
+                    <span class="badge {% if cfg.get('stok_alert_aktif') %}bg-success{% else %}bg-secondary{% endif %} ms-1">
+                      {% if cfg.get('stok_alert_aktif') %}Aktif{% else %}Nonaktif{% endif %}
+                    </span>
+                  </label>
+                </div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Batas Stok Minimum (unit)</label>
+                <input type="number" name="stok_alert_min" class="form-control"
+                       value="{{ cfg.get('stok_alert_min', 2) }}" min="1" max="100">
+                <div class="form-text">Alert dikirim jika sisa stok ≤ nilai ini setelah ada penjualan.</div>
+              </div>
+
+              <hr>
+              <h6 class="fw-bold mb-3"><i class="bi bi-ticket-perforated me-1"></i>Voucher / Kode Promo</h6>
+              <div class="mb-3">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="voucher_aktif" id="chkVoucher"
+                    {% if cfg.get('voucher_aktif', True) %}checked{% endif %}>
+                  <label class="form-check-label" for="chkVoucher">
+                    Aktifkan fitur voucher / kode promo di website
+                    <span class="badge {% if cfg.get('voucher_aktif', True) %}bg-success{% else %}bg-secondary{% endif %} ms-1">
+                      {% if cfg.get('voucher_aktif', True) %}Aktif{% else %}Nonaktif{% endif %}
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              <hr>
+              <h6 class="fw-bold mb-3"><i class="bi bi-gift me-1"></i>Program Referral</h6>
+              <div class="mb-3">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="referral_aktif" id="chkReferral"
+                    {% if cfg.get('referral_aktif') %}checked{% endif %}>
+                  <label class="form-check-label" for="chkReferral">
+                    Aktifkan program referral
+                    <span class="badge {% if cfg.get('referral_aktif') %}bg-success{% else %}bg-secondary{% endif %} ms-1">
+                      {% if cfg.get('referral_aktif') %}Aktif{% else %}Nonaktif{% endif %}
+                    </span>
+                  </label>
+                </div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Nominal Bonus Referral (Rp)</label>
+                <input type="number" name="referral_bonus" class="form-control"
+                       value="{{ cfg.get('referral_bonus', 5000) }}" min="0">
+                <div class="form-text">Saldo yang diberikan ke referrer setelah teman-nya beli pertama kali.</div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Mode Konfirmasi Referral</label>
+                <select name="referral_konfirmasi" class="form-select">
+                  <option value="otomatis" {% if cfg.get('referral_konfirmasi','otomatis') == 'otomatis' %}selected{% endif %}>Otomatis (langsung masuk saldo)</option>
+                  <option value="manual" {% if cfg.get('referral_konfirmasi') == 'manual' %}selected{% endif %}>Manual (perlu persetujuan admin)</option>
+                </select>
+              </div>
+
               <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold">
                 <i class="bi bi-check-circle me-1"></i>Simpan Pengaturan
               </button>
@@ -687,6 +951,12 @@
               {% if cfg.get('transfer_manual_aktif', True) %}<input type="hidden" name="transfer_manual_aktif" value="on">{% endif %}
               {% if cfg.get('web_aktif', True) %}<input type="hidden" name="web_aktif" value="on">{% endif %}
               {% if cfg.get('maintenance_mode') %}<input type="hidden" name="maintenance_mode" value="on">{% endif %}
+              {% if cfg.get('stok_alert_aktif') %}<input type="hidden" name="stok_alert_aktif" value="on">{% endif %}
+              <input type="hidden" name="stok_alert_min" value="{{ cfg.get('stok_alert_min', 2) }}">
+              {% if cfg.get('voucher_aktif', True) %}<input type="hidden" name="voucher_aktif" value="on">{% endif %}
+              {% if cfg.get('referral_aktif') %}<input type="hidden" name="referral_aktif" value="on">{% endif %}
+              <input type="hidden" name="referral_bonus" value="{{ cfg.get('referral_bonus', 5000) }}">
+              <input type="hidden" name="referral_konfirmasi" value="{{ cfg.get('referral_konfirmasi','otomatis') }}">
             </form>
             <button class="btn btn-brand btn-sm mt-3 fw-semibold" onclick="submitColor()">
               <i class="bi bi-check-circle me-1"></i>Terapkan Warna
@@ -821,14 +1091,16 @@
             <input type="number" name="harga" class="form-control" placeholder="15000" min="0" required>
           </div>
           <div class="mb-3">
-            <label class="form-label">Deskripsi <span class="text-muted fw-normal">(opsional)</span></label>
-            <input type="text" name="deskripsi" class="form-control" placeholder="Garansi 1 bulan">
+            <label class="form-label">Deskripsi <span class="text-muted fw-normal">(opsional — tampil setelah pembelian berhasil)</span></label>
+            <textarea name="deskripsi" class="form-control" rows="7"
+              placeholder="Contoh:&#10;Link: https://example.com&#10;&#10;Cara login:&#10;1. Buka browser fresh tanpa history&#10;2. Hindari VPN&#10;&#10;Untuk OTP gunakan @setup2fabot"></textarea>
+            <div class="form-text">Mendukung teks panjang dan multi-baris. Tampil di pesan bot &amp; halaman sukses web.</div>
           </div>
           <div class="mb-3">
             <label class="form-label">Daftar Akun <span class="text-muted fw-normal">(opsional)</span></label>
             <textarea name="akun_list" class="form-control" rows="5"
-              placeholder="Format: username|password (per baris)&#10;user@mail.com|pass123&#10;user2@mail.com|pass456"></textarea>
-            <div class="form-text">Satu akun per baris — username|password</div>
+              placeholder="Format: username|password atau username|password|info tambahan&#10;user@mail.com|pass123&#10;user@mail.com|pass456|Region ID"></textarea>
+            <div class="form-text">Satu akun per baris — username|password atau username|password|info tambahan</div>
           </div>
         </div>
         <div class="modal-footer border-0">
@@ -864,6 +1136,35 @@
           <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Batal</button>
           <button type="submit" class="btn btn-brand px-4 fw-semibold">
             <i class="bi bi-plus-circle me-1"></i>Tambah Stok
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Edit Deskripsi Tipe -->
+<div class="modal fade" id="deskripsiTipeModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content" style="border-radius:16px;border:none">
+      <div class="modal-header" style="background:linear-gradient(135deg,var(--brand-dark),var(--brand));color:#fff;border-radius:16px 16px 0 0">
+        <h5 class="modal-title fw-bold" id="deskripsiTipeTitle">Edit Deskripsi Tipe</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="post" id="deskripsiTipeForm">
+        <div class="modal-body p-4">
+          <div class="mb-1 text-muted small"><i class="bi bi-info-circle me-1"></i>Deskripsi ini muncul di pesan bot &amp; halaman web setelah pembelian berhasil. Mendukung teks panjang dan multi-baris.</div>
+          <div class="mb-3 mt-3">
+            <label class="form-label fw-semibold">Deskripsi / Panduan Penggunaan</label>
+            <textarea name="deskripsi" id="deskripsiTipeInput" class="form-control" rows="12"
+              placeholder="Contoh:&#10;Link: https://education.github.com/pack&#10;&#10;💡 Untuk mendapatkan kode OTP saat login, generate Key 2FA di:&#10;Bot: @setup2fabot&#10;Web: setup2fa.com&#10;&#10;Saran Login Aman 🔐&#10;1. Gunakan Browser Fresh 🌐 (tanpa cookie akun lain)&#10;2. Hindari VPN 🚫 — gunakan IP lokal Indonesia&#10;&#10;Tetap konsisten dan aman saat mengakses akunmu."></textarea>
+            <div class="form-text">Kosongkan untuk menghapus deskripsi.</div>
+          </div>
+        </div>
+        <div class="modal-footer border-0">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Batal</button>
+          <button type="submit" class="btn btn-brand px-4 fw-semibold">
+            <i class="bi bi-save me-1"></i>Simpan Deskripsi
           </button>
         </div>
       </form>
@@ -999,6 +1300,16 @@ document.getElementById('restockTipeModal').addEventListener('show.bs.modal', fu
     '/admin/produk/' + btn.dataset.pid + '/tipe/' + btn.dataset.tid + '/restock';
 });
 
+// Edit Deskripsi Tipe Modal
+document.getElementById('deskripsiTipeModal').addEventListener('show.bs.modal', function(e) {
+  const btn = e.relatedTarget;
+  document.getElementById('deskripsiTipeTitle').textContent = 'Deskripsi: ' + btn.dataset.nama;
+  document.getElementById('deskripsiTipeForm').action =
+    '/admin/produk/' + btn.dataset.pid + '/tipe/' + btn.dataset.tid + '/deskripsi';
+  document.getElementById('deskripsiTipeInput').value = btn.dataset.deskripsi || '';
+  setTimeout(() => document.getElementById('deskripsiTipeInput').focus(), 400);
+});
+
 // Edit Harga Tipe Modal
 document.getElementById('hargaTipeModal').addEventListener('show.bs.modal', function(e) {
   const btn = e.relatedTarget;
@@ -1064,7 +1375,7 @@ function renderStokTipe(tipeList) {
 function hapusAkunTipe(tid, idx, btn) {
   if (!confirm('Hapus akun #' + (idx + 1) + '?')) return;
   btn.disabled = true;
-  fetch('/admin/produk/' + _stokPid + '/tipe/' + tid + '/akun/' + idx + '/hapus', {method:'POST'})
+  fetch('/admin/produk/' + _stokPid + '/tipe/' + tid + '/akun/' + idx + '/hapus', {method:'POST', headers:{'X-CSRF-Token': window._csrfToken||''}})
     .then(r => r.json())
     .then(d => {
       if (d.ok) {
@@ -1095,8 +1406,12 @@ document.getElementById('renameModal').addEventListener('show.bs.modal', e => {
 const hashMap = {
   '#tab-produk':    'tab-produk',
   '#tab-saldo':     'tab-saldo',
+  '#tab-voucher':   'tab-voucher',
+  '#tab-referral':  'tab-referral',
+  '#tab-tiket':     'tab-tiket',
   '#tab-config':    'tab-config',
   '#tab-broadcast': 'tab-broadcast',
+  '#tab-audit':     'tab-audit',
 };
 if (hashMap[location.hash]) {
   const tabEl = document.querySelector(`[data-bs-target="#${hashMap[location.hash]}"]`);

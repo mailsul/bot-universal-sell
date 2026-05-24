@@ -549,6 +549,54 @@ def init_web_tables():
             conn.execute("ALTER TABLE web_users ADD COLUMN force_password_change INTEGER DEFAULT 0")
         except Exception:
             pass
+
+        # ── Kolom baru web_users ──────────────────────────────────────────
+        for col_sql in [
+            "ALTER TABLE web_users ADD COLUMN dua_fa_aktif  INTEGER DEFAULT 0",
+            "ALTER TABLE web_users ADD COLUMN referral_kode TEXT",
+            "ALTER TABLE web_users ADD COLUMN referral_by   INTEGER DEFAULT 0",
+        ]:
+            try:
+                conn.execute(col_sql)
+            except Exception:
+                pass
+
+        # ── Sesi login web ────────────────────────────────────────────────
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS web_sessions (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_tid    INTEGER NOT NULL,
+            token       TEXT NOT NULL UNIQUE,
+            ip          TEXT DEFAULT '',
+            user_agent  TEXT DEFAULT '',
+            created_at  TEXT NOT NULL,
+            last_seen   TEXT NOT NULL,
+            aktif       INTEGER DEFAULT 1
+        )""")
+
+        # ── Support ticket ────────────────────────────────────────────────
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS support_tickets (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_tid    INTEGER NOT NULL,
+            pesan       TEXT NOT NULL,
+            status      TEXT NOT NULL DEFAULT 'open',
+            waktu       TEXT NOT NULL,
+            admin_reply TEXT DEFAULT '',
+            reply_waktu TEXT DEFAULT ''
+        )""")
+
+        # ── Referral log ──────────────────────────────────────────────────
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS referral_log (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            referrer_tid INTEGER NOT NULL,
+            referred_tid INTEGER NOT NULL,
+            status       TEXT NOT NULL DEFAULT 'pending',
+            bonus        INTEGER NOT NULL DEFAULT 0,
+            waktu        TEXT NOT NULL
+        )""")
+
         conn.commit()
         conn.close()
 
@@ -898,3 +946,308 @@ def db_get_ratings(produk: str = None, limit: int = 50) -> list:
             ).fetchall()
         conn.close()
     return [dict(r) for r in rows]
+
+
+# ─── VOUCHER TOGGLE ────────────────────────────────────────────────────────────
+
+def db_toggle_voucher(kode: str) -> bool:
+    """Toggle aktif/nonaktif voucher. Return True jika berhasil."""
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute("SELECT aktif FROM voucher WHERE kode=?", (kode.upper(),)).fetchone()
+        if not row:
+            conn.close()
+            return False
+        conn.execute("UPDATE voucher SET aktif=? WHERE kode=?", (0 if row["aktif"] else 1, kode.upper()))
+        conn.commit()
+        conn.close()
+    return True
+
+
+# ─── WEB SESSIONS ──────────────────────────────────────────────────────────────
+
+def web_session_create(user_tid: int, token: str, ip: str = "", ua: str = "") -> int:
+    now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    with _lock:
+        conn = _get_conn()
+        cur = conn.execute(
+            "INSERT INTO web_sessions (user_tid, token, ip, user_agent, created_at, last_seen, aktif) "
+            "VALUES (?,?,?,?,?,?,1)",
+            (int(user_tid), token, ip[:64], ua[:200], now, now)
+        )
+        sid = cur.lastrowid
+        conn.commit()
+        conn.close()
+    return sid
+
+
+def web_session_get_by_token(token: str) -> dict | None:
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT * FROM web_sessions WHERE token=? AND aktif=1", (token,)
+        ).fetchone()
+        conn.close()
+    return dict(row) if row else None
+
+
+def web_session_list(user_tid: int) -> list:
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT * FROM web_sessions WHERE user_tid=? AND aktif=1 ORDER BY id DESC",
+            (int(user_tid),)
+        ).fetchall()
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def web_session_update_seen(token: str):
+    now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    with _lock:
+        conn = _get_conn()
+        conn.execute("UPDATE web_sessions SET last_seen=? WHERE token=?", (now, token))
+        conn.commit()
+        conn.close()
+
+
+def web_session_deactivate(session_id: int, user_tid: int):
+    """Nonaktifkan sesi tertentu milik user_tid (safety: pastikan milik user itu)."""
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE web_sessions SET aktif=0 WHERE id=? AND user_tid=?",
+            (int(session_id), int(user_tid))
+        )
+        conn.commit()
+        conn.close()
+
+
+def web_session_deactivate_all(user_tid: int, except_token: str = None):
+    """Nonaktifkan semua sesi user, kecuali token yang sedang dipakai."""
+    with _lock:
+        conn = _get_conn()
+        if except_token:
+            conn.execute(
+                "UPDATE web_sessions SET aktif=0 WHERE user_tid=? AND token!=?",
+                (int(user_tid), except_token)
+            )
+        else:
+            conn.execute("UPDATE web_sessions SET aktif=0 WHERE user_tid=?", (int(user_tid),))
+        conn.commit()
+        conn.close()
+
+
+# ─── SUPPORT TICKETS ───────────────────────────────────────────────────────────
+
+def db_ticket_create(user_tid: int, pesan: str) -> int:
+    now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    with _lock:
+        conn = _get_conn()
+        cur = conn.execute(
+            "INSERT INTO support_tickets (user_tid, pesan, status, waktu) VALUES (?,?,?,?)",
+            (int(user_tid), pesan[:2000], "open", now)
+        )
+        tid = cur.lastrowid
+        conn.commit()
+        conn.close()
+    return tid
+
+
+def db_ticket_list(limit: int = 100) -> list:
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT * FROM support_tickets ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def db_ticket_list_by_user(user_tid: int, limit: int = 20) -> list:
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT * FROM support_tickets WHERE user_tid=? ORDER BY id DESC LIMIT ?",
+            (int(user_tid), limit)
+        ).fetchall()
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def db_ticket_reply(ticket_id: int, admin_reply: str) -> bool:
+    now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE support_tickets SET admin_reply=?, reply_waktu=?, status='answered' WHERE id=?",
+            (admin_reply[:2000], now, int(ticket_id))
+        )
+        conn.commit()
+        conn.close()
+    return True
+
+
+def db_ticket_close(ticket_id: int) -> bool:
+    with _lock:
+        conn = _get_conn()
+        conn.execute("UPDATE support_tickets SET status='closed' WHERE id=?", (int(ticket_id),))
+        conn.commit()
+        conn.close()
+    return True
+
+
+def db_ticket_get(ticket_id: int) -> dict | None:
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute("SELECT * FROM support_tickets WHERE id=?", (int(ticket_id),)).fetchone()
+        conn.close()
+    return dict(row) if row else None
+
+
+# ─── REFERRAL ──────────────────────────────────────────────────────────────────
+
+def _gen_referral_kode(telegram_id: int) -> str:
+    """Buat kode referral unik: 3 huruf kapital + 4 digit."""
+    base = ''.join(random.choices(string.ascii_uppercase, k=3))
+    num  = str(telegram_id)[-4:].zfill(4)
+    return f"{base}{num}"
+
+
+def web_ensure_referral_kode(telegram_id: int) -> str:
+    """Pastikan user punya referral_kode; buat jika belum ada. Return kode-nya."""
+    tid = int(telegram_id)
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute("SELECT referral_kode FROM web_users WHERE telegram_id=?", (tid,)).fetchone()
+        if row and row["referral_kode"]:
+            kode = row["referral_kode"]
+            conn.close()
+            return kode
+        # Buat kode baru yang unik
+        for _ in range(10):
+            kode = _gen_referral_kode(tid)
+            exists = conn.execute("SELECT 1 FROM web_users WHERE referral_kode=?", (kode,)).fetchone()
+            if not exists:
+                break
+            kode = ''.join(random.choices(string.ascii_uppercase, k=3)) + ''.join(random.choices(string.digits, k=4))
+        conn.execute("UPDATE web_users SET referral_kode=? WHERE telegram_id=?", (kode, tid))
+        conn.commit()
+        conn.close()
+    return kode
+
+
+def web_get_user_by_referral_kode(kode: str) -> dict | None:
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT * FROM web_users WHERE referral_kode=?", (kode.upper().strip(),)
+        ).fetchone()
+        conn.close()
+    return dict(row) if row else None
+
+
+def web_set_referral_by(referred_tid: int, referrer_tid: int):
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE web_users SET referral_by=? WHERE telegram_id=? AND (referral_by=0 OR referral_by IS NULL)",
+            (int(referrer_tid), int(referred_tid))
+        )
+        conn.commit()
+        conn.close()
+
+
+def db_referral_create(referrer_tid: int, referred_tid: int, bonus: int) -> int:
+    now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    with _lock:
+        conn = _get_conn()
+        # Cegah duplikat referral dari referred_tid yang sama
+        exists = conn.execute(
+            "SELECT id FROM referral_log WHERE referred_tid=?", (int(referred_tid),)
+        ).fetchone()
+        if exists:
+            conn.close()
+            return 0
+        cur = conn.execute(
+            "INSERT INTO referral_log (referrer_tid, referred_tid, status, bonus, waktu) VALUES (?,?,?,?,?)",
+            (int(referrer_tid), int(referred_tid), "pending", int(bonus), now)
+        )
+        lid = cur.lastrowid
+        conn.commit()
+        conn.close()
+    return lid
+
+
+def db_referral_list(referrer_tid: int = None) -> list:
+    with _lock:
+        conn = _get_conn()
+        if referrer_tid:
+            rows = conn.execute(
+                "SELECT * FROM referral_log WHERE referrer_tid=? ORDER BY id DESC",
+                (int(referrer_tid),)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM referral_log ORDER BY id DESC LIMIT 200").fetchall()
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def db_referral_pending_list() -> list:
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT * FROM referral_log WHERE status='pending' ORDER BY id DESC"
+        ).fetchall()
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def db_referral_approve(log_id: int) -> dict | None:
+    """Approve referral: set status='approved'. Return referral row."""
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT * FROM referral_log WHERE id=? AND status='pending'", (int(log_id),)
+        ).fetchone()
+        if not row:
+            conn.close()
+            return None
+        conn.execute("UPDATE referral_log SET status='approved' WHERE id=?", (int(log_id),))
+        conn.commit()
+        conn.close()
+    return dict(row)
+
+
+def db_referral_reject(log_id: int) -> bool:
+    with _lock:
+        conn = _get_conn()
+        conn.execute("UPDATE referral_log SET status='rejected' WHERE id=?", (int(log_id),))
+        conn.commit()
+        conn.close()
+    return True
+
+
+def db_is_first_purchase(user_tid) -> bool:
+    """True jika user belum pernah melakukan pembelian (BELI) sebelumnya."""
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM riwayat WHERE user_id=? AND tipe='BELI'",
+            (str(user_tid),)
+        ).fetchone()
+        conn.close()
+    return int(row["c"]) == 0
+
+
+# ─── 2FA USER ──────────────────────────────────────────────────────────────────
+
+def web_set_dua_fa(telegram_id: int, aktif: int):
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE web_users SET dua_fa_aktif=? WHERE telegram_id=?",
+            (int(aktif), int(telegram_id))
+        )
+        conn.commit()
+        conn.close()

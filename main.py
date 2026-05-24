@@ -24,6 +24,8 @@ from db import (
     db_get_rekap_penjualan,
     db_add_voucher, db_use_voucher, db_get_all_vouchers, db_delete_voucher,
     db_add_rating, db_get_ratings,
+    db_ticket_create, db_ticket_list, db_ticket_get, db_ticket_reply, db_ticket_close,
+    db_referral_create, db_referral_list, db_is_first_purchase,
 )
 
 import sys
@@ -580,6 +582,13 @@ async def proses_mutasi(app: Application):
                 )
             except Exception:
                 pass
+            await _notify_group(
+                app.bot,
+                f"💰 *Deposit QRIS Otomatis (Bot)*\n"
+                f"👤 `{uid}`\n"
+                f"💵 Rp{nominal:,}\n"
+                f"🔖 `{trx_id}`"
+            )
 
         elif metode == "qris_beli":
             # ── Beli langsung via QRIS ────────────────────────────────
@@ -690,6 +699,15 @@ async def proses_mutasi(app: Application):
                                            item['nama'], app.job_queue)
             except Exception:
                 pass
+
+            await _notify_group(
+                app.bot,
+                f"🛒 *Pembelian QRIS Otomatis (Bot)*\n"
+                f"👤 `{uid}`\n"
+                f"📦 {item['nama']}{nama_tipe_str} x{jumlah}\n"
+                f"💸 Rp{nominal:,}\n"
+                f"🔖 `{trx_id}`"
+            )
 
             # Notif stok rendah — hanya jika tipe_id_p valid DAN stok > 0 (bukan habis)
             if item and tipe_id_p and tipe_id_p in item.get("tipe", {}):
@@ -1492,6 +1510,28 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
                 pass
 
     context.user_data.pop("konfirmasi", None)
+
+    # Referral bonus trigger — saat pembelian pertama user
+    try:
+        user_data_w = web_get_user_by_tid(int(uid))
+        if user_data_w and user_data_w.get("referral_by") and db_is_first_purchase(int(uid)):
+            cfg_r = load_config()
+            if cfg_r.get("referral_aktif"):
+                referrer_tid = int(user_data_w["referral_by"])
+                bonus = int(cfg_r.get("referral_bonus", 5000))
+                if cfg_r.get("referral_konfirmasi","otomatis") == "otomatis":
+                    db_add_saldo(referrer_tid, bonus)
+                    db_add_riwayat(referrer_tid, "REFERRAL",
+                                   f"Bonus referral (user {uid})", bonus)
+                    send_telegram(referrer_tid,
+                        f"🎉 *Bonus Referral!*\nKamu mendapat *Rp{bonus:,}* karena teman "
+                        f"kamu baru saja melakukan pembelian pertama!")
+                else:
+                    db_referral_create(referrer_tid, int(uid), bonus)
+                    send_telegram(referrer_tid,
+                        f"🎉 Ada bonus referral *Rp{bonus:,}* menunggu konfirmasi admin.")
+    except Exception:
+        pass
 
     # F7: Kirim request rating 5 menit setelah pembelian
     if context.application.job_queue is not None:
@@ -3976,13 +4016,21 @@ async def cmd_voucher(update: Update, context: CallbackContext):
                        f"❌ Kamu sudah pernah menggunakan voucher *{kode}*.")
     elif isinstance(result, int):
         db_add_saldo(uid, result)
-        db_add_riwayat(uid, "DEPOSIT", f"Voucher {kode}", result)
+        trx_id_vc = db_add_riwayat(uid, "DEPOSIT", f"Voucher {kode}", result)
         new_saldo = db_get_saldo(update.effective_user.id)
         await _send_pe(
             context.bot, update.effective_chat.id,
             f"🎉 *Voucher {kode} berhasil digunakan!*\n"
             f"💰 Saldo bertambah: *Rp{result:,}*\n"
             f"💳 Saldo kamu sekarang: *Rp{new_saldo:,}*"
+        )
+        await _notify_group(
+            context.bot,
+            f"🎟 *Voucher Digunakan (Bot)*\n"
+            f"👤 `{uid}`\n"
+            f"🏷 Kode: `{kode}`\n"
+            f"💵 +Rp{result:,}\n"
+            f"🔖 `{trx_id_vc}`"
         )
         await send_main_menu(context, update.effective_chat.id, update.effective_user)
     else:
@@ -4020,6 +4068,43 @@ async def cmd_addvoucher(update: Update, context: CallbackContext):
         )
     else:
         await update.message.reply_text(f"❌ Kode `{kode}` sudah ada.")
+
+
+# ─── COMMAND: /tiket — User buat support ticket ───────────────────────────────
+
+async def cmd_tiket(update: Update, context: CallbackContext):
+    """User: /tiket <pesan> — buat tiket support."""
+    uid   = update.effective_user.id
+    args  = context.args
+    if not args:
+        await _send_pe(context.bot, update.effective_chat.id,
+                       "📨 Cara pakai: /tiket <pesan>\n"
+                       "Contoh: /tiket Saya tidak menerima akun setelah bayar")
+        return
+    pesan = " ".join(args).strip()
+    if len(pesan) < 5:
+        await _send_pe(context.bot, update.effective_chat.id,
+                       "❌ Pesan terlalu pendek. Deskripsikan masalahmu dengan jelas.")
+        return
+    if len(pesan) > 1000:
+        await _send_pe(context.bot, update.effective_chat.id,
+                       "❌ Pesan terlalu panjang (maks 1000 karakter).")
+        return
+    tid = db_ticket_create(uid, pesan)
+    await _send_pe(context.bot, update.effective_chat.id,
+                   f"✅ *Tiket Support #{tid} berhasil dibuat!*\n\n"
+                   f"📝 Pesan: _{pesan[:200]}_\n\n"
+                   f"Admin akan segera membalas. Terima kasih atas kesabarannya.")
+    # Notif admin
+    user = update.effective_user
+    nama = user.full_name or str(uid)
+    notif_msg = (
+        f"🎫 *Tiket Support Baru #{tid}*\n\n"
+        f"👤 {nama} (`{uid}`)\n"
+        f"💬 {pesan[:500]}"
+    )
+    for admin_id in ADMIN_IDS:
+        send_telegram(admin_id, notif_msg)
 
 
 # ─── COMMAND: /rating — Admin lihat rekap rating ─────────────────────────────
@@ -4075,6 +4160,7 @@ def main():  # Made With love by @govtrashit A.K.A RzkyO
     app.add_handler(CommandHandler("addstok",    cmd_addstok))
     app.add_handler(CommandHandler("voucher",    cmd_voucher))
     app.add_handler(CommandHandler("addvoucher", cmd_addvoucher))
+    app.add_handler(CommandHandler("tiket",      cmd_tiket))
     app.add_handler(CommandHandler("rating",     cmd_rating))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.PHOTO,              handle_photo))

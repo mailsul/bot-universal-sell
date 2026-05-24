@@ -3,12 +3,13 @@
 {% block head %}
 <style>
   .method-card {
-    border: 2px solid #e5e7eb;
+    border: 2px solid var(--border);
     border-radius: 14px;
     padding: 20px;
     cursor: pointer;
     transition: all .2s;
-    background: #fff;
+    background: var(--bg2);
+    color: var(--text);
   }
   .method-card:hover { border-color: var(--brand); box-shadow: 0 0 0 4px var(--brand-glow, rgba(124,58,237,.08)); }
   .method-card.selected { border-color: var(--brand); background: var(--brand-light); }
@@ -20,12 +21,13 @@
     padding: 24px;
   }
   .tipe-card {
-    border: 2px solid #e5e7eb;
+    border: 2px solid var(--border);
     border-radius: 12px;
     padding: 14px 16px;
     cursor: pointer;
     transition: all .2s;
-    background: #fff;
+    background: var(--bg2);
+    color: var(--text);
   }
   .tipe-card:hover { border-color: var(--brand); }
   .tipe-card.selected { border-color: var(--brand); background: var(--brand-light); }
@@ -142,7 +144,7 @@
           <input type="number" id="tg_input" class="form-control" placeholder="Telegram ID kamu (contoh: 1234567890)">
           <div class="form-text">
             Isi jika ingin akun dikirim juga ke Telegram — hanya jika kamu sudah <strong>pernah start bot</strong>.
-            Cari ID di <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a>.
+            Cari ID di <a href="https://t.me/{{ bot_username }}" target="_blank">@{{ bot_username }}</a>.
           </div>
         </div>
         {% endif %}
@@ -191,10 +193,25 @@
           {% endif %}
         </div>
 
+        <!-- Voucher / Kode Promo -->
+        <div class="mb-4" id="voucher-wrap">
+          <label class="form-label"><i class="bi bi-ticket-perforated me-1 text-brand"></i>Kode Voucher <span class="text-muted fw-normal">(opsional)</span></label>
+          <div class="input-group">
+            <input type="text" id="voucher_input" class="form-control text-uppercase"
+                   placeholder="Contoh: PROMO2025" maxlength="32"
+                   oninput="this.value=this.value.toUpperCase()">
+            <button type="button" class="btn btn-outline-secondary" onclick="checkVoucher()">Cek</button>
+          </div>
+          <div id="voucher-status" class="form-text mt-1"></div>
+          <input type="hidden" id="voucher_kode_saldo" name="voucher_kode">
+        </div>
+
         <!-- Forms -->
         <form id="form-saldo" action="/beli/{{ pid }}/saldo" method="post" class="d-none">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
           <input type="hidden" name="telegram_id" id="tg_saldo">
           <input type="hidden" name="tid" id="tid_saldo" value="{{ item.tipe[0].id if item.tipe else '' }}">
+          <input type="hidden" name="voucher_kode" id="vc_saldo">
           <button type="submit" class="btn btn-brand w-100 py-2 fw-semibold"
             {% if not current_user %}disabled{% endif %}
             id="btn-saldo">
@@ -279,5 +296,36 @@ if (tgInput) {
     document.getElementById('tg_qris').value  = this.value;
   });
 }
+
+// Voucher check
+let appliedVoucher = '';
+function checkVoucher() {
+  const kode = document.getElementById('voucher_input').value.trim().toUpperCase();
+  const st   = document.getElementById('voucher-status');
+  if (!kode) { st.textContent = ''; return; }
+  st.innerHTML = '<span class="text-muted">Mengecek...</span>';
+  fetch('/beli/voucher/check?kode=' + encodeURIComponent(kode))
+    .then(r => r.json())
+    .then(d => {
+      if (d.valid) {
+        st.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>' + d.pesan + '</span>';
+        appliedVoucher = kode;
+        document.getElementById('vc_saldo').value = kode;
+        // update tombol bayar
+        const net = Math.max(0, selectedHarga - d.nominal);
+        const fmt = 'Rp' + net.toLocaleString('id-ID');
+        const hs = document.getElementById('harga-saldo');
+        if (hs) hs.textContent = fmt;
+      } else {
+        st.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle me-1"></i>' + d.pesan + '</span>';
+        appliedVoucher = '';
+        document.getElementById('vc_saldo').value = '';
+      }
+    })
+    .catch(() => { st.innerHTML = '<span class="text-danger">Gagal cek voucher.</span>'; });
+}
+document.getElementById('voucher_input').addEventListener('keydown', function(e){
+  if (e.key === 'Enter') { e.preventDefault(); checkVoucher(); }
+});
 </script>
 {% endblock %}

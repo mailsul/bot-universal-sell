@@ -17,8 +17,8 @@
     box-shadow: 0 8px 24px rgba(34,197,94,.3);
   }
   .akun-box {
-    background: #f8f7ff;
-    border: 1.5px solid #ede9fe;
+    background: var(--brand-light);
+    border: 1.5px solid var(--border);
     border-radius: 12px;
     padding: 16px 20px;
   }
@@ -27,13 +27,18 @@
     justify-content: space-between;
     align-items: center;
     padding: 8px 0;
-    border-bottom: 1px solid #ede9fe;
+    border-bottom: 1px solid var(--border);
   }
   .akun-row:last-child { border-bottom: none; }
-  .akun-key { font-size: .8rem; color: #6b7280; font-weight: 600; text-transform: uppercase; }
-  .akun-val { font-family: monospace; font-size: .95rem; font-weight: 700; color: #1e1b4b; }
+  .akun-key { font-size: .8rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; }
+  .akun-val { font-family: monospace; font-size: .95rem; font-weight: 700; color: var(--text); }
   .copy-btn { background: none; border: none; color: var(--brand); font-size: .85rem; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
   .copy-btn:hover { background: var(--brand-light); }
+  .deskripsi-box {
+    background: var(--brand-light);
+    border: 1.5px solid var(--border);
+    color: var(--text);
+  }
 </style>
 {% endblock %}
 
@@ -82,13 +87,26 @@
           </div>
         </div>
         {% endif %}
-        {% if akun.get('tipe') %}
+        {% if akun.get('extra') %}
         <div class="akun-row">
-          <span class="akun-key">Tipe</span>
-          <span class="akun-val">{{ akun.tipe }}</span>
+          <span class="akun-key">Info Tambahan</span>
+          <div class="d-flex align-items-center gap-1">
+            <span class="akun-val" id="val-extra">{{ akun.extra }}</span>
+            <button class="copy-btn" onclick="copyText('val-extra', this)" title="Salin">
+              <i class="bi bi-clipboard"></i>
+            </button>
+          </div>
         </div>
         {% endif %}
       </div>
+
+      {% if deskripsi %}
+      <!-- Panduan Penggunaan -->
+      <div class="mb-3">
+        <p class="fw-bold mb-2" style="font-size:.85rem;text-transform:uppercase;color:#6b7280">Panduan Penggunaan</p>
+        <div class="p-3 rounded-3 deskripsi-box" style="font-size:.9rem;white-space:pre-wrap;line-height:1.7;word-break:break-word">{{ deskripsi }}</div>
+      </div>
+      {% endif %}
 
       <!-- TRX ID -->
       <div class="d-flex justify-content-between align-items-center p-3 bg-brand-light rounded-3 mb-3">
@@ -137,13 +155,14 @@ function copyText(id, btn) {
   });
 }
 function downloadTxt() {
-  const nama    = {{ item.get('nama','') | tojson }};
-  const harga   = {{ item.get('harga',0) }};
-  const trxId   = document.getElementById('val-trx').textContent.trim();
-  const user    = (document.getElementById('val-user') || {textContent:''}).textContent.trim();
-  const pass_   = (document.getElementById('val-pass') || {textContent:''}).textContent.trim();
-  const metode  = {{ metode | tojson }};
-  const tipe    = {{ akun.get('tipe','') | tojson }};
+  const nama       = {{ item.get('nama','') | tojson }};
+  const harga      = {{ item.get('harga',0) }};
+  const trxId      = document.getElementById('val-trx').textContent.trim();
+  const user       = (document.getElementById('val-user')  || {textContent:''}).textContent.trim();
+  const pass_      = (document.getElementById('val-pass')  || {textContent:''}).textContent.trim();
+  const extra      = (document.getElementById('val-extra') || {textContent:''}).textContent.trim();
+  const metode     = {{ metode | tojson }};
+  const deskripsi  = {{ (deskripsi or '') | tojson }};
   let txt = `=== DETAIL PEMBELIAN ===\n`;
   txt += `ID Transaksi : ${trxId}\n`;
   txt += `Produk       : ${nama}\n`;
@@ -151,9 +170,13 @@ function downloadTxt() {
   txt += `Metode       : ${metode}\n`;
   txt += `Waktu        : ${new Date().toLocaleString('id-ID')}\n\n`;
   txt += `=== DETAIL AKUN ===\n`;
-  if (user)  txt += `Username : ${user}\n`;
-  if (pass_) txt += `Password : ${pass_}\n`;
-  if (tipe)  txt += `Tipe     : ${tipe}\n`;
+  if (user)  txt += `Username      : ${user}\n`;
+  if (pass_) txt += `Password      : ${pass_}\n`;
+  if (extra) txt += `Info Tambahan : ${extra}\n`;
+  if (deskripsi) {
+    txt += `\n=== PANDUAN PENGGUNAAN ===\n`;
+    txt += deskripsi + '\n';
+  }
   txt += `\n⚠️ Simpan file ini. Jangan bagikan ke siapapun.`;
   const blob = new Blob([txt], {type:'text/plain'});
   const a = document.createElement('a');

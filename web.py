@@ -51,13 +51,44 @@ from db import (
     db_get_rekap_penjualan,
     db_add_audit_log, db_get_audit_log, db_get_daily_sales,
     web_set_force_password_change,
+    db_add_voucher, db_get_all_vouchers, db_use_voucher, db_delete_voucher, db_toggle_voucher,
+    web_session_create, web_session_list, web_session_update_seen,
+    web_session_deactivate, web_session_deactivate_all,
+    db_ticket_create, db_ticket_list, db_ticket_list_by_user,
+    db_ticket_reply, db_ticket_close, db_ticket_get,
+    web_ensure_referral_kode, web_get_user_by_referral_kode,
+    web_set_referral_by, db_referral_create, db_referral_list,
+    db_referral_pending_list, db_referral_approve, db_referral_reject,
+    db_is_first_purchase, web_set_dua_fa,
 )
 from qris_helper import generate_qr_with_amount
 
-BOT_TOKEN   = os.getenv("BOT_TOKEN", "")
-OWNER_ID    = int(os.getenv("OWNER_ID", "1160642744"))
-SECRET_KEY  = os.getenv("WEB_SECRET_KEY", "ibra-store-web-2024-xK9mPq")
-WEB_PORT    = int(os.getenv("WEB_PORT", "5000"))
+BOT_TOKEN    = os.getenv("BOT_TOKEN", "")
+OWNER_ID     = int(os.getenv("OWNER_ID", "1160642744"))
+_extra_admins = os.getenv("EXTRA_ADMIN_IDS", "")
+ADMIN_IDS    = [OWNER_ID] + [int(x) for x in _extra_admins.split(",") if x.strip().isdigit()]
+LOG_GROUP_ID = int(os.getenv("LOG_GROUP_ID", "0"))
+SECRET_KEY   = os.getenv("WEB_SECRET_KEY") or secrets.token_hex(32)
+WEB_PORT     = int(os.getenv("WEB_PORT", "5000"))
+
+_bot_username_cache: str = ""
+
+def _get_bot_username() -> str:
+    """Ambil username bot dari Telegram API (lazy, cached)."""
+    global _bot_username_cache
+    if _bot_username_cache:
+        return _bot_username_cache
+    if not BOT_TOKEN:
+        return ""
+    try:
+        r = httpx.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=5)
+        data = r.json()
+        if data.get("ok"):
+            _bot_username_cache = data["result"].get("username", "")
+    except Exception:
+        pass
+    return _bot_username_cache
+
 URL_MUTASI  = os.getenv("URL_MUTASI", "")
 QRIS_BASE64 = os.getenv("QRIS_BASE64", "")
 
@@ -67,6 +98,10 @@ RATE_LIMIT_WIN     = 3600      # 1 jam
 LOGIN_FAIL_MAX     = 5         # gagal login per window
 LOGIN_FAIL_WIN     = 900       # 15 menit
 SESSION_INACTIVITY = 1800      # 30 menit idle → logout otomatis
+QRIS_RATE_MAX      = 3         # maks QRIS per IP per 30 menit
+QRIS_RATE_WIN      = 1800      # 30 menit
+REG_RATE_MAX       = 5         # maks register per IP per jam
+REG_RATE_WIN       = 3600      # 1 jam
 
 # ─── IMAGE MAGIC BYTES ────────────────────────────────────────────────────────
 def _validate_image_magic(stream) -> bool:
@@ -99,6 +134,10 @@ _rate_data:     dict[str, list] = defaultdict(list)
 _rate_lock      = threading.Lock()
 _login_fail:    dict[str, list] = defaultdict(list)
 _login_fl_lock  = threading.Lock()
+_qris_ip_active: dict[str, float] = {}
+_qris_ip_lock   = threading.Lock()
+_rl_qris_data:  dict[str, list]  = defaultdict(list)
+_rl_reg_data:   dict[str, list]  = defaultdict(list)
 
 
 # ─── RATE LIMIT ───────────────────────────────────────────────────────────────
@@ -122,6 +161,33 @@ def _rl_remaining(ip: str) -> int:
     with _rate_lock:
         times = [t for t in _rate_data[ip] if now - t < RATE_LIMIT_WIN]
     return max(0, RATE_LIMIT_MAX - len(times))
+
+def _rl_allowed_bucket(ip: str, bucket: dict, max_n: int, win: int) -> bool:
+    """Generic rate limit untuk bucket tertentu (QRIS, register, dll)."""
+    now = time.time()
+    with _rate_lock:
+        times = [t for t in bucket[ip] if now - t < win]
+        if len(times) >= max_n:
+            bucket[ip] = times
+            return False
+        times.append(now)
+        bucket[ip] = times
+    return True
+
+def _qris_ip_claim(ip: str) -> bool:
+    """Klaim slot QRIS untuk IP. Return False jika sudah ada QRIS aktif dari IP ini."""
+    now = time.time()
+    with _qris_ip_lock:
+        ts = _qris_ip_active.get(ip, 0)
+        if now - ts < QRIS_EXPIRY_SEC:
+            return False
+        _qris_ip_active[ip] = now
+    return True
+
+def _qris_ip_release(ip: str):
+    """Lepas slot QRIS untuk IP."""
+    with _qris_ip_lock:
+        _qris_ip_active.pop(ip, None)
 
 
 # ─── BRUTE FORCE PROTECTION (login) ──────────────────────────────────────────
@@ -156,11 +222,44 @@ def _csrf_ok() -> bool:
     s = request.form.get("_csrf") or request.headers.get("X-CSRF-Token", "")
     return bool(t and s and secrets.compare_digest(t, s))
 
+def _safe_url(url: str) -> str:
+    """Blok href berbahaya (javascript:, data:, vbscript:, dll)."""
+    if not url:
+        return "#"
+    if url.strip().lower().startswith(("javascript:", "data:", "vbscript:", "file:")):
+        return "#"
+    return url
+
 app.jinja_env.globals["csrf_token"] = _csrf_token
 app.jinja_env.filters["fmt_waktu"]  = fmt_waktu
+app.jinja_env.filters["safe_url"]   = _safe_url
 
 
 # ─── MIDDLEWARE ────────────────────────────────────────────────────────────────
+
+@app.before_request
+def _csrf_middleware():
+    """CSRF global — validasi semua POST request kecuali route yang punya check sendiri."""
+    if request.method != "POST":
+        return
+    ep = request.endpoint or ""
+    # Route yang sudah punya _csrf_ok() check sendiri
+    _has_own = {
+        "register", "verify", "login", "admin_verify_otp_page",
+        "forgot_password", "reset_password", "profile",
+    }
+    if ep in _has_own:
+        return
+    # Route yang di-exempt: sendBeacon cancel (hanya hapus sesi sendiri, low risk)
+    _exempt = {"beli_cancel", "deposit_cancel", "static"}
+    if ep in _exempt or not ep:
+        return
+    if not _csrf_ok():
+        if request.headers.get("Accept", "").startswith("application/json") or request.is_json:
+            return jsonify({"error": "CSRF token tidak valid"}), 403
+        flash("Sesi tidak valid. Refresh halaman dan coba lagi.", "danger")
+        return redirect(request.referrer or url_for("index"))
+
 
 @app.before_request
 def _global_middleware():
@@ -278,96 +377,112 @@ BRAND_PRESETS: dict[str, dict] = {
         "dm_brand": "#a78bfa", "dm_dark": "#7c3aed", "dm_light": "#2d1d5e",
         "glow": "rgba(124,58,237,.13)", "glow_h": "rgba(124,58,237,.30)",
         "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
+        "dm_bg": "#120d1b", "dm_bg2": "#181026", "dm_border": "#321d57", "dm_input": "#211535", "dm_hover": "#281941",
     },
     "blue": {
         "brand": "#2563eb", "dark": "#1d4ed8", "light": "#dbeafe", "mid": "#60a5fa",
         "dm_brand": "#60a5fa", "dm_dark": "#2563eb", "dm_light": "#1e2a4a",
         "glow": "rgba(37,99,235,.13)", "glow_h": "rgba(37,99,235,.30)",
         "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
+        "dm_bg": "#080b11", "dm_bg2": "#0c111c", "dm_border": "#172646", "dm_input": "#0f1625", "dm_hover": "#131c30",
     },
     "green": {
         "brand": "#059669", "dark": "#047857", "light": "#d1fae5", "mid": "#34d399",
         "dm_brand": "#34d399", "dm_dark": "#059669", "dm_light": "#0d2e20",
         "glow": "rgba(5,150,105,.13)", "glow_h": "rgba(5,150,105,.30)",
         "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
+        "dm_bg": "#08110e", "dm_bg2": "#0c1c17", "dm_border": "#143d30", "dm_input": "#0e241d", "dm_hover": "#112c23",
     },
     "red": {
         "brand": "#dc2626", "dark": "#b91c1c", "light": "#fee2e2", "mid": "#f87171",
         "dm_brand": "#f87171", "dm_dark": "#dc2626", "dm_light": "#2d0a0a",
         "glow": "rgba(220,38,38,.13)", "glow_h": "rgba(220,38,38,.30)",
         "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
+        "dm_bg": "#110808", "dm_bg2": "#1c0c0c", "dm_border": "#3b1515", "dm_input": "#240e0e", "dm_hover": "#2b1111",
     },
     "orange": {
         "brand": "#ea580c", "dark": "#c2410c", "light": "#ffedd5", "mid": "#fb923c",
         "dm_brand": "#fb923c", "dm_dark": "#ea580c", "dm_light": "#2d1400",
         "glow": "rgba(234,88,12,.13)", "glow_h": "rgba(234,88,12,.30)",
         "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
+        "dm_bg": "#110b08", "dm_bg2": "#1c110c", "dm_border": "#3d2214", "dm_input": "#24160e", "dm_hover": "#2c1a11",
     },
     "pink": {
         "brand": "#db2777", "dark": "#be185d", "light": "#fce7f3", "mid": "#f472b6",
         "dm_brand": "#f472b6", "dm_dark": "#db2777", "dm_light": "#2d0a1e",
         "glow": "rgba(219,39,119,.13)", "glow_h": "rgba(219,39,119,.30)",
         "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
+        "dm_bg": "#11080c", "dm_bg2": "#1c0c13", "dm_border": "#3b1526", "dm_input": "#240e18", "dm_hover": "#2b111d",
     },
     "teal": {
         "brand": "#0d9488", "dark": "#0f766e", "light": "#ccfbf1", "mid": "#2dd4bf",
         "dm_brand": "#2dd4bf", "dm_dark": "#0d9488", "dm_light": "#0a2525",
         "glow": "rgba(13,148,136,.13)", "glow_h": "rgba(13,148,136,.30)",
         "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
+        "dm_bg": "#081110", "dm_bg2": "#0c1c1b", "dm_border": "#143d39", "dm_input": "#0e2422", "dm_hover": "#112c29",
     },
     "indigo": {
         "brand": "#4f46e5", "dark": "#4338ca", "light": "#e0e7ff", "mid": "#818cf8",
         "dm_brand": "#818cf8", "dm_dark": "#4f46e5", "dm_light": "#1a1a45",
         "glow": "rgba(79,70,229,.13)", "glow_h": "rgba(79,70,229,.30)",
         "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
+        "dm_bg": "#0f0e1d", "dm_bg2": "#131129", "dm_border": "#221e59", "dm_input": "#191738", "dm_hover": "#1c1a44",
     },
     "yellow": {
         "brand": "#ca8a04", "dark": "#a16207", "light": "#fef9c3", "mid": "#facc15",
         "dm_brand": "#facc15", "dm_dark": "#ca8a04", "dm_light": "#2a1e00",
         "glow": "rgba(202,138,4,.13)", "glow_h": "rgba(202,138,4,.30)",
         "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
+        "dm_bg": "#110e08", "dm_bg2": "#1c170c", "dm_border": "#3d3014", "dm_input": "#241d0e", "dm_hover": "#2c2311",
     },
     "cyan": {
         "brand": "#0891b2", "dark": "#0e7490", "light": "#cffafe", "mid": "#22d3ee",
         "dm_brand": "#22d3ee", "dm_dark": "#0891b2", "dm_light": "#062535",
         "glow": "rgba(8,145,178,.13)", "glow_h": "rgba(8,145,178,.30)",
         "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
+        "dm_bg": "#080f11", "dm_bg2": "#0c191c", "dm_border": "#14353d", "dm_input": "#0e2024", "dm_hover": "#11262c",
     },
     "rose": {
         "brand": "#e11d48", "dark": "#be123c", "light": "#ffe4e6", "mid": "#fb7185",
         "dm_brand": "#fb7185", "dm_dark": "#e11d48", "dm_light": "#2d0a14",
         "glow": "rgba(225,29,72,.13)", "glow_h": "rgba(225,29,72,.30)",
         "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
+        "dm_bg": "#11080a", "dm_bg2": "#1c0c0f", "dm_border": "#3d141d", "dm_input": "#240e13", "dm_hover": "#2c1117",
     },
     "amber": {
         "brand": "#d97706", "dark": "#b45309", "light": "#fef3c7", "mid": "#fbbf24",
         "dm_brand": "#fbbf24", "dm_dark": "#d97706", "dm_light": "#271900",
         "glow": "rgba(217,119,6,.13)", "glow_h": "rgba(217,119,6,.30)",
         "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
+        "dm_bg": "#110d08", "dm_bg2": "#1c140c", "dm_border": "#3d2a14", "dm_input": "#241a0e", "dm_hover": "#2c1f11",
     },
     "lime": {
         "brand": "#65a30d", "dark": "#4d7c0f", "light": "#ecfccb", "mid": "#a3e635",
         "dm_brand": "#a3e635", "dm_dark": "#65a30d", "dm_light": "#162007",
         "glow": "rgba(101,163,13,.13)", "glow_h": "rgba(101,163,13,.30)",
         "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
+        "dm_bg": "#0d1108", "dm_bg2": "#151c0c", "dm_border": "#2c3d14", "dm_input": "#1b240e", "dm_hover": "#202c11",
     },
     "sky": {
         "brand": "#0284c7", "dark": "#0369a1", "light": "#e0f2fe", "mid": "#38bdf8",
         "dm_brand": "#38bdf8", "dm_dark": "#0284c7", "dm_light": "#062030",
         "glow": "rgba(2,132,199,.13)", "glow_h": "rgba(2,132,199,.30)",
         "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
+        "dm_bg": "#080e11", "dm_bg2": "#0c171c", "dm_border": "#142f3d", "dm_input": "#0e1c24", "dm_hover": "#11222c",
     },
     "violet": {
         "brand": "#6d28d9", "dark": "#5b21b6", "light": "#ede9fe", "mid": "#8b5cf6",
         "dm_brand": "#8b5cf6", "dm_dark": "#6d28d9", "dm_light": "#2a1764",
         "glow": "rgba(109,40,217,.13)", "glow_h": "rgba(109,40,217,.30)",
         "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
+        "dm_bg": "#0b0811", "dm_bg2": "#120c1c", "dm_border": "#24163b", "dm_input": "#170e24", "dm_hover": "#1b112b",
     },
     "slate": {
         "brand": "#475569", "dark": "#334155", "light": "#f1f5f9", "mid": "#94a3b8",
         "dm_brand": "#94a3b8", "dm_dark": "#475569", "dm_light": "#1e2535",
         "glow": "rgba(71,85,105,.13)", "glow_h": "rgba(71,85,105,.30)",
         "brand_text": "#ffffff", "brand_navbar_text": "rgba(255,255,255,.9)",
+        "dm_bg": "#0b0c0e", "dm_bg2": "#121316", "dm_border": "#23272d", "dm_input": "#16181c", "dm_hover": "#1b1d22",
     },
 }
 
@@ -398,6 +513,12 @@ def hex_to_brand(hex_color: str) -> dict:
     brand_text        = "#111111" if luminance > 0.35 else "#ffffff"
     brand_navbar_text = "rgba(0,0,0,.80)" if luminance > 0.35 else "rgba(255,255,255,.90)"
 
+    dm_bg     = _hls(hue, max(0.05, lightness - 0.50), min(0.35, saturation * 0.55))
+    dm_bg2    = _hls(hue, max(0.08, lightness - 0.47), min(0.40, saturation * 0.60))
+    dm_border = _hls(hue, max(0.16, lightness - 0.35), min(0.50, saturation * 0.65))
+    dm_input  = _hls(hue, max(0.10, lightness - 0.43), min(0.42, saturation * 0.60))
+    dm_hover  = _hls(hue, max(0.12, lightness - 0.40), min(0.44, saturation * 0.60))
+
     return {
         "brand": hex_color, "dark": dark, "light": light, "mid": mid,
         "dm_brand": dm_brand, "dm_dark": dm_dark, "dm_light": dm_light,
@@ -405,6 +526,8 @@ def hex_to_brand(hex_color: str) -> dict:
         "glow_h": f"rgba({ri},{gi},{bi},.30)",
         "brand_text":        brand_text,
         "brand_navbar_text": brand_navbar_text,
+        "dm_bg": dm_bg, "dm_bg2": dm_bg2, "dm_border": dm_border,
+        "dm_input": dm_input, "dm_hover": dm_hover,
     }
 
 
@@ -559,6 +682,7 @@ def _ctx():
         "brand_name":    preset_name,
         "web_aktif":     cfg.get("web_aktif", True),
         "website_url":   _get_website_url(),
+        "bot_username":  _get_bot_username(),
     }
 
 
@@ -590,6 +714,9 @@ def register():
     if request.method == "POST":
         if not _csrf_ok():
             abort(403)
+        if not _rl_allowed_bucket(_ip(), _rl_reg_data, REG_RATE_MAX, REG_RATE_WIN):
+            flash("Terlalu banyak percobaan registrasi. Coba lagi dalam 1 jam.", "danger")
+            return redirect(url_for("register"))
         raw   = request.form.get("telegram_id","").strip()
         phone = request.form.get("phone","").strip() or None
         email = (request.form.get("email","").strip().lower()) or None
@@ -640,10 +767,12 @@ def register():
             )
             return redirect(url_for("register"))
 
-        session["reg_tid"]     = tid
-        session["reg_pw_hash"] = generate_password_hash(pw)
-        session["reg_phone"]   = phone
-        session["reg_email"]   = email
+        referral_kode_input = request.form.get("referral_kode","").strip().upper() or None
+        session["reg_tid"]          = tid
+        session["reg_pw_hash"]      = generate_password_hash(pw)
+        session["reg_phone"]        = phone
+        session["reg_email"]        = email
+        session["reg_referral_kode"] = referral_kode_input
         flash("OTP berhasil dikirim ke Telegram kamu!", "success")
         return redirect(url_for("verify"))
     return render_template("register.html")
@@ -663,15 +792,65 @@ def verify():
             for k in ("reg_tid","reg_pw_hash","reg_phone","reg_email"):
                 session.pop(k, None)
             return redirect(url_for("register"))
-        role  = "admin" if tid == OWNER_ID else "user"
+        role  = "admin" if tid in ADMIN_IDS else "user"
         phone = session.pop("reg_phone", None)
         email = session.pop("reg_email", None)
         web_create_user(tid, None, session.pop("reg_pw_hash"), role,
                         phone=phone, email=email)
+        # Generate kode referral untuk user baru
+        web_ensure_referral_kode(tid)
+        # Simpan referral_by jika ada kode referral
+        ref_kode = session.pop("reg_referral_kode", None)
+        if ref_kode:
+            referrer = web_get_user_by_referral_kode(ref_kode)
+            if referrer and int(referrer["telegram_id"]) != tid:
+                web_set_referral_by(tid, referrer["telegram_id"])
         session.pop("reg_tid", None)
         flash("Akun berhasil dibuat! Silakan login.", "success")
         return redirect(url_for("login"))
     return render_template("verify.html")
+
+
+def _do_user_login(tid: int, role: str, force_pw: bool = False):
+    """Helper: set sesi user + catat web_session ke DB."""
+    token = secrets.token_hex(24)
+    session["user_tid"]     = tid
+    session["user_role"]    = role
+    session["force_pw"]     = force_pw
+    session.permanent       = True
+    session["_last_active"] = time.time()
+    session["_web_token"]   = token
+    try:
+        ip = _ip()
+        ua = request.headers.get("User-Agent", "")[:200]
+        web_session_create(tid, token, ip, ua)
+    except Exception:
+        pass
+
+
+@app.route("/user/2fa", methods=["GET","POST"])
+def user_verify_otp_page():
+    """Halaman verifikasi OTP 2FA untuk user biasa."""
+    if "user_tid" in session:
+        return redirect(url_for("dashboard"))
+    if "user_2fa_tid" not in session:
+        flash("Silakan login terlebih dahulu.", "warning")
+        return redirect(url_for("login"))
+    if request.method == "POST":
+        if not _csrf_ok():
+            abort(403)
+        otp  = request.form.get("otp","").strip()
+        tid  = session["user_2fa_tid"]
+        if web_verify_otp(tid, otp):
+            role   = session.pop("user_2fa_role", "user")
+            fpw    = session.pop("user_2fa_fpw", False)
+            session.pop("user_2fa_tid", None)
+            _do_user_login(tid, role, fpw)
+            flash("✅ Verifikasi berhasil. Selamat datang!", "success")
+            return redirect(url_for("dashboard"))
+        flash("Kode OTP salah atau sudah kedaluwarsa.", "danger")
+        return redirect(url_for("user_verify_otp_page"))
+    return render_template("admin_2fa.html", for_user=True)
 
 
 @app.route("/login", methods=["GET","POST"])
@@ -695,7 +874,7 @@ def login():
         _login_clear(ip)
         tid  = user["telegram_id"]
         role = user["role"]
-        if tid == OWNER_ID and role != "admin":
+        if tid in ADMIN_IDS and role != "admin":
             web_update_role(tid, "admin")
             role = "admin"
         if role == "admin":
@@ -713,12 +892,27 @@ def login():
             session["admin_2fa_role"] = role
             flash("Kode OTP dikirim ke Telegram kamu. Masukkan untuk masuk ke Admin Panel.", "info")
             return redirect(url_for("admin_verify_otp_page"))
-        # User biasa
-        session["user_tid"]    = tid
-        session["user_role"]   = role
-        session["force_pw"]    = bool(user.get("force_password_change"))
-        session.permanent      = True
-        session["_last_active"] = time.time()
+        # User biasa — cek 2FA
+        if user.get("dua_fa_aktif"):
+            otp  = gen_otp()
+            exp  = (datetime.now() + timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
+            web_save_otp(tid, otp, exp)
+            toko = load_config().get("nama_toko", "Ibra Store")
+            ok   = send_telegram(
+                tid,
+                f"🔐 *Login — {toko}*\n\nKode OTP: `{otp}`\nBerlaku 10 menit.\n\n"
+                "Jangan bagikan ke siapapun!"
+            )
+            if not ok:
+                flash("Gagal mengirim OTP ke Telegram. Pastikan bot sudah pernah di-start.", "danger")
+                return redirect(url_for("login"))
+            session["user_2fa_tid"]  = tid
+            session["user_2fa_role"] = role
+            session["user_2fa_fpw"]  = bool(user.get("force_password_change"))
+            flash("Kode OTP dikirim ke Telegram kamu.", "info")
+            return redirect(url_for("user_verify_otp_page"))
+        # Login langsung (tanpa 2FA)
+        _do_user_login(tid, role, bool(user.get("force_password_change")))
         flash("Selamat datang kembali!", "success")
         return redirect(url_for("dashboard"))
     return render_template("login.html", prefill=request.args.get("id",""))
@@ -740,10 +934,7 @@ def admin_verify_otp_page():
         if web_verify_otp(tid, otp):
             role = session.pop("admin_2fa_role", "admin")
             session.pop("admin_2fa_tid", None)
-            session["user_tid"]     = tid
-            session["user_role"]    = role
-            session.permanent       = True
-            session["_last_active"] = time.time()
+            _do_user_login(tid, role, False)
             flash("✅ Verifikasi berhasil. Selamat datang, Admin!", "success")
             return redirect(url_for("admin"))
         flash("Kode OTP salah atau sudah kedaluwarsa.", "danger")
@@ -854,6 +1045,59 @@ def beli(pid):
     )
 
 
+def _log_group(text: str) -> None:
+    """Kirim log transaksi ke grup admin (LOG_GROUP_ID)."""
+    if LOG_GROUP_ID:
+        send_telegram(LOG_GROUP_ID, text)
+
+
+def _stok_alert_web(nama_produk: str, nama_tipe: str, sisa: int):
+    """Kirim notifikasi stok rendah ke semua admin via Telegram."""
+    msg = (
+        f"⚠️ *STOK RENDAH — {nama_produk}*\n"
+        f"📦 Tipe: {nama_tipe}\n"
+        f"Sisa stok: *{sisa}x* — segera restock!"
+    )
+    for admin_id in ADMIN_IDS:
+        send_telegram(admin_id, msg)
+    _log_group(msg)
+
+
+@app.route("/beli/voucher/check")
+def beli_voucher_check():
+    """AJAX: cek validitas voucher dan tampilkan nominal diskon."""
+    kode = request.args.get("kode","").strip().upper()
+    if not kode:
+        return jsonify({"valid": False, "pesan": "Kode kosong"})
+    cfg = load_config()
+    if not cfg.get("voucher_aktif", True):
+        return jsonify({"valid": False, "pesan": "Fitur voucher tidak aktif"})
+    from db import _get_conn, _lock
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT * FROM voucher WHERE kode=? AND aktif=1", (kode,)
+        ).fetchone()
+        conn.close()
+    if not row:
+        return jsonify({"valid": False, "pesan": "Kode tidak ditemukan atau tidak aktif"})
+    if row["used"] >= row["max_uses"]:
+        return jsonify({"valid": False, "pesan": "Kuota voucher sudah habis"})
+    uid = str(session.get("user_tid", ""))
+    if uid:
+        from db import _get_conn, _lock
+        with _lock:
+            conn = _get_conn()
+            already = conn.execute(
+                "SELECT 1 FROM voucher_log WHERE kode=? AND user_id=?", (kode, uid)
+            ).fetchone()
+            conn.close()
+        if already:
+            return jsonify({"valid": False, "pesan": "Voucher sudah pernah kamu gunakan"})
+    return jsonify({"valid": True, "nominal": row["nominal"],
+                    "pesan": f"Diskon Rp{row['nominal']:,}"})
+
+
 @app.route("/beli/<pid>/saldo", methods=["POST"])
 @login_required
 def beli_saldo(pid):
@@ -862,8 +1106,10 @@ def beli_saldo(pid):
         flash("Terlalu banyak pembelian. Coba lagi dalam 1 jam.", "danger")
         return redirect(url_for("beli", pid=pid))
 
-    tg_kirim = request.form.get("telegram_id","").strip()
-    form_tid = request.form.get("tid","").strip()
+    tg_kirim     = request.form.get("telegram_id","").strip()
+    form_tid     = request.form.get("tid","").strip()
+    voucher_kode = request.form.get("voucher_kode","").strip().upper()
+    is_first     = db_is_first_purchase(user_tid)
 
     with _purchase_lock, produk_lock():
         raw  = load_produk_raw()
@@ -871,7 +1117,6 @@ def beli_saldo(pid):
         if not prod:
             flash("Produk tidak ditemukan.", "danger")
             return redirect(url_for("index"))
-        # Cari tipe
         tipe_dict = prod.get("tipe", {})
         tid        = form_tid if form_tid in tipe_dict else (next(iter(tipe_dict), None))
         if not tid:
@@ -883,9 +1128,26 @@ def beli_saldo(pid):
             flash("Stok habis.", "danger")
             return redirect(url_for("beli", pid=pid))
         harga = tipe["harga"]
+
+        # Terapkan voucher
+        diskon = 0
+        if voucher_kode:
+            cfg_v = load_config()
+            if cfg_v.get("voucher_aktif", True):
+                v_result = db_use_voucher(voucher_kode, str(user_tid))
+                if isinstance(v_result, int):
+                    diskon = min(v_result, harga)
+                elif v_result == "used":
+                    flash("Voucher sudah pernah kamu gunakan.", "warning")
+                    return redirect(url_for("beli", pid=pid))
+                else:
+                    flash("Kode voucher tidak valid atau sudah habis.", "danger")
+                    return redirect(url_for("beli", pid=pid))
+
+        harga_bayar = max(0, harga - diskon)
         saldo = db_get_saldo(user_tid)
-        if saldo < harga:
-            flash(f"Saldo tidak cukup (Rp{saldo:,} < Rp{harga:,}). Top up dulu.", "danger")
+        if saldo < harga_bayar:
+            flash(f"Saldo tidak cukup (Rp{saldo:,} < Rp{harga_bayar:,}). Top up dulu.", "danger")
             return redirect(url_for("beli", pid=pid))
         akun = akun_list.pop(0)
         tipe["akun_list"] = akun_list
@@ -893,10 +1155,13 @@ def beli_saldo(pid):
         prod["tipe"][tid] = tipe
         raw[pid] = prod
         save_produk_raw(raw)
+        sisa_stok = len(akun_list)
 
     nama_tipe = tipe.get("nama", prod["nama"])
-    db_add_saldo(user_tid, -harga)
-    trx_id = db_add_riwayat(user_tid, "BELI", f"{prod['nama']} [{nama_tipe}] x1 (Web/Saldo)", harga)
+    db_add_saldo(user_tid, -harga_bayar)
+    ket_vc = f" [Voucher -{diskon:,}]" if diskon else ""
+    trx_id = db_add_riwayat(user_tid, "BELI",
+                             f"{prod['nama']} [{nama_tipe}] x1 (Web/Saldo){ket_vc}", harga_bayar)
 
     tg_sent = False
     if tg_kirim:
@@ -908,22 +1173,63 @@ def beli_saldo(pid):
                 f"📦 Tipe: {nama_tipe}\n"
                 f"👤 `{akun.get('username','')}`\n"
                 f"🔑 `{akun.get('password','')}`\n"
-                f"\n🔖 TRX: `{trx_id}`"
+                + (f"🏷 Diskon: Rp{diskon:,}\n" if diskon else "")
+                + f"\n🔖 TRX: `{trx_id}`"
             )
         except Exception:
             pass
 
-    item = {"nama": prod["nama"], "harga": harga, "tipe": nama_tipe}
+    # Log ke grup admin
+    _log_group(
+        f"🛒 *Pembelian (Web/Saldo)*\n"
+        f"👤 `{user_tid}`\n"
+        f"📦 {prod['nama']} [{nama_tipe}] x1\n"
+        f"💸 Rp{harga_bayar:,}" + (f" (diskon Rp{diskon:,})" if diskon else "") +
+        f"\n🔖 TRX: `{trx_id}`"
+    )
+
+    cfg_s = load_config()
+    # Stok alert
+    if cfg_s.get("stok_alert_aktif"):
+        stok_min = int(cfg_s.get("stok_alert_min", 2))
+        if 0 < sisa_stok <= stok_min:
+            _stok_alert_web(prod["nama"], nama_tipe, sisa_stok)
+
+    # Referral trigger
+    user_data = web_get_user_by_tid(user_tid)
+    if user_data and user_data.get("referral_by") and is_first and cfg_s.get("referral_aktif"):
+        referrer_tid = int(user_data["referral_by"])
+        bonus = int(cfg_s.get("referral_bonus", 5000))
+        if cfg_s.get("referral_konfirmasi", "otomatis") == "otomatis":
+            db_add_saldo(referrer_tid, bonus)
+            db_add_riwayat(referrer_tid, "REFERRAL", f"Bonus referral (user {user_tid})", bonus)
+            send_telegram(referrer_tid,
+                f"🎉 *Bonus Referral!*\nKamu mendapat *Rp{bonus:,}* karena teman kamu "
+                f"baru saja melakukan pembelian pertama!")
+        else:
+            lid = db_referral_create(referrer_tid, user_tid, bonus)
+            if lid:
+                send_telegram(referrer_tid,
+                    f"🎉 Ada bonus referral *Rp{bonus:,}* menunggu konfirmasi admin.")
+
+    deskripsi = tipe.get("deskripsi", "").strip()
+    item = {"nama": prod["nama"], "harga": harga, "harga_bayar": harga_bayar,
+            "diskon": diskon, "tipe": nama_tipe}
     return render_template(
         "beli_sukses.html", akun=akun, item=item,
         trx_id=trx_id, tg_sent=tg_sent, tg_kirim=tg_kirim, metode="Saldo",
+        deskripsi=deskripsi,
     )
 
 
 @app.route("/beli/<pid>/qris", methods=["POST"])
 def beli_qris(pid):
-    if not _rl_allowed(_ip()):
+    ip = _ip()
+    if not _rl_allowed(ip):
         flash("Terlalu banyak pembelian. Coba lagi dalam 1 jam.", "danger")
+        return redirect(url_for("beli", pid=pid))
+    if not _rl_allowed_bucket(ip, _rl_qris_data, QRIS_RATE_MAX, QRIS_RATE_WIN):
+        flash("Terlalu banyak percobaan QRIS. Coba lagi dalam 30 menit.", "danger")
         return redirect(url_for("beli", pid=pid))
     if not QRIS_BASE64:
         flash("QRIS belum dikonfigurasi.", "danger")
@@ -960,6 +1266,10 @@ def beli_qris(pid):
     if "user_tid" in session:
         buyer_uid = session["user_tid"]
     else:
+        # Guest: satu QRIS aktif per IP pada satu waktu
+        if not _qris_ip_claim(ip):
+            flash("Sudah ada pembayaran QRIS aktif dari jaringan ini. Selesaikan atau tunggu sampai expired.", "danger")
+            return redirect(url_for("beli", pid=pid))
         if "guest_uid" not in session:
             session["guest_uid"] = random.randint(10**13, 10**14 - 1)
         buyer_uid = session["guest_uid"]
@@ -1001,6 +1311,36 @@ def beli_waiting():
     elapsed = int(time.time()) - start
     remaining_sec = max(0, QRIS_EXPIRY_SEC - elapsed)
     return render_template("beli_qris.html", total=total, nama=nama, remaining_sec=remaining_sec)
+
+
+@app.route("/beli/cancel", methods=["POST"])
+def beli_cancel():
+    """Auto-cancel QRIS beli saat user meninggalkan halaman (JS sendBeacon). Stok dikembalikan."""
+    uid = session.get("bq_uid")
+    ip  = _ip()
+    if uid:
+        pending = db_get_pending_any_by_user(uid)
+        if pending and pending.get("metode") == "qris_beli_web":
+            reserved = pending.get("reserved_akun", [])
+            pid_r    = pending.get("produk_id")
+            tid_r    = session.get("bq_tid")
+            if reserved and pid_r and tid_r:
+                try:
+                    with _purchase_lock, produk_lock():
+                        raw  = load_produk_raw()
+                        prod = raw.get(pid_r)
+                        if prod and tid_r in prod.get("tipe", {}):
+                            prod["tipe"][tid_r]["akun_list"] = reserved + prod["tipe"][tid_r].get("akun_list", [])
+                            prod["tipe"][tid_r]["stok"]      = len(prod["tipe"][tid_r]["akun_list"])
+                            raw[pid_r] = prod
+                            save_produk_raw(raw)
+                except Exception:
+                    pass
+            db_remove_pending_any_by_user(uid)
+    _qris_ip_release(ip)
+    for k in ["bq_uid","bq_pid","bq_tid","bq_total","bq_nama","bq_harga","bq_tg","bq_start"]:
+        session.pop(k, None)
+    return "", 204
 
 
 @app.route("/beli/qr.png")
@@ -1088,12 +1428,31 @@ def api_beli_check():
         except Exception:
             pass
 
+    _log_group(
+        f"🛒 *Pembelian (Web/QRIS)*\n"
+        f"👤 `{session.get('user_tid','Guest')}`\n"
+        f"📦 {nama} x1\n"
+        f"💸 Rp{harga:,}\n"
+        f"🔖 TRX: `{trx_id}`"
+    )
+
+    # Ambil deskripsi tipe dari produk
+    _bq_desc = ""
+    try:
+        _raw_tmp = load_produk_raw()
+        _prod_tmp = _raw_tmp.get(pid, {})
+        _bq_tid   = session.get("bq_tid", "")
+        _bq_desc  = _prod_tmp.get("tipe", {}).get(_bq_tid, {}).get("deskripsi", "").strip()
+    except Exception:
+        pass
+
     session["bs_akun"]    = akun
     session["bs_trx"]     = trx_id
     session["bs_item"]    = {"nama": nama, "harga": harga}
     session["bs_tg_sent"] = tg_sent
     session["bs_tg"]      = tg_kirim
     session["bs_metode"]  = "QRIS"
+    session["bs_desc"]    = _bq_desc
 
     for k in ["bq_uid","bq_pid","bq_total","bq_nama","bq_harga","bq_tg","bq_start"]:
         session.pop(k, None)
@@ -1103,17 +1462,19 @@ def api_beli_check():
 
 @app.route("/beli/sukses")
 def beli_sukses():
-    akun    = session.pop("bs_akun", {})
-    trx_id  = session.pop("bs_trx", "-")
-    item    = session.pop("bs_item", {})
-    tg_sent = session.pop("bs_tg_sent", False)
-    tg_kirim= session.pop("bs_tg", "")
-    metode  = session.pop("bs_metode", "")
+    akun      = session.pop("bs_akun", {})
+    trx_id    = session.pop("bs_trx", "-")
+    item      = session.pop("bs_item", {})
+    tg_sent   = session.pop("bs_tg_sent", False)
+    tg_kirim  = session.pop("bs_tg", "")
+    metode    = session.pop("bs_metode", "")
+    deskripsi = session.pop("bs_desc", "")
     if not akun:
         return redirect(url_for("index"))
     return render_template(
         "beli_sukses.html", akun=akun, item=item,
         trx_id=trx_id, tg_sent=tg_sent, tg_kirim=tg_kirim, metode=metode,
+        deskripsi=deskripsi,
     )
 
 
@@ -1167,7 +1528,32 @@ def profile():
             web_update_profile(tid, phone=phone, email=email)
             flash("Profil berhasil diperbarui!", "success")
             return redirect(url_for("profile"))
-    return render_template("profile.html", user=user)
+        elif action == "toggle_2fa":
+            new_val = 1 if not user.get("dua_fa_aktif") else 0
+            web_set_dua_fa(tid, new_val)
+            flash(f"Verifikasi 2 Langkah {'diaktifkan' if new_val else 'dinonaktifkan'}.", "success")
+            return redirect(url_for("profile"))
+        elif action == "logout_session":
+            sid = request.form.get("session_id","")
+            try:
+                web_session_deactivate(int(sid), tid)
+                flash("Sesi berhasil diakhiri.", "success")
+            except Exception:
+                flash("Gagal mengakhiri sesi.", "danger")
+            return redirect(url_for("profile"))
+        elif action == "logout_all_sessions":
+            web_session_deactivate_all(tid, except_token=session.get("_web_token"))
+            flash("Semua sesi lain berhasil diakhiri.", "success")
+            return redirect(url_for("profile"))
+    user = web_get_user_by_tid(tid)
+    ref_kode  = web_ensure_referral_kode(tid)
+    sessions  = web_session_list(tid)
+    ref_list  = db_referral_list(tid)
+    my_tickets = db_ticket_list_by_user(tid)
+    return render_template("profile.html", user=user, ref_kode=ref_kode,
+                           sessions=sessions, ref_list=ref_list,
+                           my_tickets=my_tickets,
+                           cur_token=session.get("_web_token",""))
 
 
 @app.route("/dashboard")
@@ -1241,6 +1627,18 @@ def admin():
     stats       = db_get_all_statistik()
     bot_users   = db_get_all_bot_users()
     bot_uid_map = {str(u["telegram_id"]): u.get("username") for u in bot_users}
+    cfg = load_config()
+    from db import _get_conn, _lock
+    with _lock:
+        conn = _get_conn()
+        vouchers    = conn.execute("SELECT * FROM voucher ORDER BY rowid DESC").fetchall()
+        ref_pending = conn.execute(
+            "SELECT * FROM referral_log WHERE status='pending' ORDER BY id DESC"
+        ).fetchall()
+        tiket_list  = conn.execute(
+            "SELECT * FROM support_tickets ORDER BY id DESC LIMIT 100"
+        ).fetchall()
+        conn.close()
     return render_template(
         "admin.html",
         pending=pending, saldo_all=saldo_all, stats=stats,
@@ -1250,6 +1648,10 @@ def admin():
         rekap=db_get_rekap_penjualan(),
         daily_sales=db_get_daily_sales(30),
         audit_log=db_get_audit_log(100),
+        vouchers=vouchers,
+        ref_pending=ref_pending,
+        tiket_list=tiket_list,
+        cfg=cfg,
     )
 
 
@@ -1266,6 +1668,13 @@ def admin_confirm(uid):
     trx_id = db_add_riwayat(uid, "DEPOSIT", "Konfirmasi Admin (Web)", nominal)
     send_telegram(uid, f"✅ Deposit *Rp{nominal:,}* dikonfirmasi!\n🔖 TRX: `{trx_id}`")
     db_add_audit_log(session["user_tid"], "KONFIRMASI_DEPOSIT", str(uid), f"Rp{nominal:,} | TRX: {trx_id}")
+    _log_group(
+        f"💰 *Deposit Dikonfirmasi (Web)*\n"
+        f"👤 User: `{uid}`\n"
+        f"💵 Rp{nominal:,}\n"
+        f"🔖 TRX: `{trx_id}`\n"
+        f"👮 Admin: `{session['user_tid']}`"
+    )
     flash(f"✅ Rp{nominal:,} dikonfirmasi. TRX: {trx_id}", "success")
     return redirect(url_for("admin"))
 
@@ -1364,6 +1773,19 @@ def deposit_qris_waiting():
         total=total, nominal=nominal, kode_unik=kode_unik, remaining_sec=remaining_sec)
 
 
+@app.route("/deposit/cancel", methods=["POST"])
+def deposit_cancel():
+    """Auto-cancel QRIS deposit saat user meninggalkan halaman (JS sendBeacon)."""
+    uid = session.get("dq_uid")
+    if uid:
+        pending = db_get_pending_any_by_user(uid)
+        if pending and pending.get("metode") == "qris_deposit_web":
+            db_remove_pending_any_by_user(uid)
+    for k in ["dq_uid","dq_total","dq_nominal","dq_kode","dq_start"]:
+        session.pop(k, None)
+    return "", 204
+
+
 @app.route("/deposit/qris/qr.png")
 @login_required
 def deposit_qris_qr():
@@ -1408,6 +1830,12 @@ def api_deposit_check():
     for k in ["dq_uid","dq_total","dq_nominal","dq_kode","dq_start"]:
         session.pop(k, None)
     send_telegram(uid, f"✅ Deposit QRIS *Rp{nominal:,}* berhasil!\n🔖 TRX: `{trx_id}`")
+    _log_group(
+        f"💰 *Deposit QRIS Otomatis (Web)*\n"
+        f"👤 User: `{uid}`\n"
+        f"💵 Rp{nominal:,}\n"
+        f"🔖 TRX: `{trx_id}`"
+    )
     flash(f"✅ Deposit Rp{nominal:,} berhasil dikonfirmasi otomatis! TRX: {trx_id}", "success")
     return jsonify({"status": "success", "redirect": url_for("dashboard")})
 
@@ -1534,6 +1962,26 @@ def admin_produk_tipe_harga(pid, tid):
         raw[pid] = prod
         save_produk_raw(raw)
     flash(f"✅ Harga tipe diperbarui ke Rp{harga:,}.", "success")
+    return redirect(url_for("admin") + "#tab-produk")
+
+
+@app.route("/admin/produk/<pid>/tipe/<tid>/deskripsi", methods=["POST"])
+@admin_required
+def admin_produk_tipe_deskripsi(pid, tid):
+    """Update deskripsi tipe — mendukung teks panjang multi-baris."""
+    deskripsi = request.form.get("deskripsi", "").strip()
+    with _purchase_lock, produk_lock():
+        raw  = load_produk_raw()
+        prod = raw.get(pid)
+        if not prod or tid not in prod.get("tipe", {}):
+            flash("Tipe tidak ditemukan.", "danger")
+            return redirect(url_for("admin") + "#tab-produk")
+        prod["tipe"][tid]["deskripsi"] = deskripsi
+        raw[pid] = prod
+        save_produk_raw(raw)
+    nama_tipe = raw.get(pid, {}).get("tipe", {}).get(tid, {}).get("nama", tid)
+    msg = f"✅ Deskripsi tipe '{nama_tipe}' diperbarui." if deskripsi else f"✅ Deskripsi tipe '{nama_tipe}' dihapus."
+    flash(msg, "success")
     return redirect(url_for("admin") + "#tab-produk")
 
 
@@ -1777,9 +2225,23 @@ def admin_config_save():
     cfg["kontak_admin"] = kontak
     # Toggle Transfer Manual
     cfg["transfer_manual_aktif"] = request.form.get("transfer_manual_aktif") == "on"
-    # Toggle Web Aktif untuk user
-    cfg["web_aktif"]       = request.form.get("web_aktif") == "on"
-    cfg["maintenance_mode"] = request.form.get("maintenance_mode") == "on"
+    cfg["web_aktif"]             = request.form.get("web_aktif") == "on"
+    cfg["maintenance_mode"]      = request.form.get("maintenance_mode") == "on"
+    # Stok alert
+    cfg["stok_alert_aktif"] = request.form.get("stok_alert_aktif") == "on"
+    try:
+        cfg["stok_alert_min"] = max(1, int(request.form.get("stok_alert_min","2")))
+    except ValueError:
+        cfg["stok_alert_min"] = 2
+    # Voucher
+    cfg["voucher_aktif"] = request.form.get("voucher_aktif") == "on"
+    # Referral
+    cfg["referral_aktif"] = request.form.get("referral_aktif") == "on"
+    try:
+        cfg["referral_bonus"] = max(0, int(request.form.get("referral_bonus","5000").replace(".","")))
+    except ValueError:
+        cfg["referral_bonus"] = 5000
+    cfg["referral_konfirmasi"] = "manual" if request.form.get("referral_konfirmasi") == "manual" else "otomatis"
     # Brand color
     brand_color = request.form.get("brand_color", "").strip()
     custom_hex  = request.form.get("custom_hex",  "").strip()
@@ -1815,14 +2277,127 @@ def admin_saldo_atur():
         db_add_riwayat(uid, "KURANGI", "Dikurangi Admin (Web)", nominal)
         send_telegram(uid, f"⚠️ Saldo kamu dikurangi *Rp{nominal:,}* oleh admin.")
         db_add_audit_log(session["user_tid"], "KURANGI_SALDO", str(uid), f"Rp{nominal:,}")
+        _log_group(
+            f"➖ *Saldo Dikurangi (Web)*\n"
+            f"👤 User: `{uid}`\n"
+            f"💸 -Rp{nominal:,}\n"
+            f"👮 Admin: `{session['user_tid']}`"
+        )
         flash(f"✅ Saldo {uid} dikurangi Rp{nominal:,}.", "success")
     else:
         db_add_saldo(uid, nominal)
         trx_id = db_add_riwayat(uid, "DEPOSIT", "Tambah Saldo Manual (Admin)", nominal)
         send_telegram(uid, f"✅ Saldo kamu ditambah *Rp{nominal:,}* oleh admin.\n🔖 TRX: `{trx_id}`")
         db_add_audit_log(session["user_tid"], "TAMBAH_SALDO", str(uid), f"Rp{nominal:,} | TRX: {trx_id}")
+        _log_group(
+            f"💰 *Saldo Ditambah Manual (Web)*\n"
+            f"👤 User: `{uid}`\n"
+            f"💵 +Rp{nominal:,}\n"
+            f"🔖 TRX: `{trx_id}`\n"
+            f"👮 Admin: `{session['user_tid']}`"
+        )
         flash(f"✅ Saldo {uid} ditambah Rp{nominal:,}.", "success")
     return redirect(url_for("admin") + "#tab-saldo")
+
+
+# ─── ADMIN VOUCHER ────────────────────────────────────────────────────────────
+
+@app.route("/admin/voucher/tambah", methods=["POST"])
+@admin_required
+def admin_voucher_tambah():
+    kode     = request.form.get("kode","").strip().upper()
+    try:
+        nominal  = int(request.form.get("nominal","0").replace(".","").strip())
+        max_uses = int(request.form.get("max_uses","1").strip())
+    except ValueError:
+        flash("Nominal atau max_uses tidak valid.", "danger")
+        return redirect(url_for("admin") + "#tab-voucher")
+    if not kode or nominal <= 0:
+        flash("Kode dan nominal wajib diisi.", "danger")
+        return redirect(url_for("admin") + "#tab-voucher")
+    ok = db_add_voucher(kode, nominal, max_uses)
+    if ok:
+        db_add_audit_log(session["user_tid"], "TAMBAH_VOUCHER", kode, f"Rp{nominal:,} x{max_uses}")
+        flash(f"✅ Voucher {kode} (Rp{nominal:,}) berhasil ditambahkan.", "success")
+    else:
+        flash(f"Kode '{kode}' sudah ada.", "danger")
+    return redirect(url_for("admin") + "#tab-voucher")
+
+
+@app.route("/admin/voucher/hapus/<kode>", methods=["POST"])
+@admin_required
+def admin_voucher_hapus(kode):
+    db_delete_voucher(kode)
+    db_add_audit_log(session["user_tid"], "HAPUS_VOUCHER", kode)
+    flash(f"✅ Voucher {kode} dihapus.", "success")
+    return redirect(url_for("admin") + "#tab-voucher")
+
+
+@app.route("/admin/voucher/toggle/<kode>", methods=["POST"])
+@admin_required
+def admin_voucher_toggle(kode):
+    db_toggle_voucher(kode)
+    return redirect(url_for("admin") + "#tab-voucher")
+
+
+# ─── ADMIN REFERRAL ───────────────────────────────────────────────────────────
+
+@app.route("/admin/referral/approve/<int:log_id>", methods=["POST"])
+@admin_required
+def admin_referral_approve(log_id):
+    row = db_referral_approve(log_id)
+    if row:
+        db_add_saldo(row["referrer_tid"], row["bonus"])
+        db_add_riwayat(row["referrer_tid"], "REFERRAL",
+                       f"Bonus referral dikonfirmasi admin (user {row['referred_tid']})", row["bonus"])
+        send_telegram(row["referrer_tid"],
+            f"✅ Bonus referral *Rp{row['bonus']:,}* telah dikonfirmasi admin dan masuk ke saldo kamu!")
+        db_add_audit_log(session["user_tid"], "APPROVE_REFERRAL", str(log_id),
+                         f"Rp{row['bonus']:,} → {row['referrer_tid']}")
+        flash(f"✅ Referral #{log_id} disetujui.", "success")
+    else:
+        flash("Referral tidak ditemukan atau sudah diproses.", "danger")
+    return redirect(url_for("admin") + "#tab-referral")
+
+
+@app.route("/admin/referral/reject/<int:log_id>", methods=["POST"])
+@admin_required
+def admin_referral_reject(log_id):
+    db_referral_reject(log_id)
+    db_add_audit_log(session["user_tid"], "REJECT_REFERRAL", str(log_id))
+    flash(f"Referral #{log_id} ditolak.", "info")
+    return redirect(url_for("admin") + "#tab-referral")
+
+
+# ─── ADMIN TIKET ──────────────────────────────────────────────────────────────
+
+@app.route("/admin/tiket/reply/<int:ticket_id>", methods=["POST"])
+@admin_required
+def admin_tiket_reply(ticket_id):
+    reply = request.form.get("reply","").strip()
+    if not reply:
+        flash("Balasan tidak boleh kosong.", "danger")
+        return redirect(url_for("admin") + "#tab-tiket")
+    ticket = db_ticket_get(ticket_id)
+    if ticket:
+        db_ticket_reply(ticket_id, reply)
+        send_telegram(ticket["user_tid"],
+            f"💬 *Balasan Support Tiket #{ticket_id}*\n\n{reply}\n\n"
+            f"_Pesan kamu: {ticket['pesan'][:100]}..._")
+        db_add_audit_log(session["user_tid"], "REPLY_TIKET", str(ticket_id))
+        flash(f"✅ Balasan tiket #{ticket_id} terkirim.", "success")
+    else:
+        flash("Tiket tidak ditemukan.", "danger")
+    return redirect(url_for("admin") + "#tab-tiket")
+
+
+@app.route("/admin/tiket/tutup/<int:ticket_id>", methods=["POST"])
+@admin_required
+def admin_tiket_tutup(ticket_id):
+    db_ticket_close(ticket_id)
+    db_add_audit_log(session["user_tid"], "TUTUP_TIKET", str(ticket_id))
+    flash(f"Tiket #{ticket_id} ditutup.", "info")
+    return redirect(url_for("admin") + "#tab-tiket")
 
 
 @app.route("/admin/broadcast", methods=["POST"])
