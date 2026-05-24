@@ -279,12 +279,26 @@
     .nav-user-text { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     /* ── DARK MODE TABLE ── */
-    [data-theme="dark"] .table thead th { background: var(--input-bg); color: var(--text-muted); }
-    [data-theme="dark"] .table tbody tr { background: var(--bg2); color: var(--text); }
-    [data-theme="dark"] .table tbody tr:hover { background: var(--table-hover); }
-    [data-theme="dark"] .table td, [data-theme="dark"] .table th { border-color: var(--border); }
+    [data-theme="dark"] .table {
+      --bs-table-bg:           var(--bg2);
+      --bs-table-color:        var(--text);
+      --bs-table-hover-bg:     var(--table-hover);
+      --bs-table-hover-color:  var(--text);
+      --bs-table-striped-bg:   var(--input-bg);
+      --bs-table-striped-color:var(--text);
+      --bs-table-border-color: var(--border);
+      --bs-table-active-bg:    var(--table-hover);
+      --bs-table-active-color: var(--text);
+    }
+    [data-theme="dark"] .table thead th { background: var(--input-bg) !important; color: var(--text-muted) !important; }
+    [data-theme="dark"] .table tbody tr { background-color: var(--bg2) !important; color: var(--text) !important; }
+    [data-theme="dark"] .table tbody tr td,
+    [data-theme="dark"] .table tbody tr th { background-color: var(--bg2) !important; color: var(--text) !important; border-color: var(--border) !important; }
+    [data-theme="dark"] .table tbody tr:hover td,
+    [data-theme="dark"] .table tbody tr:hover th { background-color: var(--table-hover) !important; }
+    [data-theme="dark"] .table td, [data-theme="dark"] .table th { border-color: var(--border) !important; }
     [data-theme="dark"] .table-light, [data-theme="dark"] .table-light th { background: var(--input-bg) !important; color: var(--text-muted) !important; }
-    [data-theme="dark"] .table-hover tbody tr:hover td { background: var(--table-hover) !important; color: var(--text); }
+    [data-theme="dark"] .table-hover tbody tr:hover td { background: var(--table-hover) !important; color: var(--text) !important; }
 
     /* ── DARK MODE CARD/MODAL ── */
     [data-theme="dark"] .modal-content { background: var(--bg2) !important; color: var(--text); }

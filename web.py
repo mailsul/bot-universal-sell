@@ -174,6 +174,18 @@ def _rl_allowed_bucket(ip: str, bucket: dict, max_n: int, win: int) -> bool:
         bucket[ip] = times
     return True
 
+def _generate_kode_unik_web(nominal: int) -> int:
+    """Generate kode unik (1–999) yang tidak tabrakan dengan pending QRIS aktif."""
+    pending = db_get_all_pending()
+    used = {p.get("expected_amount", 0) for p in pending
+            if p.get("metode", "").startswith("qris")}
+    for _ in range(500):
+        code = random.randint(1, 999)
+        if (nominal + code) not in used:
+            return code
+    return random.randint(1, 999)
+
+
 def _qris_ip_claim(ip: str) -> bool:
     """Klaim slot QRIS untuk IP. Return False jika sudah ada QRIS aktif dari IP ini."""
     now = time.time()
@@ -1260,7 +1272,7 @@ def beli_qris(pid):
         save_produk_raw(raw)
 
     harga     = tipe["harga"]
-    kode_unik = random.randint(1, 999)
+    kode_unik = _generate_kode_unik_web(harga)
     total     = harga + kode_unik
 
     if "user_tid" in session:
@@ -1738,7 +1750,7 @@ def deposit_qris_init():
         flash("Nominal tidak valid.", "danger")
         return redirect(url_for("deposit"))
 
-    kode_unik = random.randint(1, 999)
+    kode_unik = _generate_kode_unik_web(nominal)
     total     = nominal + kode_unik
 
     db_remove_pending_any_by_user(tid)
