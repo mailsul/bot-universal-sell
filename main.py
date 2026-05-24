@@ -833,15 +833,33 @@ def _produk_emoji(nama: str) -> str:
     return "🛒"
 
 
+PRODUK_PER_PAGE = 4   # max produk per halaman agar tidak melebihi limit 4096 char
+
 async def handle_list_produk(update: Update, context: CallbackContext):
     query  = update.callback_query
     produk = load_produk()
+    items  = list(produk.items())
+    total  = len(items)
 
-    SEP = "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg = "🛒 *DAFTAR PRODUK*\n⚡ _Pilihan Produk Terbaik_ ⚡\n\n"
+    # Deteksi halaman dari callback_data
+    data = query.data if query else ""
+    page = 1
+    if data.startswith("list_produk_p"):
+        try:
+            page = int(data[len("list_produk_p"):])
+        except ValueError:
+            page = 1
+
+    total_pages = max(1, (total + PRODUK_PER_PAGE - 1) // PRODUK_PER_PAGE)
+    page        = max(1, min(page, total_pages))
+    start_idx   = (page - 1) * PRODUK_PER_PAGE
+    page_items  = items[start_idx: start_idx + PRODUK_PER_PAGE]
+
+    SEP = "━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg = f"🛒 *DAFTAR PRODUK* _(hal. {page}/{total_pages})_\n\n"
     btn_row, kb_rows = [], []
 
-    for nomor, (pid, item) in enumerate(produk.items(), start=1):
+    for nomor_global, (pid, item) in enumerate(page_items, start=start_idx + 1):
         tipe_dict  = item.get("tipe", {})
         total_stok = sum(len(t.get("akun_list",[])) for t in tipe_dict.values())
         min_harga  = min((t.get("harga",0) for t in tipe_dict.values()), default=0)
@@ -849,32 +867,40 @@ async def handle_list_produk(update: Update, context: CallbackContext):
         em = _produk_emoji(item["nama"])
 
         stok_icon = "🟢" if total_stok > LOW_STOCK_THRESHOLD else ("🟡" if total_stok > 0 else "🔴")
-        stok_str  = f"{stok_icon} {total_stok} Stok" if total_stok > 0 else "🔴 Habis"
+        stok_str  = f"{stok_icon} {total_stok}" if total_stok > 0 else "🔴 Habis"
         harga_str = f"Rp {min_harga:,}+" if tipe_count > 1 else f"Rp {min_harga:,}"
 
         msg += SEP
-        msg += f"{em} *[{nomor}] {item['nama']}*\n"
-        msg += f"💰 Harga: {harga_str}\n"
-        msg += f"📦 Status: {stok_str}\n"
+        msg += f"{em} *[{nomor_global}] {item['nama']}*\n"
+        msg += f"💰 {harga_str}  📦 {stok_str}\n"
 
         if tipe_count > 1:
             for t in tipe_dict.values():
                 stok_t = len(t.get("akun_list",[]))
                 ic = "🟢" if stok_t > 0 else "🔴"
-                msg += f"  {ic} {t['nama']}: Rp {t.get('harga',0):,} ({stok_t} unit)\n"
+                msg += f"  {ic} {t['nama']}: Rp {t.get('harga',0):,}\n"
 
-        # Tombol inline: hijau=ada stok, merah=habis
         btn_style = "success" if total_stok > 0 else "danger"
-        btn_row.append(_ikb(f"{nomor}", em, btn_style, callback_data=pid))
-        if len(btn_row) == 5:
+        btn_row.append(_ikb(f"{nomor_global}", em, btn_style, callback_data=pid))
+        if len(btn_row) == 4:
             kb_rows.append(btn_row)
             btn_row = []
 
     msg += SEP
-    msg += "\n🚀 *Silakan pilih nomor produk:*"
+    msg += f"\n🚀 *Pilih nomor — halaman {page} dari {total_pages}*"
 
     if btn_row:
         kb_rows.append(btn_row)
+
+    # Navigasi halaman
+    nav_row = []
+    if page > 1:
+        nav_row.append(_ikb("◀ Sebelumnya", "◀", "primary", callback_data=f"list_produk_p{page-1}"))
+    if page < total_pages:
+        nav_row.append(_ikb("Berikutnya ▶", "▶", "primary", callback_data=f"list_produk_p{page+1}"))
+    if nav_row:
+        kb_rows.append(nav_row)
+
     kb_rows.append([_ikb("🔥 Kembali ke Menu Utama", "🔥", "primary", callback_data="back_to_produk")])
 
     markup = InlineKeyboardMarkup(kb_rows)
@@ -1677,33 +1703,76 @@ async def handle_cek_mutasi(update: Update, context: CallbackContext):
 
 # ─── RIWAYAT USER ─────────────────────────────────────────────────────────────
 
-async def handle_riwayat_user(update: Update, context: CallbackContext):
-    """Tampilkan riwayat transaksi user (via button atau command /riwayat)."""
+async def _show_riwayat(update: Update, context: CallbackContext, filter_tipe: str = "semua"):
+    """Tampilkan riwayat transaksi user dengan filter."""
     if update.callback_query:
         user_id = update.callback_query.from_user.id
-        send_fn = lambda txt, kb: update.callback_query.edit_message_text(txt, reply_markup=kb, parse_mode="Markdown")
     else:
         user_id = update.effective_user.id
-        send_fn = lambda txt, kb: update.message.reply_text(txt, reply_markup=kb, parse_mode="Markdown")
 
-    data = db_get_riwayat(user_id, RIWAYAT_LIMIT)
+    semua  = db_get_riwayat(user_id, 50)
+
+    if filter_tipe == "beli":
+        data   = [r for r in semua if r["tipe"] in ("BELI", "BELI_QRIS")]
+        judul  = "🛒 *Riwayat Pembelian*"
+    elif filter_tipe == "deposit":
+        data   = [r for r in semua if "DEPOSIT" in r["tipe"] or r["tipe"] == "KURANGI"]
+        judul  = "💰 *Riwayat Deposit / Saldo*"
+    else:
+        data   = semua
+        judul  = "📜 *Riwayat Mutasi*"
+
+    data = data[:15]   # tampilkan max 15 item
 
     if not data:
-        text = "📜 *Riwayat Transaksi*\n\nBelum ada transaksi."
+        text = f"{judul}\n\n_Belum ada transaksi._"
     else:
-        text = f"📜 *Riwayat Transaksi* (last {len(data)})\n\n"
+        text = f"{judul} _(last {len(data)})_\n\n"
         for r in data:
-            icon  = "📥" if r["tipe"] == "DEPOSIT" else "🛒"
-            trx   = f"\n   🔖 `{r['trx_id']}`" if r.get("trx_id") else ""
-            text += f"{icon} `{r['tipe']}` — Rp{r['jumlah']:,}\n"
+            if "DEPOSIT" in r["tipe"]:
+                icon = "💰"
+            elif r["tipe"] == "KURANGI":
+                icon = "➖"
+            else:
+                icon = "🛒"
+            tipe_str = r["tipe"].replace("_", " ")
+            trx  = f"\n   🔖 `{r['trx_id']}`" if r.get("trx_id") else ""
+            text += f"{icon} *{tipe_str}* — Rp{r['jumlah']:,}\n"
             text += f"   _{r['keterangan']}_\n"
             text += f"   🕐 {r['waktu']}{trx}\n\n"
 
-    kb = InlineKeyboardMarkup([[_ikb("🔙 Kembali ke Menu", "🔙", "danger", callback_data="back_to_produk")]])
+    # Batas char Telegram
+    if len(text) > 3800:
+        text = text[:3750] + "\n\n_...dan lebih lagi_"
+
+    kb = InlineKeyboardMarkup([
+        [
+            _ikb("📋 Semua",     "📋", "primary" if filter_tipe == "semua" else None,    callback_data="riwayat_user"),
+            _ikb("🛒 Pembelian", "🛒", "success" if filter_tipe == "beli" else None,     callback_data="riwayat_beli"),
+            _ikb("💰 Deposit",   "💰", "primary" if filter_tipe == "deposit" else None,  callback_data="riwayat_deposit"),
+        ],
+        [_ikb("🔙 Kembali ke Menu", "🔙", "danger", callback_data="back_to_produk")],
+    ])
+
     if update.callback_query:
         await safe_edit(update.callback_query, context, text, reply_markup=kb)
     else:
         await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+
+
+async def handle_riwayat_user(update: Update, context: CallbackContext):
+    """Tampilkan riwayat transaksi user (via button atau command /riwayat)."""
+    await _show_riwayat(update, context, filter_tipe="semua")
+
+
+async def handle_riwayat_beli(update: Update, context: CallbackContext):
+    """Riwayat pembelian saja."""
+    await _show_riwayat(update, context, filter_tipe="beli")
+
+
+async def handle_riwayat_deposit(update: Update, context: CallbackContext):
+    """Riwayat deposit/saldo saja."""
+    await _show_riwayat(update, context, filter_tipe="deposit")
 
 
 async def cmd_riwayat(update: Update, context: CallbackContext):
@@ -2268,6 +2337,8 @@ CALLBACK_MAP = {
     "back":                   handle_back,
     "back_to_produk":         handle_back_to_produk,
     "riwayat_user":           handle_riwayat_user,
+    "riwayat_beli":           handle_riwayat_beli,
+    "riwayat_deposit":        handle_riwayat_deposit,
     "ignore":                 handle_ignore,
 }
 
@@ -2281,6 +2352,8 @@ async def button_callback(update: Update, context: CallbackContext):
     produk = load_produk()
     if data in produk:
         await handle_produk_detail(update, context)
+    elif data.startswith("list_produk_p"):
+        await handle_list_produk(update, context)
     elif data.startswith("tipe_"):
         await handle_tipe_select(update, context)
     elif data.startswith("deposit_"):
