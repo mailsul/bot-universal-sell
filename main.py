@@ -2109,19 +2109,27 @@ async def handle_admin_kelola_produk(update: Update, context: CallbackContext):
         await query.answer("⛔ Akses ditolak", show_alert=True)
         return
 
-    produk  = load_produk()
-    lines   = []
+    produk = load_produk()
+    lines  = []
     for pid, item in produk.items():
-        total_stok = sum(len(t.get("akun_list",[])) for t in item.get("tipe",{}).values())
+        tipe_dict  = item.get("tipe", {})
+        total_stok = sum(len(t.get("akun_list", [])) for t in tipe_dict.values())
         icon = "🟢" if total_stok > 0 else "🔴"
-        lines.append(f"  {icon} `{pid}` — {item['nama']} ({total_stok} stok)")
-    text    = f"*📦 KELOLA PRODUK*\n\n" + ("\n".join(lines) or "_Belum ada produk._")
+        lines.append(f"{icon} *{item['nama']}* (ID:`{pid}`) — total {total_stok} stok")
+        for tid, t in tipe_dict.items():
+            stok_t = len(t.get("akun_list", []))
+            harga_t = t.get("harga", 0)
+            lines.append(f"  ↳ {t['nama']}: {stok_t} stok | Rp{harga_t:,}")
+    text = f"*📦 KELOLA PRODUK*\n\n" + ("\n".join(lines) or "_Belum ada produk._")
     keyboard = [
-        [_ikb("➕ Tambah Produk",     "➕", "success", callback_data="admin_add_produk")],
-        [_ikb("📦 Restock",            "📦", "primary", callback_data="admin_restock_produk")],
-        [_ikb("📝 Deskripsi Tipe",     "📝", "primary", callback_data="admin_edit_tipe_desc")],
-        [_ikb("🗑 Hapus Produk",       "🗑", "danger",  callback_data="admin_hapus_produk")],
-        [_ikb("🔙 Kembali",            "🔙", "danger",  callback_data="admin_panel")],
+        [_ikb("➕ Tambah Produk",   "➕", "success", callback_data="admin_add_produk"),
+         _ikb("➕ Tambah Tipe",     "➕", "success", callback_data="admin_add_tipe")],
+        [_ikb("📦 Restock",          "📦", "primary", callback_data="admin_restock_produk"),
+         _ikb("💰 Ubah Harga",       "💰", "primary", callback_data="admin_ubah_harga_tipe")],
+        [_ikb("📝 Deskripsi Tipe",   "📝", "primary", callback_data="admin_edit_tipe_desc"),
+         _ikb("🗑 Hapus Tipe",       "🗑", "danger",  callback_data="admin_hapus_tipe")],
+        [_ikb("🗑 Hapus Produk",     "🗑", "danger",  callback_data="admin_hapus_produk")],
+        [_ikb("🔙 Kembali",          "🔙", "danger",  callback_data="admin_panel")],
     ]
     await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -2343,6 +2351,211 @@ async def handle_admin_hapus_produk(update: Update, context: CallbackContext):
     )
 
 
+# ─── ADMIN: TAMBAH TIPE ──────────────────────────────────────────────────────
+
+async def handle_admin_add_tipe(update: Update, context: CallbackContext):
+    """Pilih produk untuk ditambahkan tipe baru."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    produk = load_produk()
+    if not produk:
+        await query.answer("Belum ada produk!", show_alert=True)
+        return
+    kb = [[_ikb(f"{item['nama']} (ID:{pid})", "", "primary", callback_data=f"addtipe_sel_{pid}")]
+          for pid, item in produk.items()]
+    kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="admin_kelola_produk")])
+    await safe_edit(query, context, "➕ *Tambah Tipe*\n\nPilih produk:", reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def handle_addtipe_sel(update: Update, context: CallbackContext):
+    """Admin memilih produk untuk ditambahkan tipe baru."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    pid   = query.data.replace("addtipe_sel_", "")
+    produk = load_produk()
+    if pid not in produk:
+        await query.answer("Produk tidak ditemukan!", show_alert=True)
+        return
+    context.user_data["add_tipe_pid"]   = pid
+    context.user_data["admin_state"]    = "add_tipe_nama"
+    await query.message.delete()
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text=f"➕ *Tambah Tipe — {produk[pid]['nama']}*\n\nKetik *nama* tipe baru:",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
+    )
+
+
+# ─── ADMIN: UBAH HARGA TIPE ──────────────────────────────────────────────────
+
+async def handle_admin_ubah_harga_tipe(update: Update, context: CallbackContext):
+    """Pilih produk untuk ubah harga tipe."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    produk = load_produk()
+    if not produk:
+        await query.answer("Belum ada produk!", show_alert=True)
+        return
+    kb = [[_ikb(f"{item['nama']} (ID:{pid})", "", "primary", callback_data=f"uharga_sel_{pid}")]
+          for pid, item in produk.items()]
+    kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="admin_kelola_produk")])
+    await safe_edit(query, context, "💰 *Ubah Harga Tipe*\n\nPilih produk:", reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def handle_uharga_sel(update: Update, context: CallbackContext):
+    """Pilih tipe dari produk yang dipilih untuk ubah harga."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    pid   = query.data.replace("uharga_sel_", "")
+    produk = load_produk()
+    if pid not in produk:
+        await query.answer("Produk tidak ditemukan!", show_alert=True)
+        return
+    tipe_dict = produk[pid].get("tipe", {})
+    kb = []
+    for tid, t in tipe_dict.items():
+        kb.append([_ikb(f"{t['nama']} — Rp{t.get('harga',0):,}", "", "primary",
+                        callback_data=f"uharga_tid_{pid}_{tid}")])
+    kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="admin_ubah_harga_tipe")])
+    await safe_edit(query, context, f"💰 *{produk[pid]['nama']}*\n\nPilih tipe:", reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def handle_uharga_tid(update: Update, context: CallbackContext):
+    """Admin memilih tipe, minta input harga baru."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    parts = query.data.replace("uharga_tid_", "").split("_", 1)
+    if len(parts) != 2:
+        await query.answer("Data tidak valid", show_alert=True)
+        return
+    pid, tid = parts
+    produk = load_produk()
+    if pid not in produk or tid not in produk[pid].get("tipe", {}):
+        await query.answer("Tipe tidak ditemukan!", show_alert=True)
+        return
+    tipe_obj = produk[pid]["tipe"][tid]
+    context.user_data["ubah_harga_pid"]  = pid
+    context.user_data["ubah_harga_tid"]  = tid
+    context.user_data["admin_state"]     = "ubah_harga_input"
+    await query.message.delete()
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text=(
+            f"💰 *Ubah Harga — {produk[pid]['nama']} [{tipe_obj['nama']}]*\n\n"
+            f"Harga saat ini: *Rp{tipe_obj.get('harga', 0):,}*\n\n"
+            "Ketik harga baru (angka saja, contoh: `15000`):"
+        ),
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("❌ Batal")]], resize_keyboard=True)
+    )
+
+
+# ─── ADMIN: HAPUS TIPE ───────────────────────────────────────────────────────
+
+async def handle_admin_hapus_tipe(update: Update, context: CallbackContext):
+    """Pilih produk untuk hapus tipe."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    produk = load_produk()
+    if not produk:
+        await query.answer("Belum ada produk!", show_alert=True)
+        return
+    kb = [[_ikb(f"{item['nama']} (ID:{pid})", "", "danger", callback_data=f"htipe_sel_{pid}")]
+          for pid, item in produk.items()]
+    kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="admin_kelola_produk")])
+    await safe_edit(query, context, "🗑 *Hapus Tipe*\n\nPilih produk:", reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def handle_htipe_sel(update: Update, context: CallbackContext):
+    """Pilih tipe dari produk yang dipilih untuk dihapus."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    pid   = query.data.replace("htipe_sel_", "")
+    produk = load_produk()
+    if pid not in produk:
+        await query.answer("Produk tidak ditemukan!", show_alert=True)
+        return
+    tipe_dict = produk[pid].get("tipe", {})
+    if len(tipe_dict) <= 1:
+        await query.answer("⚠️ Produk hanya punya 1 tipe, tidak bisa dihapus!", show_alert=True)
+        return
+    kb = []
+    for tid, t in tipe_dict.items():
+        stok_t = len(t.get("akun_list", []))
+        kb.append([_ikb(f"🗑 {t['nama']} ({stok_t} stok)", "🗑", "danger",
+                        callback_data=f"htipe_tid_{pid}_{tid}")])
+    kb.append([_ikb("🔙 Kembali", "🔙", "danger", callback_data="admin_hapus_tipe")])
+    await safe_edit(query, context,
+        f"🗑 *{produk[pid]['nama']}*\n\n⚠️ Pilih tipe yang ingin dihapus (stok ikut terhapus):",
+        reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def handle_htipe_tid(update: Update, context: CallbackContext):
+    """Konfirmasi hapus tipe."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    parts = query.data.replace("htipe_tid_", "").split("_", 1)
+    if len(parts) != 2:
+        await query.answer("Data tidak valid", show_alert=True)
+        return
+    pid, tid = parts
+    produk = load_produk()
+    if pid not in produk or tid not in produk[pid].get("tipe", {}):
+        await query.answer("Tipe tidak ditemukan!", show_alert=True)
+        return
+    tipe_obj = produk[pid]["tipe"][tid]
+    stok_t   = len(tipe_obj.get("akun_list", []))
+    kb = InlineKeyboardMarkup([[
+        _ikb("✅ Ya, hapus", "✅", "danger",   callback_data=f"htipe_ok_{pid}_{tid}"),
+        _ikb("❌ Batal",     "❌", "primary",  callback_data="admin_hapus_tipe"),
+    ]])
+    await safe_edit(query, context,
+        f"🗑 *Konfirmasi Hapus Tipe*\n\n"
+        f"Produk : *{produk[pid]['nama']}*\n"
+        f"Tipe   : *{tipe_obj['nama']}*\n"
+        f"Stok   : *{stok_t} akun* (ikut dihapus!)\n\n"
+        "Yakin ingin menghapus tipe ini?",
+        reply_markup=kb)
+
+
+async def handle_htipe_ok(update: Update, context: CallbackContext):
+    """Eksekusi hapus tipe."""
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        await query.answer("⛔ Akses ditolak", show_alert=True)
+        return
+    parts = query.data.replace("htipe_ok_", "").split("_", 1)
+    if len(parts) != 2:
+        await query.answer("Data tidak valid", show_alert=True)
+        return
+    pid, tid = parts
+    produk = load_produk()
+    if pid not in produk or tid not in produk[pid].get("tipe", {}):
+        await query.answer("Tipe tidak ditemukan!", show_alert=True)
+        return
+    nama_tipe = produk[pid]["tipe"].pop(tid, {}).get("nama", tid)
+    save_produk(produk)
+    await query.answer(f"✅ Tipe '{nama_tipe}' dihapus!", show_alert=True)
+    await handle_admin_kelola_produk(update, context)
+
+
 # ─── ADMIN: PENGATURAN BOT ───────────────────────────────────────────────────
 
 async def handle_admin_settings(update: Update, context: CallbackContext):
@@ -2352,23 +2565,22 @@ async def handle_admin_settings(update: Update, context: CallbackContext):
         return
     cfg  = load_config()
     rek  = "\n".join(f"  • {r}" for r in cfg.get("rekening", []))
-    website_url = cfg.get("website_url", "") or "Belum diatur"
+    web_url = _get_website_url() or "Belum diatur"
     text = (
         f"⚙️ *PENGATURAN BOT*\n\n"
         f"🏪 *Nama Toko*: `{cfg['nama_toko']}`\n\n"
         f"🏦 *Rekening*:\n{rek}\n\n"
         f"📞 *Kontak Admin*: `{cfg['kontak_admin']}`\n\n"
-        f"🌐 *Website URL*: `{website_url}`"
+        f"🌐 *Website URL*: `{web_url}`"
     )
     qris_status = "✅ Aktif via env var" if QRIS_BASE64 else ("✅ Ada (gambar)" if os.path.exists(qris_file) else "❌ Belum diatur")
-    text += f"\n\n📷 *QRIS*: {qris_status}"
+    text += f"\n\n🔳 *QRIS*: {qris_status}"
     keyboard = [
-        [_ikb("✏️ Ubah Nama Toko",    "✏",  "primary", callback_data="admin_ubah_nama")],
-        [_ikb("🏦 Ubah Rekening",      "🏦", "primary", callback_data="admin_ubah_rekening")],
-        [_ikb("📞 Ubah Kontak Admin",  "📞", "primary", callback_data="admin_ubah_kontak")],
-        [_ikb("🌐 Ubah Website URL",   "🌐", "primary", callback_data="admin_ubah_website")],
-        [_ikb("📷 Upload Gambar QRIS", "📷", "success", callback_data="admin_upload_qris")],
-        [_ikb("🔙 Kembali",            "🔙", "danger",  callback_data="admin_panel")],
+        [_ikb("✏️ Ubah Nama Toko",   "✏",  "primary", callback_data="admin_ubah_nama")],
+        [_ikb("🏦 Ubah Rekening",     "🏦", "primary", callback_data="admin_ubah_rekening")],
+        [_ikb("📞 Ubah Kontak Admin", "📞", "primary", callback_data="admin_ubah_kontak")],
+        [_ikb("🌐 Ubah Website URL",  "🌐", "primary", callback_data="admin_ubah_website")],
+        [_ikb("🔙 Kembali",           "🔙", "danger",  callback_data="admin_panel")],
     ]
     await safe_edit(query, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -2773,6 +2985,9 @@ CALLBACK_MAP = {
     "file_txt_ya":            handle_file_txt_ya,
     "file_txt_tidak":         handle_file_txt_tidak,
     "admin_edit_tipe_desc":   handle_admin_edit_tipe_desc,
+    "admin_add_tipe":         handle_admin_add_tipe,
+    "admin_ubah_harga_tipe":  handle_admin_ubah_harga_tipe,
+    "admin_hapus_tipe":       handle_admin_hapus_tipe,
 }
 
 
@@ -2809,6 +3024,18 @@ async def button_callback(update: Update, context: CallbackContext):
         await handle_edesc_produk_sel(update, context)
     elif data.startswith("edesc_t_"):
         await handle_edesc_tipe_sel(update, context)
+    elif data.startswith("addtipe_sel_"):
+        await handle_addtipe_sel(update, context)
+    elif data.startswith("uharga_sel_"):
+        await handle_uharga_sel(update, context)
+    elif data.startswith("uharga_tid_"):
+        await handle_uharga_tid(update, context)
+    elif data.startswith("htipe_sel_"):
+        await handle_htipe_sel(update, context)
+    elif data.startswith("htipe_tid_"):
+        await handle_htipe_tid(update, context)
+    elif data.startswith("htipe_ok_"):
+        await handle_htipe_ok(update, context)
     elif data.startswith("dep_manual_") or data.startswith("dep_qris_"):
         await handle_dep_metode(update, context)
     elif data.startswith("qris_dep_"):
@@ -3096,6 +3323,125 @@ async def handle_text(update: Update, context: CallbackContext):
             label = f'"{new_desc}"' if new_desc else "_(dihapus)_"
             await update.message.reply_text(
                 f"✅ Deskripsi tipe *{produk[pid]['tipe'][tid]['nama']}* diperbarui: {label}",
+                parse_mode="Markdown",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await send_main_menu_safe(update, context)
+            return
+
+        if admin_state == "add_tipe_nama":
+            context.user_data["add_tipe_nama_val"] = text.strip()
+            context.user_data["admin_state"]        = "add_tipe_harga"
+            await update.message.reply_text(
+                f"✅ Nama tipe: *{text.strip()}*\n\nSekarang ketik *harga* (angka saja, contoh: `25000`):",
+                parse_mode="Markdown"
+            )
+            return
+
+        if admin_state == "add_tipe_harga":
+            try:
+                harga = int(text.strip().replace(".", "").replace(",", ""))
+                if harga <= 0:
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text("❌ Harga tidak valid. Masukkan angka positif:")
+                return
+            context.user_data["add_tipe_harga_val"] = harga
+            context.user_data["admin_state"]         = "add_tipe_akun"
+            await update.message.reply_text(
+                f"💰 Harga: Rp{harga:,}\n\n"
+                "Kirim daftar akun untuk tipe ini, satu per baris:\n"
+                "`username|password` atau `username|password|info tambahan`\n\n"
+                "Contoh:\n`user@gmail.com|Pass123`\n`user2@gmail.com|Pass456|Region ID`",
+                parse_mode="Markdown"
+            )
+            return
+
+        if admin_state == "add_tipe_akun":
+            pid       = context.user_data.get("add_tipe_pid")
+            nama_tipe = context.user_data.get("add_tipe_nama_val", "")
+            harga     = context.user_data.get("add_tipe_harga_val", 0)
+            for k in ["add_tipe_pid","add_tipe_nama_val","add_tipe_harga_val","admin_state"]:
+                context.user_data.pop(k, None)
+            produk = load_produk()
+            if not pid or pid not in produk:
+                await update.message.reply_text("❌ Sesi tidak valid. Mulai ulang.",
+                                                reply_markup=ReplyKeyboardRemove())
+                return
+            lines_in  = [l.strip() for l in text.strip().splitlines() if l.strip()]
+            akun_baru = []
+            errors    = []
+            for i, line in enumerate(lines_in, 1):
+                parts = [p.strip() for p in line.split("|", 2)]
+                if len(parts) >= 2 and parts[0] and parts[1]:
+                    akun = {"username": parts[0], "password": parts[1]}
+                    if len(parts) == 3 and parts[2]:
+                        akun["extra"] = parts[2]
+                    akun_baru.append(akun)
+                else:
+                    errors.append(f"Baris {i}: format salah")
+            if errors:
+                context.user_data["add_tipe_pid"]       = pid
+                context.user_data["add_tipe_nama_val"]  = nama_tipe
+                context.user_data["add_tipe_harga_val"] = harga
+                context.user_data["admin_state"]        = "add_tipe_akun"
+                await update.message.reply_text(
+                    "❌ Ada format yang salah:\n" + "\n".join(errors) + "\n\nKirim ulang akun:",
+                    parse_mode="Markdown"
+                )
+                return
+            # Generate tipe ID baru
+            tipe_ids = list(produk[pid].get("tipe", {}).keys())
+            new_tid  = f"t{len(tipe_ids)+1}" if tipe_ids else "t1"
+            # Pastikan unik
+            while new_tid in produk[pid].get("tipe", {}):
+                new_tid = f"t{int(new_tid[1:])+1}"
+            produk[pid].setdefault("tipe", {})[new_tid] = {
+                "nama":      nama_tipe,
+                "harga":     harga,
+                "akun_list": akun_baru,
+                "stok":      len(akun_baru),
+                "deskripsi": "",
+            }
+            save_produk(produk)
+            await update.message.reply_text(
+                f"✅ *Tipe baru berhasil ditambahkan!*\n\n"
+                f"Produk : *{produk[pid]['nama']}*\n"
+                f"Tipe   : *{nama_tipe}*\n"
+                f"Harga  : Rp{harga:,}\n"
+                f"Akun   : {len(akun_baru)} akun",
+                parse_mode="Markdown",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await send_main_menu_safe(update, context)
+            return
+
+        if admin_state == "ubah_harga_input":
+            pid = context.user_data.pop("ubah_harga_pid", None)
+            tid = context.user_data.pop("ubah_harga_tid", None)
+            context.user_data.pop("admin_state", None)
+            try:
+                harga_baru = int(text.strip().replace(".", "").replace(",", ""))
+                if harga_baru <= 0:
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text("❌ Harga tidak valid. Ulangi dari awal.",
+                                                reply_markup=ReplyKeyboardRemove())
+                return
+            produk = load_produk()
+            if not pid or not tid or pid not in produk or tid not in produk[pid].get("tipe", {}):
+                await update.message.reply_text("❌ Sesi tidak valid. Ulangi dari awal.",
+                                                reply_markup=ReplyKeyboardRemove())
+                return
+            harga_lama = produk[pid]["tipe"][tid].get("harga", 0)
+            produk[pid]["tipe"][tid]["harga"] = harga_baru
+            save_produk(produk)
+            await update.message.reply_text(
+                f"✅ *Harga diperbarui!*\n\n"
+                f"Produk : *{produk[pid]['nama']}*\n"
+                f"Tipe   : *{produk[pid]['tipe'][tid]['nama']}*\n"
+                f"Lama   : Rp{harga_lama:,}\n"
+                f"Baru   : Rp{harga_baru:,}",
                 parse_mode="Markdown",
                 reply_markup=ReplyKeyboardRemove()
             )
