@@ -1,0 +1,1 @@
+- [10-poin-fixes](ten-point-fixes.md) — semua 10 poin fix telah diimplementasi; lihat topic file untuk ringkasan tiap poin.
