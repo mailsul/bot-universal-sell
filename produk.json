@@ -19,33 +19,16 @@
       "t1": {
         "nama": "NETFLIX PRIVATE 1 BULAN",
         "harga": 1500,
-        "akun_list": [
-          {
-            "username": "test2",
-            "password": "dsad1a56",
-            "tipe": ""
-          }
-        ],
-        "stok": 1,
+        "akun_list": [],
+        "stok": 0,
         "deskripsi": ""
       },
       "t2": {
         "nama": "NETFLIX SHARING 1 BULAN",
         "harga": 5000,
         "deskripsi": "",
-        "akun_list": [
-          {
-            "username": "test3",
-            "password": "dsadas123",
-            "tipe": ""
-          },
-          {
-            "username": "test4",
-            "password": "dsadas123",
-            "tipe": ""
-          }
-        ],
-        "stok": 2
+        "akun_list": [],
+        "stok": 0
       }
     }
   },
@@ -74,14 +57,8 @@
       "t1": {
         "nama": "EXPRESS VPN 30 HARI",
         "harga": 30000,
-        "akun_list": [
-          {
-            "username": "vpnuser1@mail.com",
-            "password": "vpnpass",
-            "tipe": "30 Hari"
-          }
-        ],
-        "stok": 1,
+        "akun_list": [],
+        "stok": 0,
         "deskripsi": ""
       }
     }

@@ -138,6 +138,30 @@ _qris_ip_active: dict[str, float] = {}
 _qris_ip_lock   = threading.Lock()
 _rl_qris_data:  dict[str, list]  = defaultdict(list)
 _rl_reg_data:   dict[str, list]  = defaultdict(list)
+_web_cancel_log: dict[str, list] = defaultdict(list)
+_web_cancel_lock = threading.Lock()
+_WEB_CANCEL_LIMIT = 3
+_WEB_CANCEL_WIN   = 30 * 60  # 30 menit
+
+def _web_cancel_record(ip: str) -> bool:
+    """Catat QRIS cancel (guest/web). Return True jika IP sekarang di-block."""
+    now = time.time()
+    with _web_cancel_lock:
+        h = [t for t in _web_cancel_log[ip] if now - t < _WEB_CANCEL_WIN]
+        h.append(now)
+        _web_cancel_log[ip] = h
+        return len(h) >= _WEB_CANCEL_LIMIT
+
+def _web_cancel_blocked(ip: str) -> int:
+    """Sisa detik block untuk IP ini, atau 0."""
+    now = time.time()
+    with _web_cancel_lock:
+        h = [t for t in _web_cancel_log[ip] if now - t < _WEB_CANCEL_WIN]
+        _web_cancel_log[ip] = h
+        if len(h) < _WEB_CANCEL_LIMIT:
+            return 0
+        oldest = min(h)
+        return max(0, int(_WEB_CANCEL_WIN - (now - oldest)))
 
 
 # ─── RATE LIMIT ───────────────────────────────────────────────────────────────
@@ -590,6 +614,31 @@ def send_telegram(chat_id: int, text: str) -> bool:
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
             json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
             timeout=8,
+        )
+        return r.json().get("ok", False)
+    except Exception:
+        return False
+
+def send_telegram_pe(chat_id: int, text: str) -> bool:
+    """Kirim pesan Telegram dengan konversi premium emoji (entities)."""
+    if not BOT_TOKEN:
+        return False
+    try:
+        try:
+            from premium_emoji import build_http_entities
+            plain, entities = build_http_entities(text, "Markdown")
+        except Exception:
+            plain, entities = text, []
+        payload: dict = {"chat_id": chat_id}
+        if entities:
+            payload["text"]     = plain
+            payload["entities"] = entities
+        else:
+            payload["text"]       = text
+            payload["parse_mode"] = "Markdown"
+        r = httpx.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            json=payload, timeout=8
         )
         return r.json().get("ok", False)
     except Exception:
@@ -1179,30 +1228,37 @@ def beli_saldo(pid):
     tg_sent = False
     if tg_kirim:
         try:
+            waktu_beli = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
             akun_lines = ""
             for i, ak in enumerate(akun_list_beli, start=1):
                 akun_lines += f"\n{'─'*20}\n🔢 Akun {i}\n👤 `{ak.get('username','')}`\n🔑 `{ak.get('password','')}`"
                 if ak.get("extra"): akun_lines += f"\nℹ️ {ak['extra']}"
-            tg_sent = send_telegram(
-                int(tg_kirim),
-                f"✅ *Pembelian Berhasil!*\n\n"
-                f"🛍 *{prod['nama']}*\n"
-                f"📦 Tipe: {nama_tipe} x{jumlah}\n"
-                + (f"🏷 Diskon: Rp{diskon:,}\n" if diskon else "")
-                + f"💸 Total: Rp{harga_bayar:,}\n"
+            msg_beli = (
+                f"✅ *PEMBELIAN BERHASIL!*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📦 {prod['nama']} [{nama_tipe}] x{jumlah}\n"
+                f"💳 Metode: Web / Saldo\n"
+                + (f"🏷 Diskon Voucher: -Rp{diskon:,}\n" if diskon else "")
+                + f"💸 Total Dibayar: Rp{harga_bayar:,}\n"
+                f"🔖 ID Transaksi: `{trx_id}`\n"
+                f"📅 {waktu_beli}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━"
                 + akun_lines
-                + f"\n\n🔖 TRX: `{trx_id}`"
             )
+            tg_sent = send_telegram_pe(int(tg_kirim), msg_beli)
         except Exception:
             pass
 
     # Log ke grup admin
     _log_group(
-        f"🛒 *Pembelian (Web/Saldo)*\n"
-        f"👤 `{user_tid}`\n"
+        f"🛒 *PENJUALAN BARU*\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👤 User: `{user_tid}`\n"
         f"📦 {prod['nama']} [{nama_tipe}] x{jumlah}\n"
-        f"💸 Rp{harga_bayar:,}" + (f" (diskon Rp{diskon:,})" if diskon else "") +
-        f"\n🔖 TRX: `{trx_id}`"
+        f"💳 Metode: Web / Saldo\n"
+        f"💸 Total: Rp{harga_bayar:,}"
+        + (f" (Voucher -Rp{diskon:,})" if diskon else "")
+        + f"\n🔖 TRX: `{trx_id}`"
     )
 
     cfg_s = load_config()
@@ -1247,6 +1303,11 @@ def beli_qris(pid):
         return redirect(url_for("beli", pid=pid))
     if not _rl_allowed_bucket(ip, _rl_qris_data, QRIS_RATE_MAX, QRIS_RATE_WIN):
         flash("Terlalu banyak percobaan QRIS. Coba lagi dalam 30 menit.", "danger")
+        return redirect(url_for("beli", pid=pid))
+    sisa_blok_web = _web_cancel_blocked(ip)
+    if sisa_blok_web > 0:
+        menit_web = (sisa_blok_web + 59) // 60
+        flash(f"Terlalu sering membatalkan QRIS. Coba lagi dalam ±{menit_web} menit.", "danger")
         return redirect(url_for("beli", pid=pid))
     if not QRIS_BASE64:
         flash("QRIS belum dikonfigurasi.", "danger")
@@ -1371,6 +1432,7 @@ def beli_cancel():
                 except Exception:
                     pass
             db_remove_pending_any_by_user(uid)
+    _web_cancel_record(ip)
     _qris_ip_release(ip)
     for k in ["bq_uid","bq_pid","bq_tid","bq_total","bq_nama","bq_harga","bq_tg","bq_start"]:
         session.pop(k, None)
@@ -1459,28 +1521,36 @@ def api_beli_check():
     tg_sent = False
     if tg_kirim:
         try:
+            waktu_qris = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
             akun_lines = ""
             for i, ak in enumerate(akun_list_r, start=1):
                 akun_lines += f"\n{'─'*20}\n🔢 Akun {i}\n👤 `{ak.get('username','')}`\n🔑 `{ak.get('password','')}`"
                 if ak.get("extra"): akun_lines += f"\nℹ️ {ak['extra']}"
-            tg_sent = send_telegram(
-                int(tg_kirim),
-                f"✅ *Pembelian Berhasil! (QRIS)*\n\n"
-                f"🛍 *{nama}* x{jumlah_s}\n"
-                + (f"🏷 Diskon: Rp{diskon_p:,}\n" if diskon_p else "")
-                + f"💸 Total: Rp{nominal_p:,}\n"
+            msg_beli = (
+                f"✅ *PEMBELIAN BERHASIL!*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📦 {nama} x{jumlah_s}\n"
+                f"💳 Metode: Web / QRIS\n"
+                + (f"🏷 Diskon Voucher: -Rp{diskon_p:,}\n" if diskon_p else "")
+                + f"💸 Total Dibayar: Rp{nominal_p:,}\n"
+                f"🔖 ID Transaksi: `{trx_id}`\n"
+                f"📅 {waktu_qris}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━"
                 + akun_lines
-                + f"\n\n🔖 TRX: `{trx_id}`"
             )
+            tg_sent = send_telegram_pe(int(tg_kirim), msg_beli)
         except Exception:
             pass
 
     _log_group(
-        f"🛒 *Pembelian (Web/QRIS)*\n"
-        f"👤 `{session.get('user_tid','Guest')}`\n"
+        f"🛒 *PENJUALAN BARU*\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👤 User: `{session.get('user_tid','Guest')}`\n"
         f"📦 {nama} x{jumlah_s}\n"
-        f"💸 Rp{nominal_p:,}" + (f" (diskon Rp{diskon_p:,})" if diskon_p else "") +
-        f"\n🔖 TRX: `{trx_id}`"
+        f"💳 Metode: Web / QRIS\n"
+        f"💸 Total: Rp{nominal_p:,}"
+        + (f" (Voucher -Rp{diskon_p:,})" if diskon_p else "")
+        + f"\n🔖 TRX: `{trx_id}`"
     )
 
     # Ambil deskripsi tipe dari produk

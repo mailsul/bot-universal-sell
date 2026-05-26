@@ -900,35 +900,45 @@ def db_use_voucher(kode: str, user_id: str) -> str | int:
       - "invalid"       → kode tidak ada / tidak aktif / sudah habis
       - "used"          → user ini sudah pernah pakai kode ini
     """
+    import logging as _log_vc
     kode = kode.upper().strip()
     with _lock:
         conn = _get_conn()
-        row = conn.execute(
-            "SELECT * FROM voucher WHERE kode=? AND aktif=1", (kode,)
-        ).fetchone()
-        if not row:
-            conn.close()
+        try:
+            row = conn.execute(
+                "SELECT * FROM voucher WHERE kode=? AND aktif=1", (kode,)
+            ).fetchone()
+            if not row:
+                return "invalid"
+            if row["used"] >= row["max_uses"]:
+                return "invalid"
+            # Cek apakah user sudah pernah pakai
+            already = conn.execute(
+                "SELECT id FROM voucher_log WHERE kode=? AND user_id=?", (kode, str(user_id))
+            ).fetchone()
+            if already:
+                return "used"
+            # Tandai pakai
+            conn.execute("UPDATE voucher SET used=used+1 WHERE kode=?", (kode,))
+            conn.execute(
+                "INSERT INTO voucher_log (kode, user_id, waktu) VALUES (?,?,?)",
+                (kode, str(user_id), datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
+            )
+            conn.commit()
+            nominal = int(row["nominal"])
+            _log_vc.getLogger(__name__).info(
+                f"✅ Voucher '{kode}' digunakan oleh user {user_id}, nominal Rp{nominal:,}"
+            )
+            return nominal
+        except Exception as e:
+            _log_vc.getLogger(__name__).error(f"❌ db_use_voucher error: {e}", exc_info=True)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             return "invalid"
-        if row["used"] >= row["max_uses"]:
+        finally:
             conn.close()
-            return "invalid"
-        # Cek apakah user sudah pernah pakai
-        already = conn.execute(
-            "SELECT id FROM voucher_log WHERE kode=? AND user_id=?", (kode, str(user_id))
-        ).fetchone()
-        if already:
-            conn.close()
-            return "used"
-        # Tandai pakai
-        conn.execute("UPDATE voucher SET used=used+1 WHERE kode=?", (kode,))
-        conn.execute(
-            "INSERT INTO voucher_log (kode, user_id, waktu) VALUES (?,?,?)",
-            (kode, str(user_id), datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
-        )
-        conn.commit()
-        nominal = int(row["nominal"])
-        conn.close()
-    return nominal
 
 
 def db_delete_voucher(kode: str) -> bool:

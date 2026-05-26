@@ -220,6 +220,33 @@ ANTI_SPAM_INTERVAL = 1.5          # detik minimum antar klik tombol (anti-spam)
 _ANTI_SPAM: dict   = {}           # {user_id: monotonic_time} throttle state
 _pending_file_offers: dict = {}   # {user_id: {file_path, item_name, msg_id, chat_id, job_name}}
 
+# ─── RATE LIMIT: CANCEL / TIDAK BAYAR QRIS ────────────────────────────────────
+import threading as _threading
+_bot_cancel_log:  dict = {}
+_bot_cancel_lock  = _threading.Lock()
+_BOT_CANCEL_LIMIT = 5
+_BOT_CANCEL_WIN   = 30 * 60  # 30 menit
+
+def _bot_cancel_record(uid: int) -> bool:
+    """Catat pembatalan QRIS. Kembalikan True jika user sekarang di-block."""
+    now = time.time()
+    with _bot_cancel_lock:
+        h = [t for t in _bot_cancel_log.get(uid, []) if now - t < _BOT_CANCEL_WIN]
+        h.append(now)
+        _bot_cancel_log[uid] = h
+        return len(h) >= _BOT_CANCEL_LIMIT
+
+def _bot_cancel_blocked(uid: int) -> int:
+    """Kembalikan sisa detik block, atau 0 jika tidak di-block."""
+    now = time.time()
+    with _bot_cancel_lock:
+        h = [t for t in _bot_cancel_log.get(uid, []) if now - t < _BOT_CANCEL_WIN]
+        _bot_cancel_log[uid] = h
+        if len(h) < _BOT_CANCEL_LIMIT:
+            return 0
+        oldest = min(h)
+        return max(0, int(_BOT_CANCEL_WIN - (now - oldest)))
+
 
 # ─── HELPER: CONFIG ──────────────────────────────────────────────────────────
 
@@ -492,6 +519,7 @@ async def proses_mutasi(app: Application):
 
         log.info(f"⏰ Pending QRIS user {p['user_id']} kedaluwarsa, dihapus.")
         expired_ids.append(p["id"])
+        _bot_cancel_record(int(p["user_id"]))
 
         # Kembalikan stok yang direservasi
         reserved_akun = p.get("reserved_akun", [])
@@ -619,10 +647,12 @@ async def proses_mutasi(app: Application):
                 pass
             await _notify_group(
                 app.bot,
-                f"💰 *Deposit QRIS Otomatis (Bot)*\n"
-                f"👤 `{uid}`\n"
-                f"💵 Rp{nominal:,}\n"
-                f"🔖 `{trx_id}`"
+                f"💰 *DEPOSIT MASUK*\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"👤 User: `{uid}`\n"
+                f"💵 Nominal: Rp{nominal:,}\n"
+                f"💳 Metode: QRIS Otomatis\n"
+                f"🔖 TRX: `{trx_id}`"
             )
 
         elif metode == "qris_beli":
@@ -717,13 +747,17 @@ async def proses_mutasi(app: Application):
 
             # Teks detail akun
             waktu_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+            vc_disc   = p.get("diskon_vc", 0)
             text_akun = (
-                f"✅ *Pembelian QRIS Berhasil!*\n\n"
+                f"✅ *PEMBELIAN BERHASIL!*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📦 {item['nama']}{nama_tipe_str} x{jumlah}\n"
-                f"💸 Dibayar: Rp{nominal:,}\n"
+                f"💳 Metode: QRIS\n"
+                + (f"🏷 Diskon Voucher: -Rp{vc_disc:,}\n" if vc_disc else "")
+                + f"💸 Total Dibayar: Rp{nominal:,}\n"
                 f"🔖 ID Transaksi: `{trx_id}`\n"
                 f"📅 {waktu_str}\n"
-                f"─────────────────────\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
             )
             for i, akun in enumerate(akun_terpakai, start=1):
                 text_akun += _fmt_akun(akun, i, markup=True)
@@ -731,8 +765,21 @@ async def proses_mutasi(app: Application):
                 text_akun += f"\n📋 *Catatan:*\n{tipe_desc}\n"
 
             try:
-                await _send_pe(app.bot, p["user_id"], text_akun,
-                               reply_markup=ReplyKeyboardRemove())
+                plain_q, ents_q = _pe(text_akun, "Markdown")
+                if ents_q:
+                    sent_q = await app.bot.send_message(
+                        chat_id=p["user_id"], text=plain_q, entities=ents_q,
+                        reply_markup=ReplyKeyboardRemove())
+                else:
+                    sent_q = await app.bot.send_message(
+                        chat_id=p["user_id"], text=text_akun, parse_mode="Markdown",
+                        reply_markup=ReplyKeyboardRemove())
+                try:
+                    await app.bot.pin_chat_message(
+                        chat_id=p["user_id"], message_id=sent_q.message_id,
+                        disable_notification=True)
+                except Exception:
+                    pass
                 # Tawarkan file .txt (opsional)
                 if file_path and os.path.exists(file_path):
                     await _send_file_offer(app.bot, p["user_id"], file_path,
@@ -742,26 +789,30 @@ async def proses_mutasi(app: Application):
 
             await _notify_group(
                 app.bot,
-                f"🛒 *Pembelian QRIS Otomatis (Bot)*\n"
-                f"👤 `{uid}`\n"
+                f"🛒 *PENJUALAN BARU*\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"👤 User: `{uid}`\n"
                 f"📦 {item['nama']}{nama_tipe_str} x{jumlah}\n"
-                f"💸 Rp{nominal:,}\n"
-                f"🔖 `{trx_id}`"
+                f"💳 Metode: QRIS\n"
+                f"💸 Total: Rp{nominal:,}\n"
+                f"🔖 TRX: `{trx_id}`"
             )
 
             # Notif stok rendah — hanya jika tipe_id_p valid DAN stok > 0 (bukan habis)
             if item and tipe_id_p and tipe_id_p in item.get("tipe", {}):
                 sisa_tipe_stok = len(item["tipe"][tipe_id_p].get("akun_list", []))
                 if 0 < sisa_tipe_stok <= LOW_STOCK_THRESHOLD:
+                    alert_stok_q = (
+                        f"⚠️ *STOK RENDAH — Segera Restock!*\n"
+                        f"📦 {item['nama']}{nama_tipe_str}\n"
+                        f"Sisa stok: *{sisa_tipe_stok}x*"
+                    )
                     for admin_id in ADMIN_IDS:
                         try:
-                            await app.bot.send_message(
-                                chat_id=admin_id,
-                                text=f"⚠️ *Stok Rendah*\n{item['nama']}{nama_tipe_str} sisa {sisa_tipe_stok}x",
-                                parse_mode="Markdown"
-                            )
+                            await _send_pe(app.bot, admin_id, alert_stok_q)
                         except Exception:
                             pass
+                    await _notify_group(app.bot, alert_stok_q)
 
 
 async def mutasi_loop(app: Application):
@@ -1265,7 +1316,10 @@ async def handle_produk_detail(update: Update, context: CallbackContext):
         await query.answer("❌ Produk habis atau tidak tersedia", show_alert=True)
         return
 
-    await query.message.delete()
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
     await _send_produk_with_tipe(context.bot, query.from_user.id, pid, item, context)
 
 
@@ -1519,14 +1573,16 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
     # Teks detail akun
     waktu_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     text_akun = (
-        f"✅ *Pembelian Berhasil!*\n\n"
+        f"✅ *PEMBELIAN BERHASIL!*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📦 {item['nama']} [{nama_tipe}] x{jumlah}\n"
-        + (f"🏷 Diskon Voucher: -Rp{diskon_vc:,}\n" if diskon_vc else "") +
-        f"💸 Dipotong: Rp{total:,}\n"
-        f"💰 Sisa saldo: Rp{new_saldo:,}\n"
+        f"💳 Metode: Saldo\n"
+        + (f"🏷 Diskon Voucher: -Rp{diskon_vc:,}\n" if diskon_vc else "")
+        + f"💸 Total Dibayar: Rp{total:,}\n"
+        f"💰 Sisa Saldo: Rp{new_saldo:,}\n"
         f"🔖 ID Transaksi: `{trx_id}`\n"
         f"📅 {waktu_str}\n"
-        f"─────────────────────\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
     )
     for i, akun in enumerate(akun_terpakai, start=1):
         text_akun += _fmt_akun(akun, i, markup=True)
@@ -1555,10 +1611,14 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
     # Log ke grup admin
     await _notify_group(
         context.bot,
-        f"🛒 *Penjualan Baru*\n"
-        f"👤 @{query.from_user.username or '-'} (`{query.from_user.id}`)\n"
+        f"🛒 *PENJUALAN BARU*\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👤 User: @{query.from_user.username or '-'} (`{query.from_user.id}`)\n"
         f"📦 {item['nama']} [{nama_tipe}] x{jumlah}\n"
-        f"💸 Rp{total:,} | Sisa saldo: Rp{new_saldo:,}"
+        f"💳 Metode: Saldo\n"
+        f"💸 Total: Rp{total:,}\n"
+        f"💰 Sisa Saldo: Rp{new_saldo:,}\n"
+        f"🔖 TRX: `{trx_id}`"
     )
 
     sisa_stok = len(tipe_now.get("akun_list", []))
@@ -1573,6 +1633,7 @@ async def _proses_beli_saldo(query, context, info, item, tipe_obj, jumlah, total
                 await _send_pe(context.bot, admin_id, alert_stok)
             except Exception:
                 pass
+        await _notify_group(context.bot, alert_stok)
 
     context.user_data.pop("konfirmasi", None)
 
@@ -1721,7 +1782,23 @@ async def handle_file_txt_tidak(update: Update, context: CallbackContext):
 # ─── DEPOSIT ─────────────────────────────────────────────────────────────────
 
 async def handle_deposit(update: Update, context: CallbackContext):
-    query         = update.callback_query
+    query = update.callback_query
+
+    # Cek rate limit pembatalan QRIS
+    sisa_blok = _bot_cancel_blocked(query.from_user.id)
+    if sisa_blok > 0:
+        menit = (sisa_blok + 59) // 60
+        await safe_edit(
+            query, context,
+            f"⏳ *Akses sementara dibatasi.*\n\n"
+            f"Kamu terlalu sering membatalkan transaksi QRIS tanpa membayar.\n"
+            f"Coba lagi dalam ±*{menit} menit*.",
+            reply_markup=InlineKeyboardMarkup([
+                [_ikb("🔙 Kembali", "🔙", "danger", callback_data="back_to_menu")]
+            ])
+        )
+        return
+
     qris_tersedia = _qris_available()
     keyboard      = [[_ikb(f"Rp{n:,}", "", "primary", callback_data=f"deposit_{n}") for n in DEPOSIT_NOMINALS]]
     keyboard.append([_ikb("🔧 Custom Nominal", "🔧", "primary", callback_data="deposit_custom")])
@@ -1951,6 +2028,16 @@ async def handle_beli_qris(update: Update, context: CallbackContext):
         await query.answer("❌ QRIS belum diatur admin.", show_alert=True)
         return
 
+    # Cek rate limit pembatalan
+    sisa_blok = _bot_cancel_blocked(query.from_user.id)
+    if sisa_blok > 0:
+        menit = (sisa_blok + 59) // 60
+        await query.answer(
+            f"⏳ Terlalu sering membatalkan QRIS. Coba lagi dalam ±{menit} menit.",
+            show_alert=True
+        )
+        return
+
     jumlah  = info["jumlah"]
     tipe_id = info.get("tipe_id")
 
@@ -2029,7 +2116,7 @@ async def handle_beli_qris(update: Update, context: CallbackContext):
         pass
 
     kb = InlineKeyboardMarkup([
-        [_ikb("🔄 Cek Sekarang (3x tersisa)", "", "primary", callback_data="cek_mutasi")],
+        [_ikb("🔄 Cek Sekarang (3x tersisa)", "🔄", "primary", callback_data="cek_mutasi")],
         [_ikb("❌ Batalkan Pesanan", "❌", "danger", callback_data="cancel_beli_qris")],
     ])
     plain_c, ents_c = _pe(caption, "Markdown")
@@ -2072,14 +2159,23 @@ async def handle_cancel_beli_qris(update: Update, context: CallbackContext):
                     save_produk(produk)
                     log.info(f"↩️ Batal QRIS: {len(reserved)} akun dikembalikan → {produk_id}/{tipe_id}")
 
-    batal_text = "✅ *Pesanan dibatalkan.*\n\nStok telah dikembalikan. Ketik /start untuk kembali ke menu."
+    # Catat pembatalan untuk rate limit
+    now_blocked = _bot_cancel_record(uid)
+
+    # Hapus pesan QRIS (foto + tombol)
     try:
-        await query.edit_message_caption(batal_text, parse_mode="Markdown")
+        await query.message.delete()
     except Exception:
-        try:
-            await query.edit_message_text(batal_text, parse_mode="Markdown")
-        except Exception:
-            pass
+        pass
+
+    batal_msg = "✅ *Pesanan dibatalkan.*\n\nStok telah dikembalikan. Ketik /start untuk kembali ke menu."
+    if now_blocked:
+        menit_blok = _BOT_CANCEL_WIN // 60
+        batal_msg += (
+            f"\n\n⚠️ *Perhatian:* Kamu terlalu sering membatalkan pesanan QRIS.\n"
+            f"Fitur beli & deposit via QRIS dinonaktifkan sementara selama *{menit_blok} menit*."
+        )
+    await _send_pe(context.bot, uid, batal_msg)
 
 
 # ─── QRIS: CEK SEKARANG (manual trigger) ─────────────────────────────────────
@@ -2885,10 +2981,12 @@ async def handle_admin_final(update: Update, context: CallbackContext):
     await _send_pe(context.bot, user_id, notif_text, reply_markup=ReplyKeyboardRemove())
     await _notify_group(
         context.bot,
-        f"✅ *Deposit Dikonfirmasi*\n"
-        f"👤 @{item.get('username') or user_id} (`{user_id}`)\n"
-        f"💰 Rp{nominal:,}\n"
-        f"🔖 `{trx_id}`"
+        f"✅ *DEPOSIT DIKONFIRMASI*\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👤 User: @{item.get('username') or user_id} (`{user_id}`)\n"
+        f"💰 Nominal: Rp{nominal:,}\n"
+        f"💳 Metode: Transfer Manual\n"
+        f"🔖 TRX: `{trx_id}`"
     )
     await send_main_menu(context, user_id, await context.bot.get_chat(user_id))
 
@@ -2911,7 +3009,8 @@ async def handle_admin_reject(update: Update, context: CallbackContext):
     )
     await _notify_group(
         context.bot,
-        f"❌ *Deposit Ditolak*\n"
+        f"❌ *DEPOSIT DITOLAK*\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
         f"👤 User ID: `{user_id}`"
     )
 
@@ -3836,9 +3935,11 @@ async def handle_text(update: Update, context: CallbackContext):
         _nm  = _u.full_name or str(_u.id)
         await _notify_group(
             context.bot,
-            f"🎫 *Tiket Support Baru #{tid}*\n\n"
-            f"👤 {_nm} (`{_u.id}`)\n"
-            f"💬 {pesan[:500]}"
+            f"🎫 *TIKET SUPPORT BARU*\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"👤 User: {_nm} (`{_u.id}`)\n"
+            f"🆔 Tiket: #{tid}\n"
+            f"💬 {pesan[:300]}"
         )
         await send_main_menu_safe(update, context)
         return
@@ -4657,11 +4758,12 @@ async def cmd_voucher(update: Update, context: CallbackContext):
         )
         await _notify_group(
             context.bot,
-            f"🎟 *Voucher Digunakan (Bot)*\n"
-            f"👤 `{uid}`\n"
+            f"🎟 *VOUCHER DIGUNAKAN*\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"👤 User: `{uid}`\n"
             f"🏷 Kode: `{kode}`\n"
-            f"💵 +Rp{result:,}\n"
-            f"🔖 `{trx_id_vc}`"
+            f"💵 Nominal: +Rp{result:,}\n"
+            f"🔖 TRX: `{trx_id_vc}`"
         )
         await send_main_menu(context, update.effective_chat.id, update.effective_user)
     else:
@@ -4766,7 +4868,16 @@ async def cmd_rating(update: Update, context: CallbackContext):
 
 async def error_handler(update: object, context: CallbackContext):
     """Tangkap semua error yang tidak tertangkap — log + beritahu user."""
-    log.error("❌ Unhandled exception", exc_info=context.error)
+    err = context.error
+    # Abaikan error delete/edit yang tidak krusial
+    _IGNORED = ("message can't be deleted", "message to delete not found",
+                "message is not modified", "query is too old")
+    if err:
+        emsg = str(err).lower()
+        if any(s in emsg for s in _IGNORED):
+            log.debug(f"⚠️ Ignored non-critical error: {err}")
+            return
+    log.error("❌ Unhandled exception", exc_info=err)
     try:
         if update and hasattr(update, "effective_user") and update.effective_user:
             await context.bot.send_message(
