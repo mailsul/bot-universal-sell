@@ -9,5 +9,6 @@
   "transfer_manual_aktif": false,
   "brand_color": "slate",
   "web_aktif": true,
-  "maintenance_mode": false
+  "maintenance_mode": false,
+  "canvas_style": "neon"
 }
