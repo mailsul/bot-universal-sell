@@ -32,7 +32,8 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "bash gitea_sync.sh; python main.py"
+# Di sini perubahannya: menambahkan bash github_sync.sh;
+args = "bash gitea_sync.sh; bash github_sync.sh; python main.py"
 
 [[workflows.workflow]]
 name = "Start Website"
