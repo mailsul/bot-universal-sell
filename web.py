@@ -747,6 +747,7 @@ def _ctx():
         "brand":         brand,
         "brand_presets": BRAND_PRESETS,
         "brand_name":    preset_name,
+        "canvas_style":  cfg.get("canvas_style", "none"),
         "web_aktif":     cfg.get("web_aktif", True),
         "website_url":   _get_website_url(),
         "bot_username":  _get_bot_username(),
@@ -2390,6 +2391,20 @@ def admin_config_save():
         cfg.pop("custom_hex", None)
     save_config(cfg)
     flash("✅ Pengaturan berhasil disimpan.", "success")
+    return redirect(url_for("admin") + "#tab-config")
+
+
+@app.route("/admin/canvas_style", methods=["POST"])
+@admin_required
+def admin_canvas_style():
+    valid = {"none","aurora","galaxy","mesh","sunset","ocean","forest","neon"}
+    style = request.form.get("canvas_style", "none")
+    if style not in valid:
+        style = "none"
+    cfg = load_config()
+    cfg["canvas_style"] = style
+    save_config(cfg)
+    flash("✅ Canvas style berhasil disimpan.", "success")
     return redirect(url_for("admin") + "#tab-config")
 
 
