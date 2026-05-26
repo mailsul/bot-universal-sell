@@ -123,7 +123,7 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY = True,
     SESSION_COOKIE_SAMESITE = "Lax",
     SESSION_COOKIE_SECURE   = False,   # set True di production HTTPS
-    PERMANENT_SESSION_LIFETIME = timedelta(days=7),
+    PERMANENT_SESSION_LIFETIME = timedelta(days=30),
 )
 
 init_db()
@@ -138,10 +138,12 @@ _qris_ip_active: dict[str, float] = {}
 _qris_ip_lock   = threading.Lock()
 _rl_qris_data:  dict[str, list]  = defaultdict(list)
 _rl_reg_data:   dict[str, list]  = defaultdict(list)
-_web_cancel_log: dict[str, list] = defaultdict(list)
+_web_cancel_log:           dict[str, list]  = defaultdict(list)
+_web_cancel_blocked_until: dict[str, float] = {}
 _web_cancel_lock = threading.Lock()
 _WEB_CANCEL_LIMIT = 3
-_WEB_CANCEL_WIN   = 30 * 60  # 30 menit
+_WEB_CANCEL_WIN   = 5 * 60   # 5 menit — window deteksi 3x cancel
+_WEB_CANCEL_BLOCK = 30 * 60  # 30 menit — durasi blok setelah kena limit
 
 def _web_cancel_record(ip: str) -> bool:
     """Catat QRIS cancel (guest/web). Return True jika IP sekarang di-block."""
@@ -150,18 +152,21 @@ def _web_cancel_record(ip: str) -> bool:
         h = [t for t in _web_cancel_log[ip] if now - t < _WEB_CANCEL_WIN]
         h.append(now)
         _web_cancel_log[ip] = h
-        return len(h) >= _WEB_CANCEL_LIMIT
+        if len(h) >= _WEB_CANCEL_LIMIT:
+            _web_cancel_blocked_until[ip] = now + _WEB_CANCEL_BLOCK
+            return True
+        return False
 
 def _web_cancel_blocked(ip: str) -> int:
     """Sisa detik block untuk IP ini, atau 0."""
     now = time.time()
     with _web_cancel_lock:
+        until = _web_cancel_blocked_until.get(ip, 0)
+        if until > now:
+            return max(0, int(until - now))
         h = [t for t in _web_cancel_log[ip] if now - t < _WEB_CANCEL_WIN]
         _web_cancel_log[ip] = h
-        if len(h) < _WEB_CANCEL_LIMIT:
-            return 0
-        oldest = min(h)
-        return max(0, int(_WEB_CANCEL_WIN - (now - oldest)))
+        return 0
 
 
 # ─── RATE LIMIT ───────────────────────────────────────────────────────────────
@@ -302,11 +307,12 @@ def _global_middleware():
     """Session inactivity timeout (30 menit) + maintenance mode."""
     # 1. Inactivity timeout
     if "user_tid" in session:
-        last = session.get("_last_active", 0)
-        if time.time() - last > SESSION_INACTIVITY:
-            session.clear()
-            flash("Sesi berakhir karena tidak aktif 30 menit.", "warning")
-            return redirect(url_for("login"))
+        if not session.get("remember_me"):
+            last = session.get("_last_active", 0)
+            if time.time() - last > SESSION_INACTIVITY:
+                session.clear()
+                flash("Sesi berakhir karena tidak aktif 30 menit.", "warning")
+                return redirect(url_for("login"))
         session["_last_active"] = time.time()
     # 2. Maintenance mode — admin dan endpoint terkait admin tidak terkena
     ep = request.endpoint or ""
@@ -815,7 +821,7 @@ def register():
         expires = (datetime.now() + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
         web_save_otp(tid, otp, expires)
         toko = load_config().get('nama_toko','Ibra Store')
-        ok   = send_telegram(
+        ok   = send_telegram_pe(
             tid,
             f"🔐 *Kode OTP Registrasi {toko}*\n\n"
             f"Kode OTP: *{otp}*\n\nBerlaku 5 menit.\nJangan bagikan ke siapapun."
@@ -872,12 +878,13 @@ def verify():
     return render_template("verify.html")
 
 
-def _do_user_login(tid: int, role: str, force_pw: bool = False):
+def _do_user_login(tid: int, role: str, force_pw: bool = False, remember_me: bool = False):
     """Helper: set sesi user + catat web_session ke DB."""
     token = secrets.token_hex(24)
     session["user_tid"]     = tid
     session["user_role"]    = role
     session["force_pw"]     = force_pw
+    session["remember_me"]  = remember_me
     session.permanent       = True
     session["_last_active"] = time.time()
     session["_web_token"]   = token
@@ -905,8 +912,9 @@ def user_verify_otp_page():
         if web_verify_otp(tid, otp):
             role   = session.pop("user_2fa_role", "user")
             fpw    = session.pop("user_2fa_fpw", False)
+            rem    = session.pop("user_2fa_remember", False)
             session.pop("user_2fa_tid", None)
-            _do_user_login(tid, role, fpw)
+            _do_user_login(tid, role, fpw, rem)
             flash("✅ Verifikasi berhasil. Selamat datang!", "success")
             return redirect(url_for("dashboard"))
         flash("Kode OTP salah atau sudah kedaluwarsa.", "danger")
@@ -925,8 +933,9 @@ def login():
         if not _login_check(ip):
             flash("Terlalu banyak percobaan login. Coba lagi dalam 15 menit.", "danger")
             return redirect(url_for("login"))
-        idf = request.form.get("identifier","").strip()
-        pw  = request.form.get("password","").strip()
+        idf         = request.form.get("identifier","").strip()
+        pw          = request.form.get("password","").strip()
+        remember_me = request.form.get("remember_me") == "1"
         user = web_get_user_by_identifier(idf)
         if not user or not check_password_hash(user["password_hash"], pw):
             _login_record_fail(ip)
@@ -944,13 +953,14 @@ def login():
             exp  = (datetime.now() + timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
             web_save_otp(tid, otp, exp)
             toko = load_config().get("nama_toko", "Ibra Store")
-            send_telegram(
+            send_telegram_pe(
                 tid,
                 f"🔐 *Login Admin — {toko}*\n\nKode OTP: `{otp}`\nBerlaku 10 menit.\n\n"
                 "⚠️ Jika bukan kamu yang login, segera ganti password!"
             )
-            session["admin_2fa_tid"]  = tid
-            session["admin_2fa_role"] = role
+            session["admin_2fa_tid"]     = tid
+            session["admin_2fa_role"]    = role
+            session["admin_2fa_remember"] = remember_me
             flash("Kode OTP dikirim ke Telegram kamu. Masukkan untuk masuk ke Admin Panel.", "info")
             return redirect(url_for("admin_verify_otp_page"))
         # User biasa — cek 2FA
@@ -959,7 +969,7 @@ def login():
             exp  = (datetime.now() + timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
             web_save_otp(tid, otp, exp)
             toko = load_config().get("nama_toko", "Ibra Store")
-            ok   = send_telegram(
+            ok   = send_telegram_pe(
                 tid,
                 f"🔐 *Login — {toko}*\n\nKode OTP: `{otp}`\nBerlaku 10 menit.\n\n"
                 "Jangan bagikan ke siapapun!"
@@ -967,13 +977,14 @@ def login():
             if not ok:
                 flash("Gagal mengirim OTP ke Telegram. Pastikan bot sudah pernah di-start.", "danger")
                 return redirect(url_for("login"))
-            session["user_2fa_tid"]  = tid
-            session["user_2fa_role"] = role
-            session["user_2fa_fpw"]  = bool(user.get("force_password_change"))
+            session["user_2fa_tid"]     = tid
+            session["user_2fa_role"]    = role
+            session["user_2fa_fpw"]     = bool(user.get("force_password_change"))
+            session["user_2fa_remember"] = remember_me
             flash("Kode OTP dikirim ke Telegram kamu.", "info")
             return redirect(url_for("user_verify_otp_page"))
         # Login langsung (tanpa 2FA)
-        _do_user_login(tid, role, bool(user.get("force_password_change")))
+        _do_user_login(tid, role, bool(user.get("force_password_change")), remember_me)
         flash("Selamat datang kembali!", "success")
         return redirect(url_for("dashboard"))
     return render_template("login.html", prefill=request.args.get("id",""))
@@ -994,8 +1005,9 @@ def admin_verify_otp_page():
         tid = session["admin_2fa_tid"]
         if web_verify_otp(tid, otp):
             role = session.pop("admin_2fa_role", "admin")
+            rem  = session.pop("admin_2fa_remember", False)
             session.pop("admin_2fa_tid", None)
-            _do_user_login(tid, role, False)
+            _do_user_login(tid, role, False, rem)
             flash("✅ Verifikasi berhasil. Selamat datang, Admin!", "success")
             return redirect(url_for("admin"))
         flash("Kode OTP salah atau sudah kedaluwarsa.", "danger")
@@ -1307,7 +1319,12 @@ def beli_qris(pid):
     sisa_blok_web = _web_cancel_blocked(ip)
     if sisa_blok_web > 0:
         menit_web = (sisa_blok_web + 59) // 60
-        flash(f"Terlalu sering membatalkan QRIS. Coba lagi dalam ±{menit_web} menit.", "danger")
+        kontak_blk = load_config().get("kontak_admin", "@admin")
+        flash(
+            f"Terlalu sering membatalkan QRIS. Coba lagi dalam ±{menit_web} menit. "
+            f"Untuk beli sekarang hubungi admin: {kontak_blk}",
+            "danger"
+        )
         return redirect(url_for("beli", pid=pid))
     if not QRIS_BASE64:
         flash("QRIS belum dikonfigurasi.", "danger")

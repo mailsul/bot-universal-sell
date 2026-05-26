@@ -222,10 +222,12 @@ _pending_file_offers: dict = {}   # {user_id: {file_path, item_name, msg_id, cha
 
 # ─── RATE LIMIT: CANCEL / TIDAK BAYAR QRIS ────────────────────────────────────
 import threading as _threading
-_bot_cancel_log:  dict = {}
-_bot_cancel_lock  = _threading.Lock()
+_bot_cancel_log:           dict = {}
+_bot_cancel_blocked_until: dict = {}
+_bot_cancel_lock           = _threading.Lock()
 _BOT_CANCEL_LIMIT = 5
-_BOT_CANCEL_WIN   = 30 * 60  # 30 menit
+_BOT_CANCEL_WIN   = 5 * 60   # 5 menit — window deteksi 5x cancel
+_BOT_CANCEL_BLOCK = 30 * 60  # 30 menit — durasi blok setelah kena limit
 
 def _bot_cancel_record(uid: int) -> bool:
     """Catat pembatalan QRIS. Kembalikan True jika user sekarang di-block."""
@@ -234,18 +236,21 @@ def _bot_cancel_record(uid: int) -> bool:
         h = [t for t in _bot_cancel_log.get(uid, []) if now - t < _BOT_CANCEL_WIN]
         h.append(now)
         _bot_cancel_log[uid] = h
-        return len(h) >= _BOT_CANCEL_LIMIT
+        if len(h) >= _BOT_CANCEL_LIMIT:
+            _bot_cancel_blocked_until[uid] = now + _BOT_CANCEL_BLOCK
+            return True
+        return False
 
 def _bot_cancel_blocked(uid: int) -> int:
     """Kembalikan sisa detik block, atau 0 jika tidak di-block."""
     now = time.time()
     with _bot_cancel_lock:
+        until = _bot_cancel_blocked_until.get(uid, 0)
+        if until > now:
+            return max(0, int(until - now))
         h = [t for t in _bot_cancel_log.get(uid, []) if now - t < _BOT_CANCEL_WIN]
         _bot_cancel_log[uid] = h
-        if len(h) < _BOT_CANCEL_LIMIT:
-            return 0
-        oldest = min(h)
-        return max(0, int(_BOT_CANCEL_WIN - (now - oldest)))
+        return 0
 
 
 # ─── HELPER: CONFIG ──────────────────────────────────────────────────────────
@@ -1788,11 +1793,13 @@ async def handle_deposit(update: Update, context: CallbackContext):
     sisa_blok = _bot_cancel_blocked(query.from_user.id)
     if sisa_blok > 0:
         menit = (sisa_blok + 59) // 60
+        kontak = load_config().get("kontak_admin", "@admin")
         await safe_edit(
             query, context,
             f"⏳ *Akses sementara dibatasi.*\n\n"
             f"Kamu terlalu sering membatalkan transaksi QRIS tanpa membayar.\n"
-            f"Coba lagi dalam ±*{menit} menit*.",
+            f"Coba lagi dalam ±*{menit} menit*.\n\n"
+            f"Untuk beli sekarang, hubungi admin langsung: {kontak}",
             reply_markup=InlineKeyboardMarkup([
                 [_ikb("🔙 Kembali", "🔙", "danger", callback_data="back_to_menu")]
             ])
@@ -2032,8 +2039,10 @@ async def handle_beli_qris(update: Update, context: CallbackContext):
     sisa_blok = _bot_cancel_blocked(query.from_user.id)
     if sisa_blok > 0:
         menit = (sisa_blok + 59) // 60
+        kontak = load_config().get("kontak_admin", "@admin")
         await query.answer(
-            f"⏳ Terlalu sering membatalkan QRIS. Coba lagi dalam ±{menit} menit.",
+            f"⏳ Terlalu sering membatalkan QRIS. Coba lagi dalam ±{menit} menit.\n"
+            f"Beli manual ke admin: {kontak}",
             show_alert=True
         )
         return
@@ -2168,12 +2177,14 @@ async def handle_cancel_beli_qris(update: Update, context: CallbackContext):
     except Exception:
         pass
 
+    kontak = load_config().get("kontak_admin", "@admin")
     batal_msg = "✅ *Pesanan dibatalkan.*\n\nStok telah dikembalikan. Ketik /start untuk kembali ke menu."
     if now_blocked:
-        menit_blok = _BOT_CANCEL_WIN // 60
+        menit_blok = _BOT_CANCEL_BLOCK // 60
         batal_msg += (
             f"\n\n⚠️ *Perhatian:* Kamu terlalu sering membatalkan pesanan QRIS.\n"
-            f"Fitur beli & deposit via QRIS dinonaktifkan sementara selama *{menit_blok} menit*."
+            f"Fitur beli & deposit via QRIS dinonaktifkan sementara selama *{menit_blok} menit*.\n"
+            f"Untuk beli sekarang, hubungi admin: {kontak}"
         )
     await _send_pe(context.bot, uid, batal_msg)
 
